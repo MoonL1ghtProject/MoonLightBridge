@@ -39,17 +39,24 @@ public interface ExpjTelemetry {
     }
 
     final class Automatic {
+        private static final System.Logger LOGGER = System.getLogger("dev.expj.telemetry");
         private static final ExpjTelemetry INSTANCE = load();
         private Automatic() { }
 
         private static ExpjTelemetry load() {
             try {
-                return composite(ServiceLoader.load(ExpjTelemetryProvider.class)
+                // Paper plugins live in isolated classloaders. The server thread's
+                // context loader generally cannot see a shaded provider.
+                return composite(ServiceLoader.load(
+                        ExpjTelemetryProvider.class,
+                        ExpjTelemetryProvider.class.getClassLoader())
                     .stream()
                     .map(ServiceLoader.Provider::get)
                     .map(ExpjTelemetryProvider::createTelemetry)
                     .toArray(ExpjTelemetry[]::new));
-            } catch (RuntimeException | java.util.ServiceConfigurationError ignored) {
+            } catch (RuntimeException | java.util.ServiceConfigurationError | LinkageError error) {
+                LOGGER.log(System.Logger.Level.WARNING,
+                    "EXPJ telemetry provider failed to initialize; tracing and profiling are disabled", error);
                 return disabled();
             }
         }

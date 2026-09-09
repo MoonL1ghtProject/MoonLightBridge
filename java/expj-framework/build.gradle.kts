@@ -17,5 +17,6 @@ tasks.withType<JavaCompile>().configureEach {
 
 dependencies {
     api(project(":java:expj-client"))
+    api(project(":java:expj-paper"))
     runtimeOnly(project(":java:expj-sentry"))
 }

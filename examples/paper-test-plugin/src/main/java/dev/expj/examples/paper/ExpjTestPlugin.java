@@ -1,14 +1,12 @@
 package dev.expj.examples.paper;
 
-import dev.expj.client.ReconnectingExpjClient;
 import dev.expj.example.v1.EchoRequest;
 import dev.expj.example.v1.EchoServiceClient;
+import dev.expj.paper.MoonLightBridge;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.command.Command;
@@ -17,8 +15,7 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public final class ExpjTestPlugin extends JavaPlugin implements CommandExecutor {
-    private final AtomicReference<ReconnectingExpjClient> connection = new AtomicReference<>();
-    private final AtomicBoolean stopping = new AtomicBoolean();
+    private MoonLightBridge bridge;
     private volatile EchoServiceClient backend;
 
     @Override
@@ -28,50 +25,30 @@ public final class ExpjTestPlugin extends JavaPlugin implements CommandExecutor 
         getCommand("expjbatch").setExecutor(this);
 
         String endpoint = getConfig().getString("endpoint", "tcp://127.0.0.1:38201");
-        Thread.ofVirtual().name("expj-test-connect").start(() -> connect(endpoint));
-    }
-
-    private void connect(String endpoint) {
-        while (!stopping.get()) {
-            try {
-                ReconnectingExpjClient client = ReconnectingExpjClient.connect(endpoint);
-                if (stopping.get()) {
-                    client.close();
-                    return;
-                }
-                EchoServiceClient service = new EchoServiceClient(client);
-                try {
-                    // Load and JIT the generated Protobuf codec, telemetry, and
-                    // complete RPC path away from the Minecraft server thread.
-                    service.echo(EchoRequest.newBuilder().setMessage("EXPJ warmup").build()).join();
-                } catch (CompletionException error) {
-                    client.close();
-                    Throwable cause = error.getCause() == null ? error : error.getCause();
-                    throw new IOException("EXPJ warmup request failed", cause);
-                }
-                connection.set(client);
-                backend = service;
-                getLogger().info("Connected to and warmed EXPJ backend at " + endpoint);
-                return;
-            } catch (IOException error) {
-                if (!stopping.get()) {
-                    getLogger().warning(
-                        "EXPJ backend is unavailable; retrying in 2 seconds: " + error.getMessage());
-                }
-            }
-            try {
-                Thread.sleep(2_000);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                return;
-            }
+        try {
+            bridge = MoonLightBridge.start(this, endpoint);
+        } catch (IOException error) {
+            getLogger().severe("Invalid EXPJ endpoint: " + error.getMessage());
+            getServer().getPluginManager().disablePlugin(this);
+            return;
         }
+
+        backend = new EchoServiceClient(bridge.channel());
+        bridge.warmUp(() -> backend.echo(request("EXPJ warmup")))
+            .whenCompleteOnGlobal((ignored, error) -> {
+                if (error == null) {
+                    getLogger().info("Connected to and warmed EXPJ backend at " + endpoint);
+                } else {
+                    getLogger().warning("EXPJ warm-up failed: " + error.getMessage());
+                }
+            });
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         EchoServiceClient client = backend;
-        if (client == null || connection.get() == null || !connection.get().isConnected()) {
+        MoonLightBridge activeBridge = bridge;
+        if (client == null || activeBridge == null || !activeBridge.isConnected()) {
             sender.sendMessage(Component.text("EXPJ backend is not connected", NamedTextColor.RED));
             return true;
         }
@@ -96,17 +73,15 @@ public final class ExpjTestPlugin extends JavaPlugin implements CommandExecutor 
 
     private void callOnce(CommandSender sender, EchoServiceClient client, String text) {
         long started = System.nanoTime();
-        client.echo(EchoRequest.newBuilder().setMessage(text).build())
-            .whenComplete((response, error) -> {
+        bridge.call(client.echo(request(text)))
+            .whenCompleteFor(sender, (response, error) -> {
                 long micros = (System.nanoTime() - started) / 1_000;
-                onMainThread(() -> {
-                    if (error != null) {
-                        showError(sender, error);
-                        return;
-                    }
-                    sender.sendMessage(Component.text(response.getMessage(), NamedTextColor.GREEN)
-                        .append(Component.text(" (RPC " + micros + " µs)", NamedTextColor.GRAY)));
-                });
+                if (error != null) {
+                    showError(sender, error);
+                    return;
+                }
+                sender.sendMessage(Component.text(response.getMessage(), NamedTextColor.GREEN)
+                    .append(Component.text(" (RPC " + micros + " µs)", NamedTextColor.GRAY)));
             });
     }
 
@@ -116,18 +91,20 @@ public final class ExpjTestPlugin extends JavaPlugin implements CommandExecutor 
             requests.add(EchoRequest.newBuilder().setMessage(text + " #" + index).build());
         }
         long started = System.nanoTime();
-        client.echoBatch(requests).whenComplete((responses, error) -> {
+        bridge.call(client.echoBatch(requests)).whenCompleteFor(sender, (responses, error) -> {
             long micros = (System.nanoTime() - started) / 1_000;
-            onMainThread(() -> {
-                if (error != null) {
-                    showError(sender, error);
-                    return;
-                }
-                sender.sendMessage(Component.text(
-                    "Rust returned " + responses.size() + " responses in " + micros + " µs RPC time",
-                    NamedTextColor.GREEN));
-            });
+            if (error != null) {
+                showError(sender, error);
+                return;
+            }
+            sender.sendMessage(Component.text(
+                "Rust returned " + responses.size() + " responses in " + micros + " µs RPC time",
+                NamedTextColor.GREEN));
         });
+    }
+
+    private static EchoRequest request(String message) {
+        return EchoRequest.newBuilder().setMessage(message).build();
     }
 
     private void showError(CommandSender sender, Throwable error) {
@@ -137,18 +114,14 @@ public final class ExpjTestPlugin extends JavaPlugin implements CommandExecutor 
             "EXPJ request failed: " + cause.getMessage(), NamedTextColor.RED));
     }
 
-    private void onMainThread(Runnable action) {
-        if (!stopping.get()) getServer().getScheduler().runTask(this, action);
-    }
-
     @Override
     public void onDisable() {
-        stopping.set(true);
         backend = null;
-        ReconnectingExpjClient client = connection.getAndSet(null);
-        if (client != null) {
+        MoonLightBridge activeBridge = bridge;
+        bridge = null;
+        if (activeBridge != null) {
             try {
-                client.close();
+                activeBridge.close();
             } catch (IOException error) {
                 getLogger().warning("Failed to close EXPJ cleanly: " + error.getMessage());
             }

@@ -20,28 +20,38 @@ public final class FrameworkSentryProvider implements ExpjTelemetryProvider {
         "expj.sentry.logs", Boolean.toString(DEVELOPMENT_BUILD)));
 
     static {
-        Sentry.init(options -> {
-            options.setDsn(FRAMEWORK_DSN);
-            options.setEnvironment(System.getProperty(
-                "expj.environment", DEVELOPMENT_BUILD ? "development" : "production"));
-            options.setRelease(RELEASE);
-            // EXPJ makes its own cheap sampling decision before creating a transaction.
-            options.setTracesSampleRate(1.0);
-            options.setProfileSessionSampleRate(PROFILE_SAMPLE_RATE);
-            options.setProfileLifecycle(ProfileLifecycle.TRACE);
-            options.getLogs().setEnabled(LOGS_ENABLED);
-            // The SDK default of 30 drops telemetry during even a small EXPJ
-            // batch. Keep the queue bounded, but sized for framework bursts.
-            options.setMaxQueueSize(DEVELOPMENT_BUILD ? 4_096 : 256);
-            options.setSendDefaultPii(false);
-            options.setDebug(Boolean.getBoolean("expj.sentry.debug"));
-            options.setEnableUncaughtExceptionHandler(false);
-        });
-        // Loading and starting async-profiler can be expensive once. Pay that
-        // cost while the EXPJ connection is being established, never in RPC #1.
-        if (PROFILE_SAMPLE_RATE > 0.0) {
-            ITransaction warmup = Sentry.startTransaction("EXPJ profiler warmup", "internal");
-            warmup.finish();
+        Thread thread = Thread.currentThread();
+        ClassLoader previousLoader = thread.getContextClassLoader();
+        // Sentry's profiling service loader also uses the thread context loader.
+        // Temporarily point it at the plugin/library loader so shaded providers
+        // are discoverable under Paper's classloader isolation.
+        thread.setContextClassLoader(FrameworkSentryProvider.class.getClassLoader());
+        try {
+            Sentry.init(options -> {
+                options.setDsn(FRAMEWORK_DSN);
+                options.setEnvironment(System.getProperty(
+                    "expj.environment", DEVELOPMENT_BUILD ? "development" : "production"));
+                options.setRelease(RELEASE);
+                // EXPJ makes its own cheap sampling decision before creating a transaction.
+                options.setTracesSampleRate(1.0);
+                options.setProfileSessionSampleRate(PROFILE_SAMPLE_RATE);
+                options.setProfileLifecycle(ProfileLifecycle.TRACE);
+                options.getLogs().setEnabled(LOGS_ENABLED);
+                // The SDK default of 30 drops telemetry during even a small EXPJ
+                // batch. Keep the queue bounded, but sized for framework bursts.
+                options.setMaxQueueSize(DEVELOPMENT_BUILD ? 4_096 : 256);
+                options.setSendDefaultPii(false);
+                options.setDebug(Boolean.getBoolean("expj.sentry.debug"));
+                options.setEnableUncaughtExceptionHandler(false);
+            });
+            // Loading and starting async-profiler can be expensive once. Pay that
+            // cost while the EXPJ connection is being established, never in RPC #1.
+            if (PROFILE_SAMPLE_RATE > 0.0) {
+                ITransaction warmup = Sentry.startTransaction("EXPJ profiler warmup", "internal");
+                warmup.finish();
+            }
+        } finally {
+            thread.setContextClassLoader(previousLoader);
         }
     }
 

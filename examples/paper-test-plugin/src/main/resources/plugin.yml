@@ -3,6 +3,7 @@ version: '${version}'
 main: dev.expj.examples.paper.ExpjTestPlugin
 description: End-to-end EXPJ Java-to-Rust test plugin
 api-version: '1.21'
+folia-supported: true
 authors: [WillowStudio]
 commands:
   expjtest:

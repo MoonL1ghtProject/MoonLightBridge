@@ -1,0 +1,11 @@
+version: "1.0"
+linter: jetbrains/qodana-jvm-community:2026.2
+profile:
+  name: qodana.recommended
+bootstrap: ./gradlew --no-daemon classes testClasses
+exclude:
+  - name: All
+    paths:
+      - .gradle
+      - build
+      - target

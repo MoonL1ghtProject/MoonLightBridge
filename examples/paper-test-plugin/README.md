@@ -13,8 +13,9 @@ A particular Paper server can impose a newer JVM requirement independently of
 the plugin; for example, modern Paper 26.x requires Java 25.
 
 The plugin only uses stable Bukkit/Paper API shared by the supported releases.
-Calls to Rust run asynchronously and Bukkit messages are scheduled back onto the
-server thread. During asynchronous connection the example performs one hidden
+Calls to Rust run asynchronously and `MoonLightBridge` schedules Bukkit access
+onto the correct Paper global or Folia entity/region scheduler. During
+asynchronous connection the example performs one hidden
 warm-up RPC so generated Protobuf classes, Sentry profiling, and the complete
 transport path are initialized before a command can use the client.
 

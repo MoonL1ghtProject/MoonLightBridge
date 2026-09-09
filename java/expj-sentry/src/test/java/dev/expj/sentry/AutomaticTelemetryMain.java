@@ -4,7 +4,17 @@ import dev.expj.client.ExpjTelemetry;
 
 public final class AutomaticTelemetryMain {
     public static void main(String[] args) {
-        ExpjTelemetry automatic = ExpjTelemetry.automatic();
+        Thread thread = Thread.currentThread();
+        ClassLoader previousLoader = thread.getContextClassLoader();
+        // Simulate Paper's server thread, whose context loader cannot see the
+        // plugin's shaded classes or META-INF/services entries.
+        thread.setContextClassLoader(ClassLoader.getPlatformClassLoader());
+        ExpjTelemetry automatic;
+        try {
+            automatic = ExpjTelemetry.automatic();
+        } finally {
+            thread.setContextClassLoader(previousLoader);
+        }
         if (automatic == ExpjTelemetry.disabled()) {
             throw new AssertionError("bundled EXPJ Sentry provider was not discovered");
         }

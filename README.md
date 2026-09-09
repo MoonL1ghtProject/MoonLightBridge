@@ -4,7 +4,7 @@
 backend. The project is intentionally starting with a small, measurable core:
 framing, multiplexed request/response, timeouts, and explicit failure modes.
 
-## Current milestone: M0 transport spike
+## Current milestone: M3 embedded Minecraft SDK
 
 The first vertical slice already defines the wire header and contains:
 
@@ -20,10 +20,8 @@ The first vertical slice already defines the wire header and contains:
   and generated batch RPC methods.
 - opt-in metrics, payload-safe structured logs, and sampled Java-to-Rust Sentry
   trace propagation without overhead on the default path.
-
-This milestone deliberately uses opaque byte payloads. Protobuf/code generation
-will be added only after the transport contract is covered by cross-language
-tests.
+- a non-blocking embedded Paper/Folia facade with scheduler-aware callbacks and
+  reconnect supervision; no separate bridge plugin is required.
 
 ## Run the vertical slice
 
@@ -70,6 +68,8 @@ Performance presets and measured baselines are documented in
 [`docs/performance.md`](docs/performance.md).
 Observability, Sentry sampling, privacy, and profiling are documented in
 [`docs/observability.md`](docs/observability.md).
+Paper/Folia integration is documented in
+[`docs/minecraft-sdk.md`](docs/minecraft-sdk.md).
 
 An installable Paper example and matching Rust backend live in
 [`examples/paper-test-plugin`](examples/paper-test-plugin). The shaded plugin is
@@ -80,8 +80,8 @@ compiled to Java 21 bytecode and needs no separate EXPJ server plugin.
 1. **M0 — framing:** request/response over TCP, multiplexing, limits.
 2. **M1 — lifecycle:** handshake, deadlines, cancellation, heartbeat and safe reconnect (implemented).
 3. **M2 — schema:** Protobuf contracts, unary Java/Rust code generation and compatibility lock (implemented); events follow.
-4. **M3 — Minecraft SDK:** Paper/Folia scheduler-aware completion helpers.
-5. **M4 — load control:** bounded queues, batching, tick batches, metrics.
+4. **M3 — Minecraft SDK:** Paper/Folia scheduler-aware completion helpers (implemented).
+5. **M4 — load control:** bounded queues, batching, tick batches, metrics (transport implemented; tick aggregation follows).
 6. **M5 — backend process management:** extraction, startup and health supervision.
 
 See [`docs/protocol.md`](docs/protocol.md) for the byte-level contract and

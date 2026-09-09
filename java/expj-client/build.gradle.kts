@@ -43,6 +43,18 @@ tasks.register<JavaExec>("reconnectIntegrationTest") {
     args(providers.gradleProperty("expjMarkerDirectory").get())
 }
 
+val nonBlockingStartTest = tasks.register<JavaExec>("nonBlockingStartTest") {
+    group = "verification"
+    description = "Verifies that supervised startup never blocks its caller"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "dev.expj.client.NonBlockingStartMain"
+}
+
+tasks.check {
+    dependsOn(nonBlockingStartTest)
+}
+
 tasks.register<JavaExec>("performanceBenchmark") {
     group = "verification"
     description = "Measures EXPJ end-to-end latency and pipelined throughput"

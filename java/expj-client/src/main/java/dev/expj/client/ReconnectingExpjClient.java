@@ -16,12 +16,14 @@ public final class ReconnectingExpjClient implements ExpjChannel {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean();
     private final AtomicInteger failedAttempts = new AtomicInteger();
+    private final CompletableFuture<Void> firstConnection = new CompletableFuture<>();
 
     private ReconnectingExpjClient(
         String endpoint,
         ReconnectPolicy policy,
         ExpjPerformanceOptions performance,
-        ExpjTelemetry telemetry
+        ExpjTelemetry telemetry,
+        boolean connectImmediately
     ) throws IOException {
         this.endpoint = Objects.requireNonNull(endpoint);
         this.policy = Objects.requireNonNull(policy);
@@ -29,17 +31,22 @@ public final class ReconnectingExpjClient implements ExpjChannel {
         this.telemetry = Objects.requireNonNull(telemetry);
         this.scheduler = Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().daemon().name("expj-reconnect").factory());
-        install(ExpjClient.connect(endpoint, performance, telemetry));
+        if (connectImmediately) {
+            install(ExpjClient.connect(endpoint, performance, telemetry));
+        } else {
+            reconnectScheduled.set(true);
+            scheduler.execute(this::tryReconnect);
+        }
     }
 
     public static ReconnectingExpjClient connect(String endpoint) throws IOException {
         return new ReconnectingExpjClient(
-            endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), ExpjTelemetry.automatic());
+            endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), ExpjTelemetry.automatic(), true);
     }
 
     public static ReconnectingExpjClient connect(String endpoint, ReconnectPolicy policy) throws IOException {
         return new ReconnectingExpjClient(
-            endpoint, policy, automaticPerformance(endpoint), ExpjTelemetry.automatic());
+            endpoint, policy, automaticPerformance(endpoint), ExpjTelemetry.automatic(), true);
     }
 
     public static ReconnectingExpjClient connect(
@@ -48,10 +55,36 @@ public final class ReconnectingExpjClient implements ExpjChannel {
         ExpjPerformanceOptions performance,
         ExpjTelemetry telemetry
     ) throws IOException {
-        return new ReconnectingExpjClient(endpoint, policy, performance, telemetry);
+        return new ReconnectingExpjClient(endpoint, policy, performance, telemetry, true);
+    }
+
+    /**
+     * Starts a supervised client without performing network I/O on the calling thread.
+     * Requests fail fast until the first connection is established.
+     */
+    public static ReconnectingExpjClient start(String endpoint) throws IOException {
+        return new ReconnectingExpjClient(
+            endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), ExpjTelemetry.automatic(), false);
+    }
+
+    public static ReconnectingExpjClient start(String endpoint, ReconnectPolicy policy) throws IOException {
+        return new ReconnectingExpjClient(
+            endpoint, policy, automaticPerformance(endpoint), ExpjTelemetry.automatic(), false);
+    }
+
+    public static ReconnectingExpjClient start(
+        String endpoint,
+        ReconnectPolicy policy,
+        ExpjPerformanceOptions performance,
+        ExpjTelemetry telemetry
+    ) throws IOException {
+        return new ReconnectingExpjClient(endpoint, policy, performance, telemetry, false);
     }
 
     public boolean isConnected() { return active.get() != null; }
+
+    /** Completes once after the first successful connection. */
+    public CompletionStage<Void> firstConnection() { return firstConnection; }
 
     public CompletableFuture<byte[]> request(int methodId, byte[] body, Duration deadline) {
         ExpjClient client = active.get();
@@ -75,6 +108,7 @@ public final class ReconnectingExpjClient implements ExpjChannel {
             return;
         }
         active.set(client);
+        firstConnection.complete(null);
         failedAttempts.set(0);
         reconnectScheduled.set(false);
         client.termination().thenAccept(reason -> {
@@ -113,6 +147,7 @@ public final class ReconnectingExpjClient implements ExpjChannel {
     public void close() throws IOException {
         if (!closed.compareAndSet(false, true)) return;
         scheduler.shutdownNow();
+        firstConnection.completeExceptionally(new BackendUnavailableException(endpoint));
         ExpjClient client = active.getAndSet(null);
         if (client != null) client.close();
     }
@@ -131,6 +166,8 @@ public final class ReconnectingExpjClient implements ExpjChannel {
     }
 
     public static final class BackendUnavailableException extends IOException {
+        private static final long serialVersionUID = 1L;
+
         public BackendUnavailableException(String endpoint) {
             super("EXPJ backend is disconnected: " + endpoint);
         }

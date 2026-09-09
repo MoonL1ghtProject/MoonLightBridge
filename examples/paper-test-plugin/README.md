@@ -47,6 +47,11 @@ Copy the resulting JAR into `plugins/`, start Paper, and use:
 /expjbatch 64 Hello batch
 ```
 
+Command output reports network/backend `RPC` time separately from `callback`
+time. The callback value includes waiting for the next Paper/Folia scheduler
+boundary and can approach one 20 TPS tick (50 ms) even when RPC itself takes
+less than a millisecond.
+
 The default endpoint is `tcp://127.0.0.1:38201`. Change `endpoint` in the
 plugin's `config.yml` for a different host/container. A shared-volume Unix
 socket can instead use `unix:/path/to/backend.sock` and start the backend with

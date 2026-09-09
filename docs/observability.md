@@ -32,8 +32,8 @@ service files, and connect normally:
 var backend = ExpjClient.connect("unix:/run/expj/backend.sock");
 ```
 
-Snapshot builds sample traces at 100% so integration testing is immediately
-visible. Release builds default to 1%, so an unsampled background machine loop
+Snapshot builds sample traces at 10% so integration testing remains visible
+without instrumenting every RPC. Release builds default to 1%, so an unsampled background machine loop
 does not create a Sentry transaction per RPC. Override either policy with the
 `expj.sentry.trace-sample-rate` system property. The span's 16-byte trace ID,
 8-byte parent span ID, and sampling bit are propagated to Rust only for sampled
@@ -93,8 +93,10 @@ counts, failures, byte totals, total latency, and maximum latency. They use
 adders/relaxed atomics and do not perform network I/O.
 
 The Java adapter includes Sentry's async-profiler integration on Linux and
-macOS. Snapshot builds profile sampled traces by default; release builds leave
-profiling disabled to avoid permanent CPU overhead. Set
+macOS. Snapshot builds profile 1% of traces by default; release builds leave
+profiling disabled to avoid permanent CPU overhead. Sentry transaction
+completion and log submission run on a dedicated bounded telemetry executor,
+not the EXPJ response-reader thread. Set
 `-Dexpj.sentry.profile-sample-rate=0.01` (range `0.0` to `1.0`) to opt a
 production process into short profiling sessions. Profiles use trace lifecycle,
 so they are associated with EXPJ RPC traces in Sentry. Windows is not supported

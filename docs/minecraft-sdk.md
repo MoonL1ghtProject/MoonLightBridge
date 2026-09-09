@@ -35,6 +35,11 @@ Use `whenCompleteOnGlobal` for console/server-wide state, `whenCompleteAt` for
 location-owned state, and `whenCompleteFor` for players/entities/command
 senders. Call `bridge.close()` from `onDisable`.
 
+Scheduler dispatch intentionally waits for a safe Paper/Folia execution point,
+which can add up to one server tick after the RPC has already completed. Measure
+transport latency before entering the scheduled callback. Pure Java processing
+that does not touch Bukkit state can remain on the original completion stage.
+
 The plugin must include `folia-supported: true` in `plugin.yml` and shade the
 framework with merged `META-INF/services` resources. The example build also
 relocates Protobuf and Sentry to prevent classpath conflicts with server forks.

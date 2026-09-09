@@ -13,9 +13,9 @@ public final class FrameworkSentryProvider implements ExpjTelemetryProvider {
         "https://53d54adb173ccd2d0cbc2ac5f3fa5495@o4511248228941824.ingest.us.sentry.io/4511286171664384";
     private static final boolean DEVELOPMENT_BUILD = RELEASE.endsWith("-SNAPSHOT");
     private static final double TRACE_SAMPLE_RATE = sampleRate(
-        "expj.sentry.trace-sample-rate", DEVELOPMENT_BUILD ? 1.0 : 0.01);
+        "expj.sentry.trace-sample-rate", DEVELOPMENT_BUILD ? 0.1 : 0.01);
     private static final double PROFILE_SAMPLE_RATE = sampleRate(
-        "expj.sentry.profile-sample-rate", DEVELOPMENT_BUILD ? 1.0 : 0.0);
+        "expj.sentry.profile-sample-rate", DEVELOPMENT_BUILD ? 0.01 : 0.0);
     private static final boolean LOGS_ENABLED = Boolean.parseBoolean(System.getProperty(
         "expj.sentry.logs", Boolean.toString(DEVELOPMENT_BUILD)));
 

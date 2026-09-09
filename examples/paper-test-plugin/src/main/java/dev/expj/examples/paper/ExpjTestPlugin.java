@@ -73,15 +73,18 @@ public final class ExpjTestPlugin extends JavaPlugin implements CommandExecutor 
 
     private void callOnce(CommandSender sender, EchoServiceClient client, String text) {
         long started = System.nanoTime();
-        bridge.call(client.echo(request(text)))
-            .whenCompleteFor(sender, (response, error) -> {
-                long micros = (System.nanoTime() - started) / 1_000;
+        bridge.call(client.echo(request(text))
+                .thenApply(response -> timed(response, started)))
+            .whenCompleteFor(sender, (result, error) -> {
                 if (error != null) {
                     showError(sender, error);
                     return;
                 }
-                sender.sendMessage(Component.text(response.getMessage(), NamedTextColor.GREEN)
-                    .append(Component.text(" (RPC " + micros + " µs)", NamedTextColor.GRAY)));
+                long callbackMicros = (System.nanoTime() - result.completedAtNanos()) / 1_000;
+                sender.sendMessage(Component.text(result.value().getMessage(), NamedTextColor.GREEN)
+                    .append(Component.text(
+                        " (RPC " + result.rpcMicros() + " µs, callback " + callbackMicros + " µs)",
+                        NamedTextColor.GRAY)));
             });
     }
 
@@ -91,21 +94,31 @@ public final class ExpjTestPlugin extends JavaPlugin implements CommandExecutor 
             requests.add(EchoRequest.newBuilder().setMessage(text + " #" + index).build());
         }
         long started = System.nanoTime();
-        bridge.call(client.echoBatch(requests)).whenCompleteFor(sender, (responses, error) -> {
-            long micros = (System.nanoTime() - started) / 1_000;
+        bridge.call(client.echoBatch(requests)
+                .thenApply(responses -> timed(responses, started)))
+            .whenCompleteFor(sender, (result, error) -> {
             if (error != null) {
                 showError(sender, error);
                 return;
             }
+            long callbackMicros = (System.nanoTime() - result.completedAtNanos()) / 1_000;
             sender.sendMessage(Component.text(
-                "Rust returned " + responses.size() + " responses in " + micros + " µs RPC time",
+                "Rust returned " + result.value().size() + " responses in " + result.rpcMicros()
+                    + " µs RPC time; callback " + callbackMicros + " µs",
                 NamedTextColor.GREEN));
         });
+    }
+
+    private static <T> Timed<T> timed(T value, long startedNanos) {
+        long completed = System.nanoTime();
+        return new Timed<>(value, (completed - startedNanos) / 1_000, completed);
     }
 
     private static EchoRequest request(String message) {
         return EchoRequest.newBuilder().setMessage(message).build();
     }
+
+    private record Timed<T>(T value, long rpcMicros, long completedAtNanos) { }
 
     private void showError(CommandSender sender, Throwable error) {
         Throwable cause = error instanceof CompletionException && error.getCause() != null

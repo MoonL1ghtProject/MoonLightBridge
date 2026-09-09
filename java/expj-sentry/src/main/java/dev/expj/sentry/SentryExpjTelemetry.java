@@ -4,14 +4,26 @@ import dev.expj.client.ExpjTelemetry;
 import dev.expj.client.ExpjTraceContext;
 import io.sentry.ISpan;
 import io.sentry.Sentry;
+import io.sentry.SentryDate;
 import io.sentry.SentryTraceHeader;
 import io.sentry.SpanStatus;
 import java.util.HexFormat;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
 /** Bridges active Sentry transactions across an EXPJ request without logging payload contents. */
 public final class SentryExpjTelemetry implements ExpjTelemetry {
     private static final HexFormat HEX = HexFormat.of();
+    private static final ThreadPoolExecutor FINISHER = new ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        new ArrayBlockingQueue<>(4_096),
+        Thread.ofPlatform().daemon().name("expj-sentry-finish").factory(),
+        new ThreadPoolExecutor.CallerRunsPolicy());
     private final double traceSampleRate;
     private final boolean logsEnabled;
 
@@ -98,31 +110,45 @@ public final class SentryExpjTelemetry implements ExpjTelemetry {
         @Override
         public void finish(int responseBytes, Throwable error) {
             long durationMicros = (System.nanoTime() - startedNanos) / 1_000;
-            if (span != null) span.setData("expj.response_bytes", responseBytes);
-            if (error == null) {
-                if (span != null) span.finish(SpanStatus.OK);
-                if (logsEnabled) {
-                    Sentry.logger().debug(
-                        "EXPJ request completed; method={} request={} duration_us={} response_bytes={}",
-                        Integer.toUnsignedString(request.methodId()),
-                        Long.toUnsignedString(request.requestId()),
-                        durationMicros,
-                        responseBytes);
-                }
-            } else {
-                if (span != null) {
-                    span.setThrowable(error);
-                    span.finish(error instanceof java.util.concurrent.TimeoutException
-                        ? SpanStatus.DEADLINE_EXCEEDED : SpanStatus.INTERNAL_ERROR);
-                }
-                if (logsEnabled) {
-                    Sentry.logger().warn(
-                        "EXPJ request failed; method={} request={} duration_us={} error={}",
-                        Integer.toUnsignedString(request.methodId()),
-                        Long.toUnsignedString(request.requestId()),
-                        durationMicros,
-                        error.getClass().getSimpleName());
-                }
+            SentryDate completedAt = Sentry.getCurrentScopes().getOptions().getDateProvider().now();
+            FINISHER.execute(() -> finishOffTransportThread(
+                span, request, responseBytes, error, durationMicros, completedAt, logsEnabled));
+        }
+    }
+
+    private static void finishOffTransportThread(
+        ISpan span,
+        RequestInfo request,
+        int responseBytes,
+        Throwable error,
+        long durationMicros,
+        SentryDate completedAt,
+        boolean logsEnabled
+    ) {
+        if (span != null) span.setData("expj.response_bytes", responseBytes);
+        if (error == null) {
+            if (span != null) span.finish(SpanStatus.OK, completedAt);
+            if (logsEnabled) {
+                Sentry.logger().debug(
+                    "EXPJ request completed; method={} request={} duration_us={} response_bytes={}",
+                    Integer.toUnsignedString(request.methodId()),
+                    Long.toUnsignedString(request.requestId()),
+                    durationMicros,
+                    responseBytes);
+            }
+        } else {
+            if (span != null) {
+                span.setThrowable(error);
+                span.finish(error instanceof java.util.concurrent.TimeoutException
+                    ? SpanStatus.DEADLINE_EXCEEDED : SpanStatus.INTERNAL_ERROR, completedAt);
+            }
+            if (logsEnabled) {
+                Sentry.logger().warn(
+                    "EXPJ request failed; method={} request={} duration_us={} error={}",
+                    Integer.toUnsignedString(request.methodId()),
+                    Long.toUnsignedString(request.requestId()),
+                    durationMicros,
+                    error.getClass().getSimpleName());
             }
         }
     }

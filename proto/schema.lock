@@ -1,0 +1,48 @@
+{
+  "format": 1,
+  "messages": {
+    "expj.example.v1.EchoRequest": {
+      "fields": {
+        "1": {
+          "name": "message",
+          "number": 1,
+          "label": 1,
+          "kind": 9,
+          "type_name": "",
+          "oneof_index": null,
+          "proto3_optional": false
+        }
+      },
+      "reserved_ranges": [],
+      "reserved_names": []
+    },
+    "expj.example.v1.EchoResponse": {
+      "fields": {
+        "1": {
+          "name": "message",
+          "number": 1,
+          "label": 1,
+          "kind": 9,
+          "type_name": "",
+          "oneof_index": null,
+          "proto3_optional": false
+        }
+      },
+      "reserved_ranges": [],
+      "reserved_names": []
+    }
+  },
+  "enums": {},
+  "services": {
+    "expj.example.v1.EchoService": {
+      "methods": {
+        "Echo": {
+          "input": ".expj.example.v1.EchoRequest",
+          "output": ".expj.example.v1.EchoResponse",
+          "client_streaming": false,
+          "server_streaming": false
+        }
+      }
+    }
+  }
+}

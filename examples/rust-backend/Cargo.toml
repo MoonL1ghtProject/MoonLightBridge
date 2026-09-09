@@ -1,0 +1,13 @@
+[package]
+name = "rust-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+expj-server = { path = "../../crates/expj-server" }
+expj-sentry = { path = "../../crates/expj-sentry" }
+expj-example-api = { path = "../../crates/expj-example-api" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = "0.3"

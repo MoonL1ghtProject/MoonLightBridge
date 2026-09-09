@@ -1,0 +1,6 @@
+/target/
+/.gradle/
+/.idea/
+/java/**/build/
+*.log
+*.pid

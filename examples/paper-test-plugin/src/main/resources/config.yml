@@ -1,0 +1,3 @@
+# Unix socket is preferable when Paper and Rust share a host/mount.
+# endpoint: "unix:/run/expj/backend.sock"
+endpoint: "tcp://127.0.0.1:38201"

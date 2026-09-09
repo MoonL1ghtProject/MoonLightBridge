@@ -1,0 +1,19 @@
+name: ExpjTestPlugin
+version: '${version}'
+main: dev.expj.examples.paper.ExpjTestPlugin
+description: End-to-end EXPJ Java-to-Rust test plugin
+api-version: '1.21'
+authors: [WillowStudio]
+commands:
+  expjtest:
+    description: Send one typed RPC to the EXPJ Rust backend
+    usage: /expjtest <text>
+    permission: expj.test
+  expjbatch:
+    description: Send a batch of typed RPCs to the EXPJ Rust backend
+    usage: /expjbatch <count> <text>
+    permission: expj.test
+permissions:
+  expj.test:
+    description: Allows use of the EXPJ test commands
+    default: op

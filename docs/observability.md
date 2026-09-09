@@ -32,17 +32,15 @@ service files, and connect normally:
 var backend = ExpjClient.connect("unix:/run/expj/backend.sock");
 ```
 
-Snapshot builds sample traces at 10% so integration testing remains visible
-without instrumenting every RPC. Release builds default to 1%, so an unsampled background machine loop
-does not create a Sentry transaction per RPC. Override either policy with the
-`expj.sentry.trace-sample-rate` system property. The span's 16-byte trace ID,
+Ordinary builds sample 0.1% of successful RPCs. Runtime system properties and
+plugin configuration cannot increase this rate: the framework policy is
+embedded when the library/plugin is built. The span's 16-byte trace ID,
 8-byte parent span ID, and sampling bit are propagated to Rust only for sampled
 traces. Unsampled requests keep the normal wire path.
 
 Unexpected connection termination is captured once as a Java Sentry error;
-ordinary client shutdown is only a breadcrumb. Rust `INTERNAL` failures are
-emitted as `ERROR` records and are captured by the configured
-`sentry_tracing` layer, avoiding one duplicate event per pending Java request.
+ordinary client shutdown is only a breadcrumb. Every RPC failure is captured
+as an error even when its trace was not sampled. Rust follows the same rule.
 
 ## Rust server
 
@@ -81,10 +79,48 @@ tracing_subscriber::registry()
     .init();
 ```
 
-`SentryExpjTelemetry` emits payload-free request completion/failure logs
-directly. These logs do not depend on the global subscriber, the presence of a
-propagated trace context, or the trace sampling decision. The subscriber layer
-handles additional framework `WARN` records and captures `ERROR` records.
+`SentryExpjTelemetry` emits payload-free request errors directly. Routine
+completion logs are compiled out by default. The subscriber layer handles
+additional framework `WARN`/`ERROR` records as logs without creating a second
+issue for an RPC error.
+
+## Build policy
+
+The default build is the production policy and requires no flags:
+
+- successful traces: 0.1%;
+- successful request logs: disabled;
+- Java CPU profiling: disabled;
+- Sentry SDK debug output: disabled;
+- errors: 100% on Java and Rust.
+
+For a controlled diagnostic build, framework maintainers can embed a different
+Java policy with internal Gradle properties:
+
+```bash
+./gradlew \
+  -Pexpj.internal.telemetry.traceSampleRate=1.0 \
+  -Pexpj.internal.telemetry.profileSampleRate=1.0 \
+  -Pexpj.internal.telemetry.successLogs=true \
+  -Pexpj.internal.telemetry.debug=true \
+  :examples:paper-test-plugin:shadowJar
+```
+
+These values are copied into `META-INF/expj/telemetry.properties` inside the
+artifact. They are intentionally not part of the public Java API. Rebuild the
+plugin without the flags before shipping it.
+
+The Rust adapter inherits Java's propagated trace sampling decision. Its
+routine success logs can be enabled only while compiling a diagnostic backend:
+
+```bash
+EXPJ_INTERNAL_TELEMETRY_SUCCESS_LOGS=true cargo build --release
+```
+
+`EXPJ_INTERNAL_TELEMETRY_ENVIRONMENT` and
+`EXPJ_INTERNAL_TELEMETRY_RELEASE` may likewise be embedded by the framework's
+release pipeline. Runtime environment variables do not change an already built
+binary.
 
 ## Metrics and profiling
 
@@ -93,22 +129,13 @@ counts, failures, byte totals, total latency, and maximum latency. They use
 adders/relaxed atomics and do not perform network I/O.
 
 The Java adapter includes Sentry's async-profiler integration on Linux and
-macOS. Snapshot builds profile 1% of traces by default; release builds leave
-profiling disabled to avoid permanent CPU overhead. Sentry transaction
+macOS. Profiling is disabled in ordinary artifacts to avoid permanent CPU
+overhead and can be enabled only in a diagnostic build. Sentry transaction
 completion and log submission run on a dedicated bounded telemetry executor,
-not the EXPJ response-reader thread. Set
-`-Dexpj.sentry.profile-sample-rate=0.01` (range `0.0` to `1.0`) to opt a
-production process into short profiling sessions. Profiles use trace lifecycle,
-so they are associated with EXPJ RPC traces in Sentry. Windows is not supported
-by Sentry's async-profiler integration.
-
-Snapshot builds also send payload-free request completion logs. Release builds
-disable routine Java logs by default; use `-Dexpj.sentry.logs=true` when
-diagnosing a deployment. Payloads are excluded in both modes. Logging and trace
-sampling are independent: setting `-Dexpj.sentry.trace-sample-rate=0` no longer
-disables Logs. The Sentry transport queue is bounded at 4096 items for snapshot
-burst tests and 256 for sampled release telemetry; it is independent from
-EXPJ's RPC backpressure queues.
+not the EXPJ response-reader thread. Profiles use trace lifecycle, so they are
+associated with EXPJ RPC traces in Sentry. Windows is not supported by Sentry's
+async-profiler integration. The Sentry transport queue is bounded at 256 items;
+it is independent from EXPJ's RPC backpressure queues.
 
 The Rust Sentry SDK supports distributed tracing but has no native Sentry CPU
 profiler. Use `perf`, `cargo-flamegraph`, or a Rust-compatible profiler for the
@@ -128,10 +155,6 @@ Use JFR or async-profiler for Java allocation/CPU profiles and Linux `perf` plus
 Sentry tracing disabled first, then repeat at the intended sample rate to
 measure observability overhead.
 
-Recommended starting policy:
-
-- production traces: 0.1-1%;
-- errors: 100%, with rate limits in Sentry;
-- `TRACE` wire logs: off in production;
-- payload capture and default PII: always off;
-- short profiling sessions on a replica or during controlled load tests.
+The checked-in defaults are the recommended production policy. Use a temporary
+100% trace/profile build only during a controlled load test, and use JFR/Spark
+or `perf` for longer profiling sessions.

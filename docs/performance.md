@@ -67,13 +67,27 @@ Measured on the development machine with a release Rust backend, JDK 24, a
 | TCP loopback | 75.3 µs | 100.5 µs | 125.7 µs | 96,674 req/s |
 | Unix socket | 53.7 µs | 76.9 µs | 105.8 µs | 148,763 req/s |
 
-After adding opt-in observability, the same benchmark with telemetry disabled
-measured TCP at 71.4/94.6/111.7 µs and 93,797 req/s, and Unix sockets at
-51.5/68.3/77.5 µs and 146,476 req/s. The small throughput difference is within
-run-to-run noise; there is no trace metadata or Sentry work on this path.
+The latest clean transport run measured TCP at 71.9/96.6/115.3 µs and 95,910
+req/s. This benchmark uses `expj-client` without the Sentry provider, so it is a
+transport baseline rather than a production-plugin simulation.
 
 These are a regression baseline, not portable guarantees. Run
 `./scripts/benchmark.sh` on the production CPU/kernel/JVM before tuning presets.
+
+## Leaf plugin load test
+
+`examples/paper-load-test-plugin` measures the shaded library as it is used by a
+real plugin. On Leaf 1.21.11, JDK 24, loopback TCP, a release Rust backend, and
+the default embedded telemetry policy, a one-million-request run at concurrency
+128 produced 88,819-100,278 req/s across repeated runs, p50 1.24-1.41 ms and p99
+2.01-2.31 ms, with zero failures. A 20,000-request sequential run measured p50
+78.1 µs and p99 174.4 µs.
+
+JFR identified protobuf encoding/decoding and `CompletableFuture` lifecycle as
+the main Java allocation sources. Linux `perf` showed Tokio scheduling,
+per-request semaphore handling, and the cancellation table on Rust. These are
+currently required features. A Sentry scope lookup on every unsampled Java RPC
+was not required and was moved behind the 0.1% sampling decision.
 
 ## Remaining allocation work
 

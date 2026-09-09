@@ -1,0 +1,16 @@
+name: ExpjLoadTestPlugin
+version: '${version}'
+main: dev.expj.examples.paper.load.ExpjLoadTestPlugin
+description: Controlled EXPJ Java-to-Rust load generator
+api-version: '1.21'
+folia-supported: true
+authors: [WillowStudio]
+commands:
+  expjload:
+    description: Run a bounded EXPJ RPC load test
+    usage: /expjload [requests] [concurrency] [payload-bytes]
+    permission: expj.load
+permissions:
+  expj.load:
+    description: Allows EXPJ load tests
+    default: op

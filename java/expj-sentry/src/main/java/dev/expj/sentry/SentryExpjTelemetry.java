@@ -28,7 +28,7 @@ public final class SentryExpjTelemetry implements ExpjTelemetry {
     private final boolean logsEnabled;
 
     public SentryExpjTelemetry() {
-        this(0.01, false);
+        this(0.001, false);
     }
 
     public SentryExpjTelemetry(double traceSampleRate) {
@@ -69,17 +69,24 @@ public final class SentryExpjTelemetry implements ExpjTelemetry {
 
     @Override
     public RequestObservation startRequest(RequestInfo request) {
-        ISpan parent = Sentry.getSpan();
+        boolean sampled = traceSampleRate >= 1
+            || (traceSampleRate > 0
+                && ThreadLocalRandom.current().nextDouble() < traceSampleRate);
+        // Looking up the current Sentry scope is substantially more expensive
+        // than EXPJ's sampling decision. Do it only for requests selected by
+        // the embedded framework policy.
+        ISpan parent = sampled ? Sentry.getSpan() : null;
         ISpan span = null;
         if (parent != null && !parent.isNoOp()) {
             span = parent.startChild(
                 "rpc.client", "EXPJ method " + Integer.toUnsignedString(request.methodId()));
-        } else if (traceSampleRate > 0
-            && (traceSampleRate >= 1 || ThreadLocalRandom.current().nextDouble() < traceSampleRate)) {
+        } else if (sampled) {
             span = Sentry.startTransaction(
                 "EXPJ method " + Integer.toUnsignedString(request.methodId()), "rpc.client");
         }
-        if (span == null && !logsEnabled) return NoTrace.INSTANCE;
+        if (span == null && !logsEnabled) {
+            return new ErrorOnlyObservation(request, System.nanoTime());
+        }
 
         ExpjTraceContext context = null;
         if (span != null) {
@@ -150,12 +157,30 @@ public final class SentryExpjTelemetry implements ExpjTelemetry {
                     durationMicros,
                     error.getClass().getSimpleName());
             }
+            captureError(error, request, durationMicros);
         }
     }
 
-    private enum NoTrace implements RequestObservation {
-        INSTANCE;
-        @Override public ExpjTraceContext traceContext() { return null; }
-        @Override public void finish(int responseBytes, Throwable error) { }
+    private static void captureError(Throwable error, RequestInfo request, long durationMicros) {
+        Sentry.captureException(error, scope -> {
+            scope.setTag("rpc.system", "expj");
+            scope.setTag("rpc.method_id", Integer.toUnsignedString(request.methodId()));
+            scope.setExtra("expj.request_id", Long.toUnsignedString(request.requestId()));
+            scope.setExtra("expj.request_bytes", Integer.toString(request.requestBytes()));
+            scope.setExtra("expj.duration_us", Long.toString(durationMicros));
+        });
+    }
+
+    private record ErrorOnlyObservation(RequestInfo request, long startedNanos)
+        implements RequestObservation {
+        @Override
+        public ExpjTraceContext traceContext() { return null; }
+
+        @Override
+        public void finish(int responseBytes, Throwable error) {
+            if (error == null) return;
+            long durationMicros = (System.nanoTime() - startedNanos) / 1_000;
+            FINISHER.execute(() -> captureError(error, request, durationMicros));
+        }
     }
 }

@@ -74,6 +74,9 @@ Paper/Folia integration is documented in
 An installable Paper example and matching Rust backend live in
 [`examples/paper-test-plugin`](examples/paper-test-plugin). The shaded plugin is
 compiled to Java 21 bytecode and needs no separate EXPJ server plugin.
+The separate [`examples/paper-load-test-plugin`](examples/paper-load-test-plugin)
+drives bounded concurrent RPC load and reports throughput plus p50/p95/p99/max
+latency without scheduling one Minecraft callback per request.
 
 ## Planned milestones
 

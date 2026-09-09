@@ -10,13 +10,10 @@ const FRAMEWORK_DSN: &str = "https://62dd4dd1aa9a802c30444e9423cb0faa@o451124822
 
 /// Initializes the EXPJ-owned Sentry client. Keep the returned guard alive for the process lifetime.
 pub fn init_framework_sentry() -> sentry::ClientInitGuard {
-    let environment = if cfg!(debug_assertions) {
-        "development"
-    } else {
-        "production"
-    };
+    let environment = option_env!("EXPJ_INTERNAL_TELEMETRY_ENVIRONMENT").unwrap_or("production");
+    let release = option_env!("EXPJ_INTERNAL_TELEMETRY_RELEASE").unwrap_or("expj@0.1.0");
     let options = sentry::ClientOptions::new()
-        .release("expj@0.1.0-SNAPSHOT")
+        .release(release)
         .environment(environment)
         .traces_sample_rate(1.0)
         .send_default_pii(false)
@@ -25,15 +22,15 @@ pub fn init_framework_sentry() -> sentry::ClientInitGuard {
 }
 
 /// Consistent filtering for non-request framework events. Request completion
-/// logs are emitted directly by [`SentryExpjTelemetry`] so they do not depend
-/// on an application's tracing subscriber or trace sampling rate.
+/// logs and request errors are emitted directly by [`SentryExpjTelemetry`] so
+/// they do not depend on an application's subscriber or trace sampling rate.
 pub fn framework_event_filter(metadata: &tracing::Metadata<'_>) -> sentry_tracing::EventFilter {
     use sentry_tracing::EventFilter;
     if !metadata.target().starts_with("expj") {
         EventFilter::Ignore
-    } else if *metadata.level() == tracing::Level::ERROR {
-        EventFilter::Event | EventFilter::Log
-    } else if *metadata.level() == tracing::Level::WARN {
+    } else if *metadata.level() == tracing::Level::ERROR
+        || *metadata.level() == tracing::Level::WARN
+    {
         EventFilter::Log
     } else {
         EventFilter::Ignore
@@ -99,15 +96,17 @@ impl SentryObservation {
                     transaction.set_status(SpanStatus::Ok);
                     transaction.finish();
                 }
-                sentry::logger_debug!(
-                    rpc.system = "expj",
-                    rpc.method_id = self.info.method_id as u64,
-                    expj.request_id = self.info.request_id,
-                    expj.request_bytes = self.info.request_bytes as u64,
-                    expj.response_bytes = response_bytes as u64,
-                    expj.duration_us = duration_micros,
-                    "EXPJ request completed"
-                );
+                if success_logs_enabled() {
+                    sentry::logger_debug!(
+                        rpc.system = "expj",
+                        rpc.method_id = self.info.method_id as u64,
+                        expj.request_id = self.info.request_id,
+                        expj.request_bytes = self.info.request_bytes as u64,
+                        expj.response_bytes = response_bytes as u64,
+                        expj.duration_us = duration_micros,
+                        "EXPJ request completed"
+                    );
+                }
             }
             RequestOutcome::Error { code } => {
                 if let Some(transaction) = transaction {
@@ -122,18 +121,29 @@ impl SentryObservation {
                     });
                     transaction.finish();
                 }
-                sentry::logger_warn!(
-                    rpc.system = "expj",
-                    rpc.method_id = self.info.method_id as u64,
-                    expj.request_id = self.info.request_id,
-                    expj.request_bytes = self.info.request_bytes as u64,
-                    expj.duration_us = duration_micros,
-                    expj.error_code = format!("{code:?}"),
-                    "EXPJ request failed"
+                sentry::with_scope(
+                    |scope| {
+                        scope.set_tag("rpc.system", "expj");
+                        scope.set_tag("rpc.method_id", self.info.method_id.to_string());
+                        scope.set_extra("expj.request_id", self.info.request_id.into());
+                        scope.set_extra(
+                            "expj.request_bytes",
+                            (self.info.request_bytes as u64).into(),
+                        );
+                        scope.set_extra("expj.duration_us", duration_micros.into());
+                        scope.set_extra("expj.error_code", format!("{code:?}").into());
+                    },
+                    || {
+                        sentry::capture_message("EXPJ RPC request failed", sentry::Level::Error);
+                    },
                 );
             }
         }
     }
+}
+
+fn success_logs_enabled() -> bool {
+    option_env!("EXPJ_INTERNAL_TELEMETRY_SUCCESS_LOGS") == Some("true")
 }
 
 impl Drop for SentryObservation {

@@ -11,6 +11,13 @@ public final class AutomaticTelemetryMain {
         if (automatic != ExpjTelemetry.automatic()) {
             throw new AssertionError("automatic telemetry must initialize exactly once");
         }
+        // Logs must remain active even when trace sampling rejects every request.
+        var logOnly = new SentryExpjTelemetry(0.0, true);
+        var observation = logOnly.startRequest(new ExpjTelemetry.RequestInfo(7, 11, 13));
+        if (observation == null || observation.traceContext() != null) {
+            throw new AssertionError("log-only observations must not depend on trace sampling");
+        }
+        observation.finish(17, null);
         System.out.println("EXPJ Java Sentry provider discovered automatically");
     }
 }

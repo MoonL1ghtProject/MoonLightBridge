@@ -8,3 +8,4 @@ license.workspace = true
 expj-server = { path = "../expj-server" }
 sentry.workspace = true
 sentry-tracing.workspace = true
+tracing.workspace = true

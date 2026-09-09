@@ -70,9 +70,21 @@ let router = Router::builder()
 
 The `expj-sentry` crate re-exports `sentry_tracing`; applications own global
 subscriber setup so EXPJ never replaces an existing logger. Configure the
-official layer with `sentry_tracing::layer().event_filter(...)`. EXPJ emits
-payload-free `TRACE` completion records, `DEBUG` expected failures, `WARN`
-connection/TLS failures, and `ERROR` only for internal handler failures.
+official layer with the shared filter so every backend uses the same policy:
+
+```rust
+tracing_subscriber::registry()
+    .with(
+        expj_sentry::sentry_tracing::layer()
+            .event_filter(expj_sentry::framework_event_filter),
+    )
+    .init();
+```
+
+`SentryExpjTelemetry` emits payload-free request completion/failure logs
+directly. These logs do not depend on the global subscriber, the presence of a
+propagated trace context, or the trace sampling decision. The subscriber layer
+handles additional framework `WARN` records and captures `ERROR` records.
 
 ## Metrics and profiling
 
@@ -89,11 +101,12 @@ so they are associated with EXPJ RPC traces in Sentry. Windows is not supported
 by Sentry's async-profiler integration.
 
 Snapshot builds also send payload-free request completion logs. Release builds
-disable routine logs by default; use `-Dexpj.sentry.logs=true` when diagnosing a
-deployment. Payloads are excluded in both modes. The test Rust backend maps
-EXPJ's `TRACE` completion records to Sentry Logs. The Sentry transport queue is
-bounded at 4096 items for snapshot burst tests and 256 for sampled release
-telemetry; it is independent from EXPJ's RPC backpressure queues.
+disable routine Java logs by default; use `-Dexpj.sentry.logs=true` when
+diagnosing a deployment. Payloads are excluded in both modes. Logging and trace
+sampling are independent: setting `-Dexpj.sentry.trace-sample-rate=0` no longer
+disables Logs. The Sentry transport queue is bounded at 4096 items for snapshot
+burst tests and 256 for sampled release telemetry; it is independent from
+EXPJ's RPC backpressure queues.
 
 The Rust Sentry SDK supports distributed tracing but has no native Sentry CPU
 profiler. Use `perf`, `cargo-flamegraph`, or a Rust-compatible profiler for the

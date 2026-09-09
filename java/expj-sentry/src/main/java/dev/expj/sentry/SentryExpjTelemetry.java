@@ -40,7 +40,17 @@ public final class SentryExpjTelemetry implements ExpjTelemetry {
     @Override
     public void connectionClosed(Throwable cause) {
         Sentry.addBreadcrumb("EXPJ connection closed: " + cause.getClass().getSimpleName());
-        if (!"EXPJ client closed".equals(cause.getMessage())) {
+        boolean expected = "EXPJ client closed".equals(cause.getMessage());
+        if (logsEnabled) {
+            if (expected) {
+                Sentry.logger().info("EXPJ connection closed");
+            } else {
+                Sentry.logger().warn(
+                    "EXPJ connection closed unexpectedly; error={}",
+                    cause.getClass().getSimpleName());
+            }
+        }
+        if (!expected) {
             Sentry.captureException(cause);
         }
     }
@@ -48,30 +58,32 @@ public final class SentryExpjTelemetry implements ExpjTelemetry {
     @Override
     public RequestObservation startRequest(RequestInfo request) {
         ISpan parent = Sentry.getSpan();
-        ISpan span;
+        ISpan span = null;
         if (parent != null && !parent.isNoOp()) {
             span = parent.startChild(
                 "rpc.client", "EXPJ method " + Integer.toUnsignedString(request.methodId()));
-        } else {
-            if (traceSampleRate == 0
-                || (traceSampleRate < 1 && ThreadLocalRandom.current().nextDouble() >= traceSampleRate)) {
-                return NoTrace.INSTANCE;
-            }
+        } else if (traceSampleRate > 0
+            && (traceSampleRate >= 1 || ThreadLocalRandom.current().nextDouble() < traceSampleRate)) {
             span = Sentry.startTransaction(
                 "EXPJ method " + Integer.toUnsignedString(request.methodId()), "rpc.client");
         }
-        span.setData("rpc.system", "expj");
-        span.setData("rpc.method_id", Integer.toUnsignedString(request.methodId()));
-        span.setData("expj.request_id", Long.toUnsignedString(request.requestId()));
-        span.setData("expj.request_bytes", request.requestBytes());
-        SentryTraceHeader header = span.toSentryTrace();
-        ExpjTraceContext context = Boolean.TRUE.equals(header.isSampled())
-            ? new ExpjTraceContext(
-                HEX.parseHex(header.getTraceId().toString()),
-                HEX.parseHex(header.getSpanId().toString()),
-                true
-            )
-            : null;
+        if (span == null && !logsEnabled) return NoTrace.INSTANCE;
+
+        ExpjTraceContext context = null;
+        if (span != null) {
+            span.setData("rpc.system", "expj");
+            span.setData("rpc.method_id", Integer.toUnsignedString(request.methodId()));
+            span.setData("expj.request_id", Long.toUnsignedString(request.requestId()));
+            span.setData("expj.request_bytes", request.requestBytes());
+            SentryTraceHeader header = span.toSentryTrace();
+            if (Boolean.TRUE.equals(header.isSampled())) {
+                context = new ExpjTraceContext(
+                    HEX.parseHex(header.getTraceId().toString()),
+                    HEX.parseHex(header.getSpanId().toString()),
+                    true
+                );
+            }
+        }
         return new SentryObservation(span, context, request, System.nanoTime(), logsEnabled);
     }
 
@@ -86,9 +98,9 @@ public final class SentryExpjTelemetry implements ExpjTelemetry {
         @Override
         public void finish(int responseBytes, Throwable error) {
             long durationMicros = (System.nanoTime() - startedNanos) / 1_000;
-            span.setData("expj.response_bytes", responseBytes);
+            if (span != null) span.setData("expj.response_bytes", responseBytes);
             if (error == null) {
-                span.finish(SpanStatus.OK);
+                if (span != null) span.finish(SpanStatus.OK);
                 if (logsEnabled) {
                     Sentry.logger().debug(
                         "EXPJ request completed; method={} request={} duration_us={} response_bytes={}",
@@ -98,9 +110,11 @@ public final class SentryExpjTelemetry implements ExpjTelemetry {
                         responseBytes);
                 }
             } else {
-                span.setThrowable(error);
-                span.finish(error instanceof java.util.concurrent.TimeoutException
-                    ? SpanStatus.DEADLINE_EXCEEDED : SpanStatus.INTERNAL_ERROR);
+                if (span != null) {
+                    span.setThrowable(error);
+                    span.finish(error instanceof java.util.concurrent.TimeoutException
+                        ? SpanStatus.DEADLINE_EXCEEDED : SpanStatus.INTERNAL_ERROR);
+                }
                 if (logsEnabled) {
                     Sentry.logger().warn(
                         "EXPJ request failed; method={} request={} duration_us={} error={}",

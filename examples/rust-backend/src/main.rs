@@ -29,18 +29,7 @@ async fn main() -> std::io::Result<()> {
     let _sentry_guard = expj_sentry::init_framework_sentry();
     tracing_subscriber::registry()
         .with(
-            expj_sentry::sentry_tracing::layer().event_filter(|metadata| {
-                use expj_sentry::sentry_tracing::EventFilter;
-                if !metadata.target().starts_with("expj") {
-                    EventFilter::Ignore
-                } else if *metadata.level() == tracing::Level::ERROR {
-                    EventFilter::Event | EventFilter::Log
-                } else if *metadata.level() == tracing::Level::WARN {
-                    EventFilter::Log
-                } else {
-                    EventFilter::Ignore
-                }
-            }),
+            expj_sentry::sentry_tracing::layer().event_filter(expj_sentry::framework_event_filter),
         )
         .init();
     let metrics = ExpjMetrics::default();

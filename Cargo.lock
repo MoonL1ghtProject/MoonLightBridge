@@ -270,6 +270,7 @@ dependencies = [
  "expj-server",
  "sentry",
  "sentry-tracing",
+ "tracing",
 ]
 
 [[package]]

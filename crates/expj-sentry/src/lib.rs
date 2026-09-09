@@ -2,6 +2,7 @@
 
 use expj_server::{RequestInfo, RequestObservation, RequestOutcome, Telemetry};
 use sentry::{Transaction, TransactionContext, protocol::SpanStatus};
+use std::time::Instant;
 
 pub use sentry_tracing;
 
@@ -23,31 +24,51 @@ pub fn init_framework_sentry() -> sentry::ClientInitGuard {
     sentry::init((FRAMEWORK_DSN, options))
 }
 
+/// Consistent filtering for non-request framework events. Request completion
+/// logs are emitted directly by [`SentryExpjTelemetry`] so they do not depend
+/// on an application's tracing subscriber or trace sampling rate.
+pub fn framework_event_filter(metadata: &tracing::Metadata<'_>) -> sentry_tracing::EventFilter {
+    use sentry_tracing::EventFilter;
+    if !metadata.target().starts_with("expj") {
+        EventFilter::Ignore
+    } else if *metadata.level() == tracing::Level::ERROR {
+        EventFilter::Event | EventFilter::Log
+    } else if *metadata.level() == tracing::Level::WARN {
+        EventFilter::Log
+    } else {
+        EventFilter::Ignore
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct SentryExpjTelemetry;
 
 impl Telemetry for SentryExpjTelemetry {
     fn start_request(&self, info: RequestInfo) -> Option<Box<dyn RequestObservation>> {
-        let trace = info.trace_context?;
-        let trace_header = format!(
-            "{}-{}-{}",
-            hex(&trace.trace_id),
-            hex(&trace.parent_span_id),
-            if trace.sampled { '1' } else { '0' }
-        );
-        let name = format!("EXPJ method {}", info.method_id);
-        let context = TransactionContext::continue_from_headers(
-            &name,
-            "rpc.server",
-            [("sentry-trace", trace_header.as_str())],
-        );
-        let transaction = sentry::start_transaction(context);
-        transaction.set_data("rpc.system", "expj".into());
-        transaction.set_data("rpc.method_id", info.method_id.into());
-        transaction.set_data("expj.request_id", info.request_id.into());
-        transaction.set_data("expj.request_bytes", (info.request_bytes as u64).into());
+        let transaction = info.trace_context.map(|trace| {
+            let trace_header = format!(
+                "{}-{}-{}",
+                hex(&trace.trace_id),
+                hex(&trace.parent_span_id),
+                if trace.sampled { '1' } else { '0' }
+            );
+            let name = format!("EXPJ method {}", info.method_id);
+            let context = TransactionContext::continue_from_headers(
+                &name,
+                "rpc.server",
+                [("sentry-trace", trace_header.as_str())],
+            );
+            let transaction = sentry::start_transaction(context);
+            transaction.set_data("rpc.system", "expj".into());
+            transaction.set_data("rpc.method_id", info.method_id.into());
+            transaction.set_data("expj.request_id", info.request_id.into());
+            transaction.set_data("expj.request_bytes", (info.request_bytes as u64).into());
+            transaction
+        });
         Some(Box::new(SentryObservation {
-            transaction: Some(transaction),
+            transaction,
+            info,
+            started: Instant::now(),
             finished: false,
         }))
     }
@@ -55,6 +76,8 @@ impl Telemetry for SentryExpjTelemetry {
 
 struct SentryObservation {
     transaction: Option<Transaction>,
+    info: RequestInfo,
+    started: Instant,
     finished: bool,
 }
 
@@ -67,27 +90,49 @@ impl RequestObservation for SentryObservation {
 
 impl SentryObservation {
     fn record(&mut self, outcome: RequestOutcome) {
-        let Some(transaction) = self.transaction.take() else {
-            return;
-        };
+        let transaction = self.transaction.take();
+        let duration_micros = self.started.elapsed().as_micros() as u64;
         match outcome {
             RequestOutcome::Success { response_bytes } => {
-                transaction.set_data("expj.response_bytes", (response_bytes as u64).into());
-                transaction.set_status(SpanStatus::Ok);
+                if let Some(transaction) = transaction {
+                    transaction.set_data("expj.response_bytes", (response_bytes as u64).into());
+                    transaction.set_status(SpanStatus::Ok);
+                    transaction.finish();
+                }
+                sentry::logger_debug!(
+                    rpc.system = "expj",
+                    rpc.method_id = self.info.method_id as u64,
+                    expj.request_id = self.info.request_id,
+                    expj.request_bytes = self.info.request_bytes as u64,
+                    expj.response_bytes = response_bytes as u64,
+                    expj.duration_us = duration_micros,
+                    "EXPJ request completed"
+                );
             }
             RequestOutcome::Error { code } => {
-                transaction.set_data("expj.error_code", format!("{code:?}").into());
-                transaction.set_status(match code {
-                    expj_server::ErrorCode::DeadlineExceeded => SpanStatus::DeadlineExceeded,
-                    expj_server::ErrorCode::Cancelled => SpanStatus::Cancelled,
-                    expj_server::ErrorCode::UnknownMethod => SpanStatus::Unimplemented,
-                    expj_server::ErrorCode::InvalidRequest => SpanStatus::InvalidArgument,
-                    expj_server::ErrorCode::ResourceExhausted => SpanStatus::ResourceExhausted,
-                    expj_server::ErrorCode::Internal => SpanStatus::InternalError,
-                });
+                if let Some(transaction) = transaction {
+                    transaction.set_data("expj.error_code", format!("{code:?}").into());
+                    transaction.set_status(match code {
+                        expj_server::ErrorCode::DeadlineExceeded => SpanStatus::DeadlineExceeded,
+                        expj_server::ErrorCode::Cancelled => SpanStatus::Cancelled,
+                        expj_server::ErrorCode::UnknownMethod => SpanStatus::Unimplemented,
+                        expj_server::ErrorCode::InvalidRequest => SpanStatus::InvalidArgument,
+                        expj_server::ErrorCode::ResourceExhausted => SpanStatus::ResourceExhausted,
+                        expj_server::ErrorCode::Internal => SpanStatus::InternalError,
+                    });
+                    transaction.finish();
+                }
+                sentry::logger_warn!(
+                    rpc.system = "expj",
+                    rpc.method_id = self.info.method_id as u64,
+                    expj.request_id = self.info.request_id,
+                    expj.request_bytes = self.info.request_bytes as u64,
+                    expj.duration_us = duration_micros,
+                    expj.error_code = format!("{code:?}"),
+                    "EXPJ request failed"
+                );
             }
         }
-        transaction.finish();
     }
 }
 
@@ -118,5 +163,19 @@ mod tests {
     #[test]
     fn trace_ids_are_lower_hex() {
         assert_eq!(hex(&[0x00, 0xab, 0xff]), "00abff");
+    }
+
+    #[test]
+    fn requests_without_trace_context_still_create_log_observations() {
+        let observation = SentryExpjTelemetry.start_request(RequestInfo {
+            method_id: 7,
+            request_id: 11,
+            request_bytes: 13,
+            trace_context: None,
+        });
+        assert!(observation.is_some());
+        observation
+            .unwrap()
+            .finish(RequestOutcome::Success { response_bytes: 17 });
     }
 }

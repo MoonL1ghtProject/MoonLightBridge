@@ -3,6 +3,13 @@
 MoonLightBridge follows [Semantic Versioning](https://semver.org/). This file records
 user-visible framework changes; low-level refactors stay in the Git history.
 
+## 0.1.1 — Rust documentation
+
+- Expanded crates.io and docs.rs documentation for the server, code generator, and wire protocol.
+- Added checked examples for transports, routing, schema locks, errors, metrics, events, and safe mutations.
+- Made the framework-owned Rust Sentry adapter private and ended its separate crates.io publication.
+- Separated optional Maven Central publishing from crates.io, GitHub Packages, and GitHub Releases.
+
 ## 0.1.0 — first public release
 
 - Added multiplexed Java-to-Rust RPC over TCP, Unix sockets and mutual TLS.

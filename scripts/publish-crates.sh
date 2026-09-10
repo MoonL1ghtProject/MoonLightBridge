@@ -40,4 +40,3 @@ publish_crate() {
 publish_crate moonlight-bridge-protocol
 publish_crate moonlight-bridge-codegen
 publish_crate moonlight-bridge-server
-publish_crate moonlight-bridge-sentry

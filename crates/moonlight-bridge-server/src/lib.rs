@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 pub use moonlight_bridge_protocol::ErrorCode;
 use moonlight_bridge_protocol::{
     DEFAULT_MAX_BODY_LEN, DEFAULT_MAX_IN_FLIGHT, FLAG_HAS_DEADLINE, FLAG_HAS_TRACE_CONTEXT, Frame,

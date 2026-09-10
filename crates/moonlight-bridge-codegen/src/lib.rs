@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use prost::Message;
 use prost_types::{FileDescriptorProto, FileDescriptorSet, MethodDescriptorProto};
 use std::{

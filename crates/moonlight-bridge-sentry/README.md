@@ -1,16 +1,11 @@
-# moonlight-bridge-sentry
+# moonlight-bridge-sentry (internal)
 
-Framework-owned Sentry telemetry for MoonLightBridge Rust backends. It connects propagated
-Java trace context to Rust request spans, reports backend failures, and deliberately avoids
-capturing request payloads.
+This crate is an implementation detail of official MoonLightBridge builds. It owns the
+framework's Rust telemetry policy and is not a public integration API for plugins or backends.
 
-```rust
-let _guard = moonlight_bridge_sentry::init_framework_sentry();
-```
+Do not add it to application dependencies and do not initialize it from plugin code. Public
+backend observability hooks live in `moonlight-bridge-server`; framework-owned Sentry routing,
+sampling and credentials remain controlled by MoonLightProject builds.
 
-Add `SentryMoonLightTelemetry` to the server's `TelemetryChain` when distributed tracing
-is wanted. Sampling and debug behavior follow the framework's build/runtime telemetry
-policy; application code does not need to own the framework DSN.
-
-See the [observability guide](https://github.com/MoonL1ghtProject/MoonLightBridge/blob/main/docs/observability.md)
-for privacy and sampling details. Licensed under MIT OR Apache-2.0.
+Separate crates.io publication ended after `0.1.0`. The crate remains in the source workspace so
+official binaries can be built and tested reproducibly.

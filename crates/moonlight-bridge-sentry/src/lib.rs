@@ -1,4 +1,7 @@
-//! Optional Sentry adapter for MoonLightBridge. Payload contents are never recorded.
+//! Internal Sentry adapter for official MoonLightBridge builds.
+//!
+//! This crate is not a public backend integration surface and is no longer published separately.
+//! Payload contents are never recorded.
 
 use moonlight_bridge_server::{RequestInfo, RequestObservation, RequestOutcome, Telemetry};
 use sentry::{Transaction, TransactionContext, protocol::SpanStatus};
@@ -13,7 +16,7 @@ pub fn init_framework_sentry() -> sentry::ClientInitGuard {
     let environment =
         option_env!("MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_ENVIRONMENT").unwrap_or("production");
     let release = option_env!("MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_RELEASE")
-        .unwrap_or("moonlight-bridge@0.1.0");
+        .unwrap_or("moonlight-bridge@0.1.1");
     let trace_sample_rate = option_env!("MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_TRACE_SAMPLE_RATE")
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| (0.0..=1.0).contains(value))

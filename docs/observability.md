@@ -45,45 +45,14 @@ as an error even when its trace was not sampled. Rust follows the same rule.
 
 ## Rust server
 
-The Rust runtime calls `init_framework_sentry()` internally and installs a
-target-filtered `tracing` layer. Only MoonLightBridge crate targets are accepted;
-unrelated application logs are ignored. The server composes the adapter with
-local counters:
+Official backend builds attach the framework-owned Sentry adapter internally. It is not a public
+crate or an application integration API. Plugin/backend developers do not add it as a dependency,
+initialize our Sentry client, supply our DSN, or control the framework sampling policy.
 
-```rust
-use moonlight_bridge_sentry::SentryMoonLightTelemetry;
-use moonlight_bridge_server::{MoonLightMetrics, Router, Telemetry, TelemetryChain};
-use std::sync::Arc;
-
-let metrics = MoonLightMetrics::default();
-let telemetry = TelemetryChain::new([
-    Arc::new(metrics.clone()) as Arc<dyn Telemetry>,
-    Arc::new(SentryMoonLightTelemetry) as Arc<dyn Telemetry>,
-]);
-
-let router = Router::builder()
-    .telemetry(Arc::new(telemetry))
-    .route(1, |body| async move { Ok(body) })
-    .build();
-```
-
-The `moonlight-bridge-sentry` crate re-exports `sentry_tracing`; applications own global
-subscriber setup so MoonLightBridge never replaces an existing logger. Configure the
-official layer with the shared filter so every backend uses the same policy:
-
-```rust
-tracing_subscriber::registry()
-    .with(
-        moonlight_bridge_sentry::sentry_tracing::layer()
-            .event_filter(moonlight_bridge_sentry::framework_event_filter),
-    )
-    .init();
-```
-
-`SentryMoonLightTelemetry` emits payload-free request errors directly. Routine
-completion logs are compiled out by default. The subscriber layer handles
-additional framework `WARN`/`ERROR` records as logs without creating a second
-issue for an RPC error.
+The public Rust API instead exposes vendor-neutral `Telemetry`, `RequestObservation`, and
+`MoonLightMetrics` hooks. Applications can use them for local metrics or for their own independently
+configured observability stack. Doing so neither grants access to nor changes the framework's
+Sentry project.
 
 ## Build policy
 
@@ -95,42 +64,10 @@ The default build is the production policy and requires no flags:
 - Sentry SDK debug output: disabled;
 - errors: 100% on Java and Rust.
 
-For a controlled diagnostic build, framework maintainers can embed a different
-Java policy with internal Gradle properties:
-
-```bash
-./gradlew \
-  -PmoonlightBridge.internal.telemetry.traceSampleRate=1.0 \
-  -PmoonlightBridge.internal.telemetry.profileSampleRate=1.0 \
-  -PmoonlightBridge.internal.telemetry.successLogs=true \
-  -PmoonlightBridge.internal.telemetry.debug=true \
-  :examples:paper-test-plugin:shadowJar
-```
-
-These values are copied into
-`META-INF/moonlight-bridge/telemetry.properties` inside the artifact. They are
-intentionally not part of the public Java API. Rebuild the plugin without the
-flags before shipping it.
-
-The Rust adapter inherits Java's propagated trace sampling decision. Its
-routine success logs can be enabled only while compiling a diagnostic backend:
-
-```bash
-MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_SUCCESS_LOGS=true cargo build --release
-```
-
-Standalone Rust traces also default to `0.001`; diagnostic builds can embed
-`MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_TRACE_SAMPLE_RATE`. Generated functions are
-timed automatically. Custom Rust code can use `trace_function` or
-`trace_async_function`; custom Java code can use
-`MoonLightTelemetry.traceFunction("function.name", () -> calculate())`. The
-lower-level `function(name)` scope is available when manual failure annotation
-is useful.
-
-`MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_ENVIRONMENT` and
-`MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_RELEASE` may likewise be embedded by the
-framework's release pipeline. Runtime environment variables do not change an
-already built binary.
+Diagnostic sampling and SDK debug settings are private release-pipeline controls, not public
+runtime configuration. This prevents a plugin or server configuration from silently turning on
+high-volume framework telemetry. Generated functions are timed automatically when their parent
+request is sampled.
 
 ## Metrics and profiling
 
@@ -155,8 +92,7 @@ backend. MoonLightBridge also ships an optional `MoonLightJfrTelemetry` that emi
 ```java
 var telemetry = MoonLightTelemetry.composite(
     metrics,
-    new MoonLightJfrTelemetry(),
-    new SentryMoonLightTelemetry()
+    new MoonLightJfrTelemetry()
 );
 ```
 

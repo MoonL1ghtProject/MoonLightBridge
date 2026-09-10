@@ -39,16 +39,23 @@ flowchart LR
 
 ## Install
 
-MoonLightBridge `0.1.0` is prepared for publication as small modules and as one convenient
-framework dependency. After the `v0.1.0` release completes, a typical Minecraft plugin uses:
+MoonLightBridge `0.1.1` is published as small modules and as one convenient framework dependency.
+Until the Maven Central namespace is verified, Java artifacts are available from GitHub Packages:
 
 ```kotlin
 repositories {
     mavenCentral()
+    maven {
+        url = uri("https://maven.pkg.github.com/MoonL1ghtProject/MoonLightBridge")
+        credentials {
+            username = providers.gradleProperty("gpr.user").orNull
+            password = providers.gradleProperty("gpr.key").orNull
+        }
+    }
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-framework:0.1.0")
+    implementation("ru.moonlightproject:moonlight-bridge-framework:0.1.1")
 }
 ```
 
@@ -72,8 +79,7 @@ Add the Rust runtime to the backend:
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.1.0"
-moonlight-bridge-sentry = "0.1.0" # optional framework telemetry
+moonlight-bridge-server = "0.1.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -108,11 +114,11 @@ pluginManagement {
 ```kotlin
 // build.gradle.kts
 plugins {
-    id("ru.moonlightproject.bridge") version "0.1.0"
+    id("ru.moonlightproject.bridge") version "0.1.1"
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-client:0.1.0")
+    implementation("ru.moonlightproject:moonlight-bridge-client:0.1.1")
     implementation("com.google.protobuf:protobuf-java:4.36.1")
 }
 ```
@@ -208,7 +214,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 
 ## What is included
 
-| Area | Available in 0.1.0 |
+| Area | Available in 0.1.1 |
 |---|---|
 | Transport | Unix socket, TCP, mutual TLS |
 | RPC | Multiplexing, typed unary calls, typed batches, deadlines, cancellation |
@@ -239,7 +245,7 @@ The repository contains a working [Paper plugin](examples/paper-test-plugin), it
 
 ## Project status
 
-Version `0.1.0` is prepared as the first stable public API release. The transport and
+Version `0.1.1` is a stable public API release. The transport and
 lifecycle are fully tested, but the project is still young: benchmark your own workload
 and pin exact versions in production. Backward-incompatible changes follow semantic
 versioning.

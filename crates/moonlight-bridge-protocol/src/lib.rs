@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use std::fmt;
 
 /// ASCII `MLBR`, the MoonLightBridge wire signature.

@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-codegen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "prost",
  "prost-build",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-example-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "moonlight-bridge-codegen",
  "moonlight-bridge-protocol",
@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-example-backend"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "moonlight-bridge-example-api",
  "moonlight-bridge-sentry",
@@ -800,11 +800,11 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-protocol"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "moonlight-bridge-sentry"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "moonlight-bridge-server",
  "sentry",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "moonlight-bridge-protocol",
  "rustls-pemfile",
@@ -825,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-test-plugin-backend"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "moonlight-bridge-example-api",
  "moonlight-bridge-sentry",

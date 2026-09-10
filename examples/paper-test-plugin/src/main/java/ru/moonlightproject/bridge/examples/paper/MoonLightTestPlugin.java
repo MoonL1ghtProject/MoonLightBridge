@@ -53,7 +53,7 @@ public final class MoonLightTestPlugin extends JavaPlugin implements CommandExec
         @NotNull CommandSender sender,
         @NotNull Command command,
         @NotNull String label,
-        @NotNull String[] args
+        @NotNull String @NotNull [] args
     ) {
         EchoServiceClient client = backend;
         MoonLightBridge activeBridge = bridge;

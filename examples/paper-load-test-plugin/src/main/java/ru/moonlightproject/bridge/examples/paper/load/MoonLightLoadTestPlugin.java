@@ -51,7 +51,7 @@ public final class MoonLightLoadTestPlugin extends JavaPlugin implements Command
         @NotNull CommandSender sender,
         @NotNull Command command,
         @NotNull String label,
-        @NotNull String[] args
+        @NotNull String @NotNull [] args
     ) {
         if (bridge == null || !bridge.isConnected()) {
             sender.sendMessage(Component.text("MoonLightBridge backend is not connected", NamedTextColor.RED));

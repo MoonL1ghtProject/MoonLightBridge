@@ -1,16 +1,17 @@
-name: ExpjLoadTestPlugin
+name: MoonLightLoadTestPlugin
 version: '${version}'
-main: dev.expj.examples.paper.load.ExpjLoadTestPlugin
-description: Controlled EXPJ Java-to-Rust load generator
+main: ru.moonlightproject.bridge.examples.paper.load.MoonLightLoadTestPlugin
+description: Controlled MoonLightBridge Java-to-Rust load generator
+website: https://dev.moonlightproject.ru
 api-version: '1.21'
 folia-supported: true
-authors: [WillowStudio]
+authors: ["~VicTim~"]
 commands:
-  expjload:
-    description: Run a bounded EXPJ RPC load test
-    usage: /expjload [requests] [concurrency] [payload-bytes]
-    permission: expj.load
+  moonlightload:
+    description: Run a bounded MoonLightBridge RPC load test
+    usage: /moonlightload [requests] [concurrency] [payload-bytes]
+    permission: moonlightbridge.load
 permissions:
-  expj.load:
-    description: Allows EXPJ load tests
+  moonlightbridge.load:
+    description: Allows MoonLightBridge load tests
     default: op

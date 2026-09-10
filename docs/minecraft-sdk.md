@@ -14,7 +14,7 @@ public void onEnable() throws IOException {
     bridge = MoonLightBridge.start(this, "tcp://127.0.0.1:38201");
     backend = new EchoServiceClient(bridge.channel());
     bridge.warmUp(() -> backend.echo(warmupRequest))
-        .whenCompleteOnGlobal((reply, error) -> getLogger().info("EXPJ ready"));
+        .whenCompleteOnGlobal((reply, error) -> getLogger().info("MoonLightBridge ready"));
 }
 ```
 

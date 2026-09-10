@@ -1,8 +1,11 @@
-# expj
+# MoonLightBridge
 
-`expj` is a Minecraft-oriented RPC bridge between a Java plugin and a Rust
-backend. The project is intentionally starting with a small, measurable core:
-framing, multiplexed request/response, timeouts, and explicit failure modes.
+MoonLightBridge is a Minecraft-oriented RPC bridge between a Java plugin and a
+Rust backend. The project is intentionally starting with a small, measurable
+core: framing, multiplexed request/response, timeouts, and explicit failure
+modes.
+
+Developed by `~VicTim~` for [MoonLightProject](https://dev.moonlightproject.ru).
 
 ## Current milestone: M3 embedded Minecraft SDK
 
@@ -35,15 +38,16 @@ used for the Java build.
 Java selects a transport without changing the RPC API:
 
 ```java
-var local = ExpjClient.connect("unix:/home/container/.expj/backend.sock");
-var remote = ExpjClient.connect("tcp://backend.internal:38191");
-var secure = ExpjClient.connect("tls://backend.example.com:38191");
+var local = MoonLightClient.connect("unix:/home/container/.moonlight-bridge/backend.sock");
+var remote = MoonLightClient.connect("tcp://backend.internal:38191");
+var secure = MoonLightClient.connect("tls://backend.example.com:38191");
 ```
 
-Plugin authors depend on the single `dev.expj:expj-framework` artifact. Its
-runtime Sentry provider is discovered automatically; plugin code does not
-initialize or import Sentry. When producing a shaded Paper plugin, merge
-`META-INF/services` entries so the provider remains discoverable.
+Plugin authors depend on the single
+`ru.moonlightproject:moonlight-bridge-framework` artifact. Its runtime Sentry
+provider is discovered automatically; plugin code does not initialize or import
+Sentry. When producing a shaded Paper plugin, merge `META-INF/services` entries
+so the provider remains discoverable.
 
 Rust can listen with `Server::bind_unix(path, router)`,
 `Server::bind_tcp(address, router).await`, or `Server::bind_tls(...)`. See
@@ -54,7 +58,7 @@ For a supervised connection that recovers after a backend restart without
 replaying interrupted calls:
 
 ```java
-var backend = ReconnectingExpjClient.connect("tls://backend.example.com:38191");
+var backend = ReconnectingMoonLightClient.connect("tls://backend.example.com:38191");
 ```
 
 TLS endpoints require a trusted server certificate and a client certificate.
@@ -62,7 +66,7 @@ The Rust helper `load_mtls_server_config` builds a mandatory-client-auth rustls
 configuration from PEM files.
 
 The first schema-first API is generated from
-[`proto/expj/example/v1/echo.proto`](proto/expj/example/v1/echo.proto). See
+[`proto/moonlight/bridge/example/v1/echo.proto`](proto/moonlight/bridge/example/v1/echo.proto). See
 [`docs/codegen.md`](docs/codegen.md) for the generated client/service workflow.
 Performance presets and measured baselines are documented in
 [`docs/performance.md`](docs/performance.md).
@@ -73,7 +77,7 @@ Paper/Folia integration is documented in
 
 An installable Paper example and matching Rust backend live in
 [`examples/paper-test-plugin`](examples/paper-test-plugin). The shaded plugin is
-compiled to Java 21 bytecode and needs no separate EXPJ server plugin.
+compiled to Java 21 bytecode and needs no separate MoonLightBridge server plugin.
 The separate [`examples/paper-load-test-plugin`](examples/paper-load-test-plugin)
 drives bounded concurrent RPC load and reports throughput plus p50/p95/p99/max
 latency without scheduling one Minecraft callback per request.

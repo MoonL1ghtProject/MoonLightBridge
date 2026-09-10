@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package moonlight.bridge.example.v1;
+
+option java_package = "ru.moonlightproject.bridge.example.v1";
+option java_multiple_files = true;
+
+service EchoService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+}
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 1;
+}

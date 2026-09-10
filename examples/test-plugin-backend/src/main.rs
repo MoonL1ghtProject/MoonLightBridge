@@ -1,10 +1,12 @@
-use expj_example_api::{
+use moonlight_bridge_example_api::{
     EchoService,
     model::{EchoRequest, EchoResponse},
     register_echo_service,
 };
-use expj_sentry::SentryExpjTelemetry;
-use expj_server::{ExpjMetrics, HandlerError, Router, Server, Telemetry, TelemetryChain};
+use moonlight_bridge_sentry::SentryMoonLightTelemetry;
+use moonlight_bridge_server::{
+    HandlerError, MoonLightMetrics, Router, Server, Telemetry, TelemetryChain,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -27,17 +29,18 @@ impl EchoService for PaperTestService {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let _sentry_guard = expj_sentry::init_framework_sentry();
+    let _sentry_guard = moonlight_bridge_sentry::init_framework_sentry();
     tracing_subscriber::registry()
         .with(
-            expj_sentry::sentry_tracing::layer().event_filter(expj_sentry::framework_event_filter),
+            moonlight_bridge_sentry::sentry_tracing::layer()
+                .event_filter(moonlight_bridge_sentry::framework_event_filter),
         )
         .init();
 
-    let metrics = ExpjMetrics::default();
+    let metrics = MoonLightMetrics::default();
     let telemetry = TelemetryChain::new([
         Arc::new(metrics) as Arc<dyn Telemetry>,
-        Arc::new(SentryExpjTelemetry) as Arc<dyn Telemetry>,
+        Arc::new(SentryMoonLightTelemetry) as Arc<dyn Telemetry>,
     ]);
     let router = register_echo_service(
         Router::builder().telemetry(Arc::new(telemetry)),
@@ -46,12 +49,13 @@ async fn main() -> std::io::Result<()> {
     .build();
 
     #[cfg(unix)]
-    if let Ok(path) = std::env::var("EXPJ_UNIX_PATH") {
-        println!("EXPJ Paper test backend listening on unix:{path}");
+    if let Ok(path) = std::env::var("MOONLIGHT_BRIDGE_UNIX_PATH") {
+        println!("MoonLightBridge Paper test backend listening on unix:{path}");
         return Server::bind_unix(path, router)?.run().await;
     }
 
-    let address = std::env::var("EXPJ_ADDRESS").unwrap_or_else(|_| "127.0.0.1:38201".to_owned());
-    println!("EXPJ Paper test backend listening on tcp://{address}");
+    let address =
+        std::env::var("MOONLIGHT_BRIDGE_ADDRESS").unwrap_or_else(|_| "127.0.0.1:38201".to_owned());
+    println!("MoonLightBridge Paper test backend listening on tcp://{address}");
     Server::bind_tcp(&address, router).await?.run().await
 }

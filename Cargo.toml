@@ -1,11 +1,11 @@
 [workspace]
 members = [
-    "crates/expj-protocol",
-    "crates/expj-server",
-    "crates/expj-example-api",
-    "crates/expj-codegen",
-    "crates/expj-sentry",
-    "examples/rust-backend",
+    "crates/moonlight-bridge-protocol",
+    "crates/moonlight-bridge-server",
+    "crates/moonlight-bridge-example-api",
+    "crates/moonlight-bridge-codegen",
+    "crates/moonlight-bridge-sentry",
+    "examples/example-backend",
     "examples/test-plugin-backend",
 ]
 resolver = "2"
@@ -14,6 +14,9 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+authors = ["~VicTim~"]
+homepage = "https://dev.moonlightproject.ru"
+repository = "https://github.com/MoonL1ghtProject/MoonLightBridge"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "io-util", "sync", "time"] }

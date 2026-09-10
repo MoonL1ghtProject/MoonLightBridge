@@ -1,11 +1,11 @@
-# EXPJ Paper load-test plugin
+# MoonLightBridge Paper load-test plugin
 
 This separate plugin generates bounded load without blocking the Minecraft
 thread or scheduling one Bukkit callback per RPC. It reports end-to-end RPC
 p50/p95/p99/max latency, throughput, and failures after one warm-up phase.
 
 ```text
-/expjload [requests=10000] [concurrency=128] [payload-bytes=64]
+/moonlightload [requests=10000] [concurrency=128] [payload-bytes=64]
 ```
 
 Limits are one million requests, concurrency 256, and a 64 KiB message. Run it

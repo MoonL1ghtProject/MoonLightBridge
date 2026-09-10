@@ -1,0 +1,20 @@
+[package]
+name = "moonlight-bridge-example-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+moonlight-bridge-protocol = { path = "../moonlight-bridge-protocol" }
+moonlight-bridge-server = { path = "../moonlight-bridge-server" }
+prost.workspace = true
+
+[dev-dependencies]
+moonlight-bridge-codegen = { path = "../moonlight-bridge-codegen" }
+
+[build-dependencies]
+prost-build.workspace = true
+moonlight-bridge-codegen = { path = "../moonlight-bridge-codegen" }

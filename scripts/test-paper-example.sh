@@ -13,8 +13,8 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$project_dir"
-cargo build --package expj-test-plugin-backend
-cargo run --quiet --package expj-test-plugin-backend >"$project_dir/expj-paper-test-backend.log" 2>&1 &
+cargo build --package moonlight-bridge-test-plugin-backend
+cargo run --quiet --package moonlight-bridge-test-plugin-backend >"$project_dir/moonlight-bridge-paper-test-backend.log" 2>&1 &
 backend_pid=$!
 
 for _ in {1..50}; do

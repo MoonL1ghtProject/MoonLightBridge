@@ -1,0 +1,14 @@
+[package]
+name = "moonlight-bridge-sentry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+moonlight-bridge-server = { path = "../moonlight-bridge-server" }
+sentry.workspace = true
+sentry-tracing.workspace = true
+tracing.workspace = true

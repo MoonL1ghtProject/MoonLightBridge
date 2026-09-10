@@ -1,6 +1,6 @@
 # Performance model
 
-EXPJ optimizes bursts without adding an intentional batching delay.
+MoonLightBridge optimizes bursts without adding an intentional batching delay.
 
 ## Write path
 
@@ -19,7 +19,7 @@ make a batch larger.
 
 ## Presets
 
-`ExpjClient.connect(endpoint)` selects an automatic preset:
+`MoonLightClient.connect(endpoint)` selects an automatic preset:
 
 | Transport | Queue | Max frames/write | Max bytes/write |
 |---|---:|---:|---:|
@@ -30,14 +30,14 @@ make a batch larger.
 Override it when profiling justifies a different tradeoff:
 
 ```java
-var latency = ExpjClient.connect(
+var latency = MoonLightClient.connect(
     endpoint,
-    ExpjPerformanceOptions.lowestLatency()
+    MoonLightPerformanceOptions.lowestLatency()
 );
 
-var throughput = ExpjClient.connect(
+var throughput = MoonLightClient.connect(
     endpoint,
-    ExpjPerformanceOptions.maximumThroughput()
+    MoonLightPerformanceOptions.maximumThroughput()
 );
 ```
 
@@ -68,7 +68,7 @@ Measured on the development machine with a release Rust backend, JDK 24, a
 | Unix socket | 53.7 µs | 76.9 µs | 105.8 µs | 148,763 req/s |
 
 The latest clean transport run measured TCP at 71.9/96.6/115.3 µs and 95,910
-req/s. This benchmark uses `expj-client` without the Sentry provider, so it is a
+req/s. This benchmark uses `moonlight-bridge-client` without the Sentry provider, so it is a
 transport baseline rather than a production-plugin simulation.
 
 These are a regression baseline, not portable guarantees. Run

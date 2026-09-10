@@ -1,11 +1,11 @@
-# EXPJ wire protocol — draft 0
+# MoonLightBridge wire protocol — draft 0
 
 Every frame consists of a fixed 24-byte header followed by `body_length` bytes.
 All integers use network byte order (big-endian).
 
 | Offset | Size | Field | Meaning |
 |---:|---:|---|---|
-| 0 | 4 | magic | ASCII `EXPJ` (`0x4558504A`) |
+| 0 | 4 | magic | ASCII `MLBR` (`0x4D4C4252`) |
 | 4 | 1 | version | Protocol version, currently `1` |
 | 5 | 1 | kind | Message kind; see below |
 | 6 | 2 | flags | Bit 0: deadline; bit 1: distributed trace context |

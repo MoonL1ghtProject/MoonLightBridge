@@ -239,64 +239,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "expj-codegen"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-types",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "expj-example-api"
-version = "0.1.0"
-dependencies = [
- "expj-codegen",
- "expj-protocol",
- "expj-server",
- "prost",
- "prost-build",
-]
-
-[[package]]
-name = "expj-protocol"
-version = "0.1.0"
-
-[[package]]
-name = "expj-sentry"
-version = "0.1.0"
-dependencies = [
- "expj-server",
- "sentry",
- "sentry-tracing",
- "tracing",
-]
-
-[[package]]
-name = "expj-server"
-version = "0.1.0"
-dependencies = [
- "expj-protocol",
- "rustls-pemfile",
- "tokio",
- "tokio-rustls",
- "tracing",
-]
-
-[[package]]
-name = "expj-test-plugin-backend"
-version = "0.1.0"
-dependencies = [
- "expj-example-api",
- "expj-sentry",
- "expj-server",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -820,6 +762,76 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "moonlight-bridge-codegen"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "moonlight-bridge-example-api"
+version = "0.1.0"
+dependencies = [
+ "moonlight-bridge-codegen",
+ "moonlight-bridge-protocol",
+ "moonlight-bridge-server",
+ "prost",
+ "prost-build",
+]
+
+[[package]]
+name = "moonlight-bridge-example-backend"
+version = "0.1.0"
+dependencies = [
+ "moonlight-bridge-example-api",
+ "moonlight-bridge-sentry",
+ "moonlight-bridge-server",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "moonlight-bridge-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "moonlight-bridge-sentry"
+version = "0.1.0"
+dependencies = [
+ "moonlight-bridge-server",
+ "sentry",
+ "sentry-tracing",
+ "tracing",
+]
+
+[[package]]
+name = "moonlight-bridge-server"
+version = "0.1.0"
+dependencies = [
+ "moonlight-bridge-protocol",
+ "rustls-pemfile",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
+name = "moonlight-bridge-test-plugin-backend"
+version = "0.1.0"
+dependencies = [
+ "moonlight-bridge-example-api",
+ "moonlight-bridge-sentry",
+ "moonlight-bridge-server",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1378,18 +1390,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rust-backend"
-version = "0.1.0"
-dependencies = [
- "expj-example-api",
- "expj-sentry",
- "expj-server",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

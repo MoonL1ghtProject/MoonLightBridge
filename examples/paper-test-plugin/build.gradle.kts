@@ -5,9 +5,6 @@ plugins {
     id("com.gradleup.shadow") version "9.6.1"
 }
 
-group = "dev.expj.examples"
-version = "0.1.0-SNAPSHOT"
-
 repositories {
     maven {
         name = "papermc"
@@ -16,8 +13,8 @@ repositories {
 }
 
 dependencies {
-    implementation(project(":java:expj-framework"))
-    implementation(project(":java:expj-example-api"))
+    implementation(project(":java:moonlight-bridge-framework"))
+    implementation(project(":java:moonlight-bridge-example-api"))
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
 }
 
@@ -46,9 +43,9 @@ tasks.shadowJar {
     duplicatesStrategy = DuplicatesStrategy.INCLUDE
     mergeServiceFiles()
     // Paper forks may expose their own, older protobuf-java through the parent
-    // classloader. Keep EXPJ's generated messages and runtime fully isolated.
-    relocate("com.google.protobuf", "dev.expj.internal.protobuf")
-    relocate("io.sentry", "dev.expj.internal.sentry")
+    // classloader. Keep MoonLightBridge's generated messages and runtime fully isolated.
+    relocate("com.google.protobuf", "ru.moonlightproject.bridge.internal.protobuf")
+    relocate("io.sentry", "ru.moonlightproject.bridge.internal.sentry")
 }
 
 tasks.build {
@@ -59,6 +56,6 @@ tasks.register<JavaExec>("backendSmokeTest") {
     group = "verification"
     dependsOn(tasks.testClasses)
     classpath = sourceSets.test.get().runtimeClasspath
-    mainClass = "dev.expj.examples.paper.BackendSmokeMain"
-    args(providers.gradleProperty("expjTestEndpoint").getOrElse("tcp://127.0.0.1:38201"))
+    mainClass = "ru.moonlightproject.bridge.examples.paper.BackendSmokeMain"
+    args(providers.gradleProperty("moonlightBridgeTestEndpoint").getOrElse("tcp://127.0.0.1:38201"))
 }

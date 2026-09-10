@@ -1,13 +1,16 @@
 [package]
-name = "expj-test-plugin-backend"
+name = "moonlight-bridge-test-plugin-backend"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
 
 [dependencies]
-expj-server = { path = "../../crates/expj-server" }
-expj-sentry = { path = "../../crates/expj-sentry" }
-expj-example-api = { path = "../../crates/expj-example-api" }
+moonlight-bridge-server = { path = "../../crates/moonlight-bridge-server" }
+moonlight-bridge-sentry = { path = "../../crates/moonlight-bridge-sentry" }
+moonlight-bridge-example-api = { path = "../../crates/moonlight-bridge-example-api" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = "0.3"

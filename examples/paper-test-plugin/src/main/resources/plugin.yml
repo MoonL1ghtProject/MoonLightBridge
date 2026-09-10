@@ -1,20 +1,21 @@
-name: ExpjTestPlugin
+name: MoonLightTestPlugin
 version: '${version}'
-main: dev.expj.examples.paper.ExpjTestPlugin
-description: End-to-end EXPJ Java-to-Rust test plugin
+main: ru.moonlightproject.bridge.examples.paper.MoonLightTestPlugin
+description: End-to-end MoonLightBridge Java-to-Rust test plugin
+website: https://dev.moonlightproject.ru
 api-version: '1.21'
 folia-supported: true
-authors: [WillowStudio]
+authors: ["~VicTim~"]
 commands:
-  expjtest:
-    description: Send one typed RPC to the EXPJ Rust backend
-    usage: /expjtest <text>
-    permission: expj.test
-  expjbatch:
-    description: Send a batch of typed RPCs to the EXPJ Rust backend
-    usage: /expjbatch <count> <text>
-    permission: expj.test
+  moonlighttest:
+    description: Send one typed RPC to the MoonLightBridge Rust backend
+    usage: /moonlighttest <text>
+    permission: moonlightbridge.test
+  moonlightbatch:
+    description: Send a batch of typed RPCs to the MoonLightBridge Rust backend
+    usage: /moonlightbatch <count> <text>
+    permission: moonlightbridge.test
 permissions:
-  expj.test:
-    description: Allows use of the EXPJ test commands
+  moonlightbridge.test:
+    description: Allows use of the MoonLightBridge test commands
     default: op

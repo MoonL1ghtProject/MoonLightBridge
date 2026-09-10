@@ -1,9 +1,9 @@
-rootProject.name = "expj"
+rootProject.name = "MoonLightBridge"
 
-include(":java:expj-client")
-include(":java:expj-paper")
-include(":java:expj-sentry")
-include(":java:expj-framework")
-include(":java:expj-example-api")
+include(":java:moonlight-bridge-client")
+include(":java:moonlight-bridge-paper")
+include(":java:moonlight-bridge-sentry")
+include(":java:moonlight-bridge-framework")
+include(":java:moonlight-bridge-example-api")
 include(":examples:paper-test-plugin")
 include(":examples:paper-load-test-plugin")

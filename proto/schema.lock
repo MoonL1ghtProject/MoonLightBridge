@@ -1,7 +1,7 @@
 {
   "format": 1,
   "messages": {
-    "expj.example.v1.EchoRequest": {
+    "moonlight.bridge.example.v1.EchoRequest": {
       "fields": {
         "1": {
           "name": "message",
@@ -16,7 +16,7 @@
       "reserved_ranges": [],
       "reserved_names": []
     },
-    "expj.example.v1.EchoResponse": {
+    "moonlight.bridge.example.v1.EchoResponse": {
       "fields": {
         "1": {
           "name": "message",
@@ -34,11 +34,11 @@
   },
   "enums": {},
   "services": {
-    "expj.example.v1.EchoService": {
+    "moonlight.bridge.example.v1.EchoService": {
       "methods": {
         "Echo": {
-          "input": ".expj.example.v1.EchoRequest",
-          "output": ".expj.example.v1.EchoResponse",
+          "input": ".moonlight.bridge.example.v1.EchoRequest",
+          "output": ".moonlight.bridge.example.v1.EchoResponse",
           "client_streaming": false,
           "server_streaming": false
         }

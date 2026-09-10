@@ -5,9 +5,6 @@ plugins {
     id("com.gradleup.shadow") version "9.6.1"
 }
 
-group = "dev.expj.examples"
-version = "0.1.0-SNAPSHOT"
-
 repositories {
     maven {
         name = "papermc"
@@ -16,8 +13,8 @@ repositories {
 }
 
 dependencies {
-    implementation(project(":java:expj-framework"))
-    implementation(project(":java:expj-example-api"))
+    implementation(project(":java:moonlight-bridge-framework"))
+    implementation(project(":java:moonlight-bridge-example-api"))
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
 }
 
@@ -45,8 +42,8 @@ tasks.shadowJar {
     archiveClassifier = ""
     duplicatesStrategy = DuplicatesStrategy.INCLUDE
     mergeServiceFiles()
-    relocate("com.google.protobuf", "dev.expj.load.internal.protobuf")
-    relocate("io.sentry", "dev.expj.load.internal.sentry")
+    relocate("com.google.protobuf", "ru.moonlightproject.bridge.load.internal.protobuf")
+    relocate("io.sentry", "ru.moonlightproject.bridge.load.internal.sentry")
 }
 
 tasks.build {

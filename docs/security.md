@@ -13,7 +13,7 @@ not sufficient.
 ## Rust server
 
 ```rust
-let tls = expj_server::tls::load_mtls_server_config(
+let tls = moonlight_bridge_server::tls::load_mtls_server_config(
     "server-chain.pem",
     "server-key.pem",
     "client-ca.pem",
@@ -31,20 +31,20 @@ revoked and rotated independently.
 
 ## Java client
 
-`ExpjClient.connect("tls://host:38191")` uses the default JVM `SSLContext`.
+`MoonLightClient.connect("tls://host:38191")` uses the default JVM `SSLContext`.
 Deployments can configure `javax.net.ssl.keyStore` and
 `javax.net.ssl.trustStore`, or construct an `SSLContext` programmatically and
 call:
 
 ```java
-ExpjClient.tls("host", 38191, sslContext);
+MoonLightClient.tls("host", 38191, sslContext);
 ```
 
 Do not disable trust or hostname validation in production.
 
 ## Reconnect semantics
 
-`ReconnectingExpjClient` uses capped exponential backoff with jitter. Pending
+`ReconnectingMoonLightClient` uses capped exponential backoff with jitter. Pending
 requests fail when the physical connection dies, calls made while disconnected
 fail immediately, and only newly submitted calls use the recovered connection.
 This prevents accidental replay of non-idempotent economy and inventory writes.

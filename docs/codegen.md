@@ -1,7 +1,7 @@
 # Protobuf and service generation
 
-EXPJ uses standard Protocol Buffers schemas. `protoc` generates message classes
-for Java, while `prost-build` generates Rust message types. `expj-codegen` reads
+MoonLightBridge uses standard Protocol Buffers schemas. `protoc` generates message classes
+for Java, while `prost-build` generates Rust message types. `moonlight-bridge-codegen` reads
 the same descriptor set and generates the RPC-specific layer:
 
 - Java typed clients returning `CompletableFuture<Response>`;
@@ -19,7 +19,7 @@ service EchoService {
 Generated Java usage:
 
 ```java
-var channel = ExpjClient.connect("unix:/run/expj/backend.sock");
+var channel = MoonLightClient.connect("unix:/run/moonlight-bridge/backend.sock");
 var echo = new EchoServiceClient(channel);
 var response = echo.echo(EchoRequest.newBuilder()
     .setMessage("hello")
@@ -55,7 +55,7 @@ Compatible changes, such as adding a new field with a new number, pass without
 updating the lock. Intentional schema changes are accepted with:
 
 ```bash
-./gradlew :java:expj-example-api:updateSchemaLock
+./gradlew :java:moonlight-bridge-example-api:updateSchemaLock
 ```
 
 Review the lock diff before committing it. Removing a field is accepted only

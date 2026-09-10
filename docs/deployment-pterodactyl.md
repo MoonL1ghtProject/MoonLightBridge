@@ -3,13 +3,13 @@
 Pterodactyl game servers run in isolated Docker containers. Inside a server,
 `127.0.0.1` refers to that server's container, not to the Wings node.
 
-EXPJ accepts these endpoint forms:
+MoonLightBridge accepts these endpoint forms:
 
 ```text
-unix:/home/container/.expj/backend.sock
+unix:/home/container/.moonlight-bridge/backend.sock
 tcp://172.18.0.1:38191
-tcp://expj.internal.example:38191
-tls://expj.example.com:38191
+tcp://moonlight-bridge.internal.example:38191
+tls://bridge.example.com:38191
 ```
 
 ## 1. Backend in the Minecraft container
@@ -18,7 +18,7 @@ Use a Unix socket. This is the default target architecture when the plugin
 extracts and starts its own Rust binary:
 
 ```text
-unix:/home/container/.expj/backend.sock
+unix:/home/container/.moonlight-bridge/backend.sock
 ```
 
 It requires no allocation or exposed port. The backend process must remove only
@@ -66,13 +66,13 @@ managed Pterodactyl servers.
 Use a DNS name or private overlay-network address:
 
 ```text
-tcp://expj-backend.internal:38191
+tcp://moonlight-bridge-backend.internal:38191
 ```
 
-Use `tls://` for cross-host production deployment. EXPJ requires mTLS: Java
-validates the backend certificate and hostname, while Rust validates a client
-certificate against its configured client CA. Plain `tcp://` must remain on a
-trusted private network.
+Use `tls://` for cross-host production deployment. MoonLightBridge requires
+mTLS: Java validates the backend certificate and hostname, while Rust validates
+a client certificate against its configured client CA. Plain `tcp://` must
+remain on a trusted private network.
 
 Reconnect never replays an interrupted request. Its result is unknown: the
 backend may have committed a mutation just before the connection disappeared.
@@ -84,13 +84,13 @@ carrying an idempotency key.
 The eventual Paper SDK should read one value and avoid environment detection:
 
 ```text
-EXPJ_ENDPOINT=unix:/home/container/.expj/backend.sock
+MOONLIGHT_BRIDGE_ENDPOINT=unix:/home/container/.moonlight-bridge/backend.sock
 ```
 
 or:
 
 ```text
-EXPJ_ENDPOINT=tcp://172.18.0.1:38191
+MOONLIGHT_BRIDGE_ENDPOINT=tcp://172.18.0.1:38191
 ```
 
 Explicit configuration is more reliable than guessing the Docker gateway.

@@ -2,7 +2,7 @@
 
 ## Product boundary
 
-EXPJ is an RPC runtime, not a remote implementation of the Bukkit API. Java
+MoonLightBridge is an RPC runtime, not a remote implementation of the Bukkit API. Java
 owns Minecraft objects and scheduler affinity. Rust owns isolated business
 logic, persistence, caches, and batchable computation.
 

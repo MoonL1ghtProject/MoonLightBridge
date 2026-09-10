@@ -18,16 +18,16 @@ tasks.register<JavaExec>("integrationTest") {
     dependsOn(tasks.testClasses)
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "ru.moonlightproject.bridge.client.IntegrationMain"
-    if (providers.gradleProperty("moonlightBridgeTransport").orNull == "unix") {
-        args("unix", providers.gradleProperty("moonlightBridgeSocketPath").get())
-    } else if (providers.gradleProperty("moonlightBridgeTransport").orNull == "tls") {
-        args("tls")
-        systemProperty("javax.net.ssl.keyStore", providers.gradleProperty("moonlightBridgeKeyStore").get())
-        systemProperty("javax.net.ssl.keyStorePassword", "changeit")
-        systemProperty("javax.net.ssl.trustStore", providers.gradleProperty("moonlightBridgeTrustStore").get())
-        systemProperty("javax.net.ssl.trustStorePassword", "changeit")
-    } else {
-        args("tcp")
+    when (providers.gradleProperty("moonlightBridgeTransport").orNull) {
+        "unix" -> args("unix", providers.gradleProperty("moonlightBridgeSocketPath").get())
+        "tls" -> {
+            args("tls")
+            systemProperty("javax.net.ssl.keyStore", providers.gradleProperty("moonlightBridgeKeyStore").get())
+            systemProperty("javax.net.ssl.keyStorePassword", "changeit")
+            systemProperty("javax.net.ssl.trustStore", providers.gradleProperty("moonlightBridgeTrustStore").get())
+            systemProperty("javax.net.ssl.trustStorePassword", "changeit")
+        }
+        else -> args("tcp")
     }
 }
 

@@ -1,6 +1,7 @@
 package ru.moonlightproject.bridge.client;
 
 import java.io.IOException;
+import java.io.Serial;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.*;
@@ -205,6 +206,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
     }
 
     public static final class BackendUnavailableException extends IOException {
+        @Serial
         private static final long serialVersionUID = 1L;
 
         public BackendUnavailableException(String endpoint) {

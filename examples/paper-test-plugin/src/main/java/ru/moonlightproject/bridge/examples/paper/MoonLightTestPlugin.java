@@ -6,6 +6,7 @@ import ru.moonlightproject.bridge.paper.MoonLightBridge;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletionException;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -13,6 +14,7 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.jetbrains.annotations.NotNull;
 
 public final class MoonLightTestPlugin extends JavaPlugin implements CommandExecutor {
     private MoonLightBridge bridge;
@@ -21,8 +23,10 @@ public final class MoonLightTestPlugin extends JavaPlugin implements CommandExec
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        getCommand("moonlighttest").setExecutor(this);
-        getCommand("moonlightbatch").setExecutor(this);
+        Objects.requireNonNull(getCommand("moonlighttest"), "moonlighttest command is not registered")
+            .setExecutor(this);
+        Objects.requireNonNull(getCommand("moonlightbatch"), "moonlightbatch command is not registered")
+            .setExecutor(this);
 
         String endpoint = getConfig().getString("endpoint", "tcp://127.0.0.1:38201");
         try {
@@ -45,7 +49,12 @@ public final class MoonLightTestPlugin extends JavaPlugin implements CommandExec
     }
 
     @Override
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    public boolean onCommand(
+        @NotNull CommandSender sender,
+        @NotNull Command command,
+        @NotNull String label,
+        @NotNull String[] args
+    ) {
         EchoServiceClient client = backend;
         MoonLightBridge activeBridge = bridge;
         if (client == null || activeBridge == null || !activeBridge.isConnected()) {

@@ -1,5 +1,6 @@
 package ru.moonlightproject.bridge.paper;
 
+import java.io.Serial;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -118,6 +119,7 @@ public final class PaperCall<T> {
     }
 
     public static final class CallbackUnavailableException extends IllegalStateException {
+        @Serial
         private static final long serialVersionUID = 1L;
 
         public CallbackUnavailableException() {
@@ -127,6 +129,7 @@ public final class PaperCall<T> {
 
     /** A scheduler/programming failure, distinct from a retired or disabled callback target. */
     public static final class CallbackDispatchException extends IllegalStateException {
+        @Serial
         private static final long serialVersionUID = 1L;
 
         public CallbackDispatchException(Throwable cause) {

@@ -5,6 +5,7 @@ import ru.moonlightproject.bridge.example.v1.EchoServiceClient;
 import ru.moonlightproject.bridge.paper.MoonLightBridge;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
@@ -18,6 +19,7 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.jetbrains.annotations.NotNull;
 
 public final class MoonLightLoadTestPlugin extends JavaPlugin implements CommandExecutor {
     private static final int MAX_REQUESTS = 1_000_000;
@@ -32,7 +34,8 @@ public final class MoonLightLoadTestPlugin extends JavaPlugin implements Command
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        getCommand("moonlightload").setExecutor(this);
+        Objects.requireNonNull(getCommand("moonlightload"), "moonlightload command is not registered")
+            .setExecutor(this);
         String endpoint = getConfig().getString("endpoint", "tcp://127.0.0.1:38201");
         try {
             bridge = MoonLightBridge.start(this, endpoint);
@@ -44,7 +47,12 @@ public final class MoonLightLoadTestPlugin extends JavaPlugin implements Command
     }
 
     @Override
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    public boolean onCommand(
+        @NotNull CommandSender sender,
+        @NotNull Command command,
+        @NotNull String label,
+        @NotNull String[] args
+    ) {
         if (bridge == null || !bridge.isConnected()) {
             sender.sendMessage(Component.text("MoonLightBridge backend is not connected", NamedTextColor.RED));
             return true;

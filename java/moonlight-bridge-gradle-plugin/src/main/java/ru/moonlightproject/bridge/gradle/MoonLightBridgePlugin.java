@@ -1,10 +1,13 @@
 package ru.moonlightproject.bridge.gradle;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
+import org.gradle.api.GradleException;
 import org.gradle.api.plugins.JavaPlugin;
 import org.gradle.api.tasks.Exec;
 import org.gradle.api.tasks.SourceSetContainer;
@@ -32,8 +35,8 @@ public final class MoonLightBridgePlugin implements Plugin<Project> {
             task.getOutputs().dir(extension.getGeneratedProtoSources());
             task.doFirst(ignored -> {
                 File output = extension.getDescriptorFile().get().getAsFile();
-                output.getParentFile().mkdirs();
-                extension.getGeneratedProtoSources().get().getAsFile().mkdirs();
+                createDirectories(output.getParentFile());
+                createDirectories(extension.getGeneratedProtoSources().get().getAsFile());
                 List<String> command = new ArrayList<>();
                 command.add(extension.getProtocExecutable().get());
                 command.add("--proto_path=" + extension.getProtoDirectory().get().getAsFile());
@@ -74,5 +77,13 @@ public final class MoonLightBridgePlugin implements Plugin<Project> {
             .getJava().srcDir(extension.getGeneratedProtoSources());
         project.getTasks().named(JavaPlugin.COMPILE_JAVA_TASK_NAME).configure(task -> task.dependsOn(generate));
         project.getTasks().named("check").configure(task -> task.dependsOn(checkSchema));
+    }
+
+    private static void createDirectories(File directory) {
+        try {
+            Files.createDirectories(directory.toPath());
+        } catch (IOException error) {
+            throw new GradleException("Cannot create MoonLightBridge output directory: " + directory, error);
+        }
     }
 }

@@ -406,15 +406,7 @@ public final class MoonLightClient implements MoonLightChannel {
                 }
                 PendingRequest request = pending.get(frame.requestId);
                 if (request == null) continue;
-                boolean expectedSuccess = frame.kind == request.expectedKind;
-                boolean expectedError = frame.kind == ERROR && request.errorAllowed;
-                if ((!expectedSuccess && !expectedError) || frame.methodId != request.methodId) {
-                    throw new IOException(
-                        "response does not match pending request " + frame.requestId
-                            + ": expected kind=" + request.expectedKind + ", method=" + request.methodId
-                            + "; received kind=" + frame.kind + ", method=" + frame.methodId
-                    );
-                }
+                boolean expectedSuccess = validateResponse(frame, request);
                 if (!pending.remove(frame.requestId, request)) continue;
                 if (expectedSuccess) {
                     request.future.complete(frame.body);
@@ -429,6 +421,19 @@ public final class MoonLightClient implements MoonLightChannel {
         } catch (IOException error) {
             terminate(error);
         }
+    }
+
+    private static boolean validateResponse(Frame frame, PendingRequest request) throws IOException {
+        boolean expectedSuccess = frame.kind == request.expectedKind;
+        boolean expectedError = frame.kind == ERROR && request.errorAllowed;
+        if ((!expectedSuccess && !expectedError) || frame.methodId != request.methodId) {
+            throw new IOException(
+                "response does not match pending request " + frame.requestId
+                    + ": expected kind=" + request.expectedKind + ", method=" + request.methodId
+                    + "; received kind=" + frame.kind + ", method=" + frame.methodId
+            );
+        }
+        return expectedSuccess;
     }
 
     private Frame readFrame(int bodyLimit) throws IOException {

@@ -7,16 +7,16 @@ modes.
 
 Developed by `~VicTim~` for [MoonLightProject](https://dev.moonlightproject.ru).
 
-## Current milestone: M3 embedded Minecraft SDK
+## Current status
 
-The first vertical slice already defines the wire header and contains:
+MoonLightBridge is a production-oriented alpha. The implemented surface includes:
 
 - a Rust Tokio server with concurrent request dispatch over TCP or Unix sockets;
 - a dependency-free Java client using `CompletableFuture`;
 - an echo backend used as an end-to-end integration test;
 - protocol validation and payload size limits;
 - capability handshake, request deadlines, cancellation and heartbeat;
-- structured errors and bounded in-flight requests.
+- structured errors and bounded in-flight requests;
 - Protobuf message generation, typed Java/Rust service bindings, and a checked
   compatibility lock.
 - bounded dedicated writers, burst write coalescing, pooled temporary buffers,
@@ -31,8 +31,9 @@ The first vertical slice already defines the wire header and contains:
 
 ## Run the vertical slice
 
-Requirements: Rust/Cargo and JDK 21 or newer. The checked-in Gradle wrapper is
-used for the Java build.
+Requirements: stable Rust/Cargo, JDK 21 or newer, and `protoc`. The complete
+transport integration suite additionally uses OpenSSL and the JDK `keytool`.
+The checked-in Gradle wrapper is used for the Java build.
 
 ```bash
 ./scripts/integration-test.sh
@@ -77,6 +78,8 @@ Observability, Sentry sampling, privacy, and profiling are documented in
 [`docs/observability.md`](docs/observability.md).
 Paper/Folia integration is documented in
 [`docs/minecraft-sdk.md`](docs/minecraft-sdk.md).
+Build, verification, CI, and repository layout are documented in
+[`docs/development.md`](docs/development.md).
 
 An installable Paper example and matching Rust backend live in
 [`examples/paper-test-plugin`](examples/paper-test-plugin). The shaded plugin is
@@ -85,14 +88,14 @@ The separate [`examples/paper-load-test-plugin`](examples/paper-load-test-plugin
 drives bounded concurrent RPC load and reports throughput plus p50/p95/p99/max
 latency without scheduling one Minecraft callback per request.
 
-## Planned milestones
+## Milestone status
 
-1. **M0 — framing:** request/response over TCP, multiplexing, limits.
+1. **M0 — framing:** request/response over TCP, multiplexing, limits (implemented).
 2. **M1 — lifecycle:** handshake, deadlines, cancellation, heartbeat and safe reconnect (implemented).
 3. **M2 — schema:** Protobuf contracts, unary Java/Rust code generation, typed events and compatibility lock (implemented).
 4. **M3 — Minecraft SDK:** Paper/Folia scheduler-aware completion helpers (implemented).
-5. **M4 — load control:** bounded queues, batching, tick batches, metrics (transport implemented; tick aggregation follows).
-6. **M5 — backend process management:** extraction/startup remains; protocol health supervision is implemented.
+5. **M4 — load control:** bounded queues, write batching, typed batch calls and metrics (implemented).
+6. **M5 — operations:** health supervision and reconnect are implemented; optional backend packaging/process startup remains future work.
 
 See [`docs/protocol.md`](docs/protocol.md) for the byte-level contract and
 [`docs/architecture.md`](docs/architecture.md) for scope decisions.

@@ -5,6 +5,7 @@ project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 socket_dir="$(mktemp -d)"
 socket_path="$socket_dir/moonlight-bridge.sock"
 cert_dir="$(mktemp -d)"
+backend_log="$cert_dir/backend.log"
 backend_pid=""
 test_pid=""
 
@@ -17,6 +18,10 @@ stop_backend() {
 }
 
 cleanup() {
+    local status=$?
+    if [[ "$status" -ne 0 && -f "$backend_log" ]]; then
+        tail -n 100 "$backend_log" >&2
+    fi
     if [[ -n "$test_pid" ]]; then
         kill "$test_pid" 2>/dev/null || true
         wait "$test_pid" 2>/dev/null || true
@@ -31,7 +36,7 @@ trap cleanup EXIT
 cd "$project_dir"
 cargo test --workspace
 
-cargo run --quiet --package moonlight-bridge-example-backend >"$project_dir/moonlight-bridge-backend.log" 2>&1 &
+cargo run --quiet --package moonlight-bridge-example-backend >"$backend_log" 2>&1 &
 backend_pid=$!
 for _ in {1..50}; do
     if (echo > /dev/tcp/127.0.0.1/38191) 2>/dev/null; then break; fi
@@ -41,7 +46,7 @@ done
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-example-api:typedIntegrationTest
 stop_backend
 
-MOONLIGHT_BRIDGE_UNIX_PATH="$socket_path" cargo run --quiet --package moonlight-bridge-example-backend >>"$project_dir/moonlight-bridge-backend.log" 2>&1 &
+MOONLIGHT_BRIDGE_UNIX_PATH="$socket_path" cargo run --quiet --package moonlight-bridge-example-backend >>"$backend_log" 2>&1 &
 backend_pid=$!
 for _ in {1..50}; do
     if [[ -S "$socket_path" ]]; then break; fi
@@ -73,7 +78,7 @@ keytool -importcert -noprompt -alias moonlight-bridge-ca -storepass changeit \
 
 MOONLIGHT_BRIDGE_ADDRESS="127.0.0.1:38192" MOONLIGHT_BRIDGE_TLS_CERT="$cert_dir/server.crt" \
 MOONLIGHT_BRIDGE_TLS_KEY="$cert_dir/server.key" MOONLIGHT_BRIDGE_TLS_CLIENT_CA="$cert_dir/ca.crt" \
-    cargo run --quiet --package moonlight-bridge-example-backend >>"$project_dir/moonlight-bridge-backend.log" 2>&1 &
+    cargo run --quiet --package moonlight-bridge-example-backend >>"$backend_log" 2>&1 &
 backend_pid=$!
 for _ in {1..50}; do
     if (echo > /dev/tcp/127.0.0.1/38192) 2>/dev/null; then break; fi
@@ -84,7 +89,7 @@ done
     -PmoonlightBridgeTrustStore="$cert_dir/truststore.p12"
 stop_backend
 
-cargo run --quiet --package moonlight-bridge-example-backend >>"$project_dir/moonlight-bridge-backend.log" 2>&1 &
+cargo run --quiet --package moonlight-bridge-example-backend >>"$backend_log" 2>&1 &
 backend_pid=$!
 for _ in {1..50}; do
     if (echo > /dev/tcp/127.0.0.1/38191) 2>/dev/null; then break; fi
@@ -104,7 +109,7 @@ for _ in {1..200}; do
     sleep 0.05
 done
 [[ -f "$cert_dir/disconnected" ]]
-cargo run --quiet --package moonlight-bridge-example-backend >>"$project_dir/moonlight-bridge-backend.log" 2>&1 &
+cargo run --quiet --package moonlight-bridge-example-backend >>"$backend_log" 2>&1 &
 backend_pid=$!
 wait "$test_pid"
 test_pid=""

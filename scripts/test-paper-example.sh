@@ -2,19 +2,26 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+run_dir="$(mktemp -d)"
+backend_log="$run_dir/backend.log"
 backend_pid=""
 
 cleanup() {
+    local status=$?
+    if [[ "$status" -ne 0 && -f "$backend_log" ]]; then
+        tail -n 100 "$backend_log" >&2
+    fi
     if [[ -n "$backend_pid" ]]; then
         kill "$backend_pid" 2>/dev/null || true
         wait "$backend_pid" 2>/dev/null || true
     fi
+    rm -rf -- "$run_dir"
 }
 trap cleanup EXIT
 
 cd "$project_dir"
 cargo build --package moonlight-bridge-test-plugin-backend
-cargo run --quiet --package moonlight-bridge-test-plugin-backend >"$project_dir/moonlight-bridge-paper-test-backend.log" 2>&1 &
+cargo run --quiet --package moonlight-bridge-test-plugin-backend >"$backend_log" 2>&1 &
 backend_pid=$!
 
 for _ in {1..50}; do

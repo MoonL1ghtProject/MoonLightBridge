@@ -2,6 +2,16 @@
 build/
 /.gradle/
 /.idea/
+/.fleet/
+/out/
+/.qodana/
+/qodana-results/
 /java/**/build/
 *.log
 *.pid
+*.jfr
+*.hprof
+hs_err_pid*
+replay_pid*
+perf.data*
+.DS_Store

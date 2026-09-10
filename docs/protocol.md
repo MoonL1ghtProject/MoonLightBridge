@@ -27,8 +27,9 @@ The client must send `HELLO` as its first frame. The server replies with
 `max_in_flight: u32`, and `features: u64`. The server selects the minimum limits
 and the intersection of feature bits.
 
-Feature bits currently negotiate deadlines (`1`), cancellation (`2`),
-heartbeat (`4`), and trace-context propagation (`8`).
+Feature bits negotiate deadlines (`1`), cancellation (`2`), heartbeat (`4`),
+trace propagation (`8`), server events (`16`), and health/readiness (`32`).
+The default timeout for the first HELLO frame is 10 seconds.
 
 ## Frame kinds
 
@@ -42,6 +43,8 @@ heartbeat (`4`), and trace-context propagation (`8`).
 | 18 | CANCEL | Abort the matching request ID |
 | 19/20 | PING/PONG | Liveness check with an echoed nonce |
 | 21 | GOODBYE | Graceful disconnect |
+| 22/23 | HEALTH/HEALTH_STATUS | Built-in readiness and load snapshot |
+| 24 | EVENT | One-way Rust-to-Java event (`request_id = 0`) |
 
 When flag bit 0 is set, a request body starts with a four-byte timeout in
 milliseconds. This prefix is transport metadata and is removed before handler
@@ -58,10 +61,13 @@ An error body begins with a two-byte code followed by a UTF-8 message. Codes are
 `UNKNOWN_METHOD=1`, `INVALID_REQUEST=2`, `DEADLINE_EXCEEDED=3`, `CANCELLED=4`,
 `RESOURCE_EXHAUSTED=5`, and `INTERNAL=6`.
 
-## Deliberately not specified in M0
+Duplicate active request IDs and zero IDs on REQUEST/PING are protocol errors.
+Responses are accepted only when ID, method ID, and frame kind match the pending call.
+
+## Deliberately not specified
 
 - payload codec;
-- events and streams;
+- streams;
 - compression;
 - authentication.
 

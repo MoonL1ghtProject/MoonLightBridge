@@ -106,6 +106,31 @@ public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
         return new SentryObservation(span, context, request, System.nanoTime(), logsEnabled);
     }
 
+    @Override
+    public FunctionObservation startFunction(String name) {
+        ISpan parent = Sentry.getSpan();
+        ISpan span;
+        if (parent != null && !parent.isNoOp()) {
+            span = parent.startChild("moonlight.function", name);
+        } else {
+            boolean sampled = traceSampleRate >= 1
+                || (traceSampleRate > 0 && ThreadLocalRandom.current().nextDouble() < traceSampleRate);
+            if (!sampled) return FunctionObservation.DISABLED;
+            span = Sentry.startTransaction(name, "moonlight.function");
+        }
+        return new FunctionObservation() {
+            private Throwable failure;
+            @Override public void failed(Throwable error) { failure = error; }
+            @Override public void close() {
+                if (failure == null) span.finish(SpanStatus.OK);
+                else {
+                    span.setThrowable(failure);
+                    span.finish(SpanStatus.INTERNAL_ERROR);
+                }
+            }
+        };
+    }
+
     private record SentryObservation(
         ISpan span,
         MoonLightTraceContext traceContext,

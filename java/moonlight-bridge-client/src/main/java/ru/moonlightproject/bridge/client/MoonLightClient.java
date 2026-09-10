@@ -17,6 +17,8 @@ import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -34,23 +36,32 @@ public final class MoonLightClient implements MoonLightChannel {
     private static final int PING = 19;
     private static final int PONG = 20;
     private static final int GOODBYE = 21;
+    private static final int HEALTH = 22;
+    private static final int HEALTH_STATUS = 23;
+    private static final int EVENT = 24;
     private static final int FLAG_HAS_DEADLINE = 1;
     private static final int FLAG_HAS_TRACE_CONTEXT = 1 << 1;
     private static final int DEFAULT_MAX_BODY_LENGTH = 8 * 1024 * 1024;
     private static final int DEFAULT_MAX_IN_FLIGHT = 256;
     private static final long FEATURE_TRACE_CONTEXT = 1L << 3;
-    private static final long FEATURES = 1 | (1L << 1) | (1L << 2) | FEATURE_TRACE_CONTEXT;
+    private static final long FEATURE_SERVER_EVENTS = 1L << 4;
+    private static final long FEATURE_HEALTH = 1L << 5;
+    private static final long FEATURES = 1 | (1L << 1) | (1L << 2) | FEATURE_TRACE_CONTEXT
+        | FEATURE_SERVER_EVENTS | FEATURE_HEALTH;
 
     private final Closeable connection;
     private final DataInputStream input;
     private final DataOutputStream output;
     private final AtomicLong nextRequestId = new AtomicLong(1);
-    private final ConcurrentMap<Long, CompletableFuture<byte[]>> pending = new ConcurrentHashMap<>();
+    private final ConcurrentMap<Long, PendingRequest> pending = new ConcurrentHashMap<>();
     private final Semaphore inFlight;
     private final int maxBodyLength;
     private final long negotiatedFeatures;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final CompletableFuture<Throwable> termination = new CompletableFuture<>();
+    private final AtomicReference<Throwable> lastFailure = new AtomicReference<>();
+    private final ConcurrentMap<Integer, CopyOnWriteArrayList<Consumer<byte[]>>> eventListeners =
+        new ConcurrentHashMap<>();
     private final MoonLightPerformanceOptions performance;
     private final ArrayBlockingQueue<OutboundFrame> outgoing;
     private final ByteArrayPool bufferPool;
@@ -236,6 +247,10 @@ public final class MoonLightClient implements MoonLightChannel {
 
     public CompletionStage<Throwable> termination() { return termination; }
 
+    public boolean isClosed() { return closed.get(); }
+    public int pendingRequests() { return pending.size(); }
+    public Throwable lastFailure() { return lastFailure.get(); }
+
     public CompletableFuture<byte[]> request(int methodId, byte[] body, Duration deadline) {
         if (closed.get()) return CompletableFuture.failedFuture(new IOException("MoonLightBridge client is closed"));
         long timeoutMillis = deadline.toMillis();
@@ -249,7 +264,7 @@ public final class MoonLightClient implements MoonLightChannel {
             return CompletableFuture.failedFuture(new RejectedExecutionException("MoonLightBridge in-flight request limit reached"));
         }
 
-        long requestId = nextRequestId.getAndIncrement();
+        long requestId = allocateRequestId();
         MoonLightTelemetry.RequestObservation observation;
         try {
             observation = telemetry.startRequest(new MoonLightTelemetry.RequestInfo(methodId, requestId, body.length));
@@ -270,7 +285,8 @@ public final class MoonLightClient implements MoonLightChannel {
             return CompletableFuture.failedFuture(error);
         }
         CompletableFuture<byte[]> future = new CompletableFuture<>();
-        pending.put(requestId, future);
+        PendingRequest pendingRequest = new PendingRequest(RESPONSE, methodId, true, future);
+        pending.put(requestId, pendingRequest);
         try {
             enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body);
         } catch (IOException error) {
@@ -280,7 +296,7 @@ public final class MoonLightClient implements MoonLightChannel {
         future.orTimeout(timeoutMillis, TimeUnit.MILLISECONDS);
         MoonLightTelemetry.RequestObservation completedObservation = observation;
         future.whenComplete((ignored, error) -> {
-            pending.remove(requestId);
+            pending.remove(requestId, pendingRequest);
             inFlight.release();
             try { completedObservation.finish(ignored == null ? 0 : ignored.length, error); }
             catch (RuntimeException ignoredTelemetryError) { }
@@ -299,10 +315,11 @@ public final class MoonLightClient implements MoonLightChannel {
         if (!inFlight.tryAcquire()) {
             return CompletableFuture.failedFuture(new RejectedExecutionException("MoonLightBridge in-flight request limit reached"));
         }
-        long requestId = nextRequestId.getAndIncrement();
+        long requestId = allocateRequestId();
         byte[] nonce = ByteBuffer.allocate(Long.BYTES).putLong(System.nanoTime()).array();
         CompletableFuture<byte[]> response = new CompletableFuture<>();
-        pending.put(requestId, response);
+        PendingRequest pendingRequest = new PendingRequest(PONG, 0, false, response);
+        pending.put(requestId, pendingRequest);
         try {
             writeFrame(PING, 0, 0, requestId, nonce);
         } catch (IOException error) {
@@ -310,12 +327,57 @@ public final class MoonLightClient implements MoonLightChannel {
         }
         response.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
         response.whenComplete((ignored, error) -> {
-            pending.remove(requestId);
+            pending.remove(requestId, pendingRequest);
             inFlight.release();
         });
         return response.thenAccept(body -> {
             if (!java.util.Arrays.equals(nonce, body)) throw new CompletionException(new IOException("PONG nonce mismatch"));
         });
+    }
+
+    @Override
+    public CompletableFuture<MoonLightHealth> health(Duration timeout) {
+        if ((negotiatedFeatures & FEATURE_HEALTH) == 0) {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException("server did not negotiate health support"));
+        }
+        if (closed.get()) return CompletableFuture.failedFuture(new IOException("MoonLightBridge client is closed"));
+        if (!inFlight.tryAcquire()) {
+            return CompletableFuture.failedFuture(new RejectedExecutionException("MoonLightBridge in-flight request limit reached"));
+        }
+        long requestId = allocateRequestId();
+        CompletableFuture<byte[]> response = new CompletableFuture<>();
+        PendingRequest pendingRequest = new PendingRequest(HEALTH_STATUS, 0, false, response);
+        pending.put(requestId, pendingRequest);
+        try { writeFrame(HEALTH, 0, 0, requestId, new byte[0]); }
+        catch (IOException error) { response.completeExceptionally(error); }
+        response.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        response.whenComplete((ignored, error) -> {
+            pending.remove(requestId, pendingRequest);
+            inFlight.release();
+        });
+        return response.thenApply(MoonLightClient::decodeHealth);
+    }
+
+    @Override
+    public AutoCloseable subscribe(int eventId, Consumer<byte[]> listener) {
+        if (eventId == 0) throw new IllegalArgumentException("eventId must not be zero");
+        if ((negotiatedFeatures & FEATURE_SERVER_EVENTS) == 0) {
+            throw new UnsupportedOperationException("server did not negotiate event support");
+        }
+        Consumer<byte[]> checked = java.util.Objects.requireNonNull(listener, "listener");
+        CopyOnWriteArrayList<Consumer<byte[]>> listeners =
+            eventListeners.computeIfAbsent(eventId, ignored -> new CopyOnWriteArrayList<>());
+        listeners.addIfAbsent(checked);
+        return () -> {
+            removeEventListener(eventId, checked);
+        };
+    }
+
+    void removeEventListener(int eventId, Consumer<byte[]> listener) {
+        CopyOnWriteArrayList<Consumer<byte[]>> listeners = eventListeners.get(eventId);
+        if (listeners == null) return;
+        listeners.remove(listener);
+        if (listeners.isEmpty()) eventListeners.remove(eventId, listeners);
     }
 
     private void sendCancel(long requestId) {
@@ -328,17 +390,40 @@ public final class MoonLightClient implements MoonLightChannel {
         try {
             while (!closed.get()) {
                 Frame frame = readFrame(maxBodyLength);
-                CompletableFuture<byte[]> future = pending.remove(frame.requestId);
-                if (future == null) continue;
-                if (frame.kind == RESPONSE || frame.kind == PONG) {
-                    future.complete(frame.body);
-                } else if (frame.kind == ERROR) {
+                if (frame.kind == EVENT) {
+                    if (frame.requestId != 0 || frame.methodId == 0) {
+                        throw new IOException("invalid MoonLightBridge EVENT frame");
+                    }
+                    for (Consumer<byte[]> listener : eventListeners.getOrDefault(
+                        frame.methodId, new CopyOnWriteArrayList<>())) {
+                        try { listener.accept(frame.body); }
+                        catch (RuntimeException error) {
+                            LOGGER.log(System.Logger.Level.ERROR,
+                                "MoonLightBridge event listener failed; event=" + frame.methodId, error);
+                        }
+                    }
+                    continue;
+                }
+                PendingRequest request = pending.get(frame.requestId);
+                if (request == null) continue;
+                boolean expectedSuccess = frame.kind == request.expectedKind;
+                boolean expectedError = frame.kind == ERROR && request.errorAllowed;
+                if ((!expectedSuccess && !expectedError) || frame.methodId != request.methodId) {
+                    throw new IOException(
+                        "response does not match pending request " + frame.requestId
+                            + ": expected kind=" + request.expectedKind + ", method=" + request.methodId
+                            + "; received kind=" + frame.kind + ", method=" + frame.methodId
+                    );
+                }
+                if (!pending.remove(frame.requestId, request)) continue;
+                if (expectedSuccess) {
+                    request.future.complete(frame.body);
+                } else {
                     if (frame.body.length < 2) throw new IOException("truncated MoonLightBridge error body");
                     int code = Short.toUnsignedInt(ByteBuffer.wrap(frame.body, 0, 2).getShort());
                     String message = new String(frame.body, 2, frame.body.length - 2, StandardCharsets.UTF_8);
-                    future.completeExceptionally(new MoonLightRemoteException(frame.methodId, ErrorCode.fromWire(code), message));
-                } else {
-                    future.completeExceptionally(new IOException("unexpected frame kind: " + frame.kind));
+                    request.future.completeExceptionally(
+                        new MoonLightRemoteException(frame.methodId, ErrorCode.fromWire(code), message));
                 }
             }
         } catch (IOException error) {
@@ -478,8 +563,30 @@ public final class MoonLightClient implements MoonLightChannel {
     }
 
     private void failAll(Throwable error) {
-        pending.forEach((id, future) -> future.completeExceptionally(error));
+        pending.forEach((id, request) -> request.future.completeExceptionally(error));
         pending.clear();
+    }
+
+    private static MoonLightHealth decodeHealth(byte[] body) {
+        if (body.length != 32) throw new CompletionException(new IOException("invalid HEALTH_STATUS body"));
+        ByteBuffer data = ByteBuffer.wrap(body);
+        int protocolVersion = Byte.toUnsignedInt(data.get());
+        boolean ready = data.get() != 0;
+        data.getShort();
+        long activeConnections = data.getLong();
+        long activeRequests = data.getLong();
+        long maxInFlight = Integer.toUnsignedLong(data.getInt());
+        long uptimeMillis = data.getLong();
+        return new MoonLightHealth(protocolVersion, ready, activeConnections, activeRequests,
+            maxInFlight, Duration.ofMillis(uptimeMillis));
+    }
+
+    private long allocateRequestId() {
+        long candidate;
+        do {
+            candidate = nextRequestId.getAndIncrement();
+        } while (candidate == 0 || pending.containsKey(candidate));
+        return candidate;
     }
 
     @Override
@@ -506,6 +613,7 @@ public final class MoonLightClient implements MoonLightChannel {
         if (!closed.compareAndSet(false, true)) return;
         try { connection.close(); } catch (IOException suppressed) { reason.addSuppressed(suppressed); }
         writerThread.interrupt();
+        lastFailure.set(reason);
         failAll(reason);
         termination.complete(reason);
         try { telemetry.connectionClosed(reason); } catch (RuntimeException ignored) { }
@@ -523,6 +631,13 @@ public final class MoonLightClient implements MoonLightChannel {
     ) { }
 
     private record Frame(int kind, int flags, int methodId, long requestId, byte[] body) { }
+
+    private record PendingRequest(
+        int expectedKind,
+        int methodId,
+        boolean errorAllowed,
+        CompletableFuture<byte[]> future
+    ) { }
 
     private record OutboundFrame(byte[] bytes, int length, CompletableFuture<Void> written) { }
 

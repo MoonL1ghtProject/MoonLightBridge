@@ -48,8 +48,16 @@ val nonBlockingStartTest = tasks.register<JavaExec>("nonBlockingStartTest") {
     mainClass = "ru.moonlightproject.bridge.client.NonBlockingStartMain"
 }
 
+val protocolValidationTest = tasks.register<JavaExec>("protocolValidationTest") {
+    group = "verification"
+    description = "Rejects a response with a mismatched frame kind or method ID"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "ru.moonlightproject.bridge.client.ProtocolValidationMain"
+}
+
 tasks.check {
-    dependsOn(nonBlockingStartTest)
+    dependsOn(nonBlockingStartTest, protocolValidationTest)
 }
 
 tasks.register<JavaExec>("performanceBenchmark") {

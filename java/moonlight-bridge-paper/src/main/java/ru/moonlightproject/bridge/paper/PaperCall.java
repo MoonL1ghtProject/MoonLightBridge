@@ -75,18 +75,22 @@ public final class PaperCall<T> {
             }
             Runnable unavailable = () ->
                 scheduled.completeExceptionally(new CallbackUnavailableException());
-            dispatcher.dispatch(() -> {
-                if (!active.getAsBoolean()) {
-                    unavailable.run();
-                    return;
-                }
-                try {
-                    action.accept(value, unwrap(error));
-                    scheduled.complete(null);
-                } catch (Throwable callbackError) {
-                    scheduled.completeExceptionally(callbackError);
-                }
-            }, unavailable);
+            try {
+                dispatcher.dispatch(() -> {
+                    if (!active.getAsBoolean()) {
+                        unavailable.run();
+                        return;
+                    }
+                    try {
+                        action.accept(value, unwrap(error));
+                        scheduled.complete(null);
+                    } catch (Throwable callbackError) {
+                        scheduled.completeExceptionally(callbackError);
+                    }
+                }, unavailable);
+            } catch (RuntimeException dispatchError) {
+                scheduled.completeExceptionally(new CallbackDispatchException(dispatchError));
+            }
         });
         return scheduled;
     }
@@ -118,6 +122,15 @@ public final class PaperCall<T> {
 
         public CallbackUnavailableException() {
             super("Paper/Folia callback target is no longer available");
+        }
+    }
+
+    /** A scheduler/programming failure, distinct from a retired or disabled callback target. */
+    public static final class CallbackDispatchException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        public CallbackDispatchException(Throwable cause) {
+            super("Paper/Folia scheduler failed to dispatch the callback", cause);
         }
     }
 }

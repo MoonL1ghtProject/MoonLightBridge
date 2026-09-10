@@ -1,6 +1,21 @@
 {
   "format": 1,
   "messages": {
+    "moonlight.bridge.example.v1.BackendNoticeEvent": {
+      "fields": {
+        "1": {
+          "name": "message",
+          "number": 1,
+          "label": 1,
+          "kind": 9,
+          "type_name": "",
+          "oneof_index": null,
+          "proto3_optional": false
+        }
+      },
+      "reserved_ranges": [],
+      "reserved_names": []
+    },
     "moonlight.bridge.example.v1.EchoRequest": {
       "fields": {
         "1": {

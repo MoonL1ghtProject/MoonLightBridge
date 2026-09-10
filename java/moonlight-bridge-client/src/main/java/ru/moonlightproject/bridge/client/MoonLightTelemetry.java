@@ -6,6 +6,26 @@ import java.util.ServiceLoader;
 public interface MoonLightTelemetry {
     RequestObservation startRequest(RequestInfo request);
 
+    default FunctionObservation startFunction(String name) { return FunctionObservation.DISABLED; }
+
+    /** Starts a framework-owned span for an application function or serialization stage. */
+    static FunctionObservation function(String name) {
+        return Automatic.INSTANCE.startFunction(name);
+    }
+
+    static <T, E extends Throwable> T traceFunction(
+        String name, ThrowingSupplier<T, E> function
+    ) throws E {
+        try (FunctionObservation observation = function(name)) {
+            try {
+                return function.get();
+            } catch (Throwable error) {
+                observation.failed(error);
+                throw error;
+            }
+        }
+    }
+
     default void connectionOpened() { }
     default void connectionClosed(Throwable cause) { }
 
@@ -28,6 +48,17 @@ public interface MoonLightTelemetry {
     interface RequestObservation {
         MoonLightTraceContext traceContext();
         void finish(int responseBytes, Throwable error);
+    }
+
+    interface FunctionObservation extends AutoCloseable {
+        FunctionObservation DISABLED = new FunctionObservation() { };
+        default void failed(Throwable error) { }
+        @Override default void close() { }
+    }
+
+    @FunctionalInterface
+    interface ThrowingSupplier<T, E extends Throwable> {
+        T get() throws E;
     }
 
     final class Disabled implements MoonLightTelemetry, RequestObservation {
@@ -88,6 +119,22 @@ public interface MoonLightTelemetry {
                         try { observation.finish(responseBytes, error); }
                         catch (RuntimeException ignored) { }
                     }
+                }
+            };
+        }
+
+        @Override
+        public FunctionObservation startFunction(String name) {
+            FunctionObservation[] observations = Arrays.stream(delegates)
+                .map(delegate -> delegate.startFunction(name))
+                .filter(observation -> observation != null && observation != FunctionObservation.DISABLED)
+                .toArray(FunctionObservation[]::new);
+            return new FunctionObservation() {
+                @Override public void failed(Throwable error) {
+                    for (FunctionObservation observation : observations) observation.failed(error);
+                }
+                @Override public void close() {
+                    for (FunctionObservation observation : observations) observation.close();
                 }
             };
         }

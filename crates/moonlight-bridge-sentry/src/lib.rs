@@ -14,10 +14,14 @@ pub fn init_framework_sentry() -> sentry::ClientInitGuard {
         option_env!("MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_ENVIRONMENT").unwrap_or("production");
     let release = option_env!("MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_RELEASE")
         .unwrap_or("moonlight-bridge@0.1.0");
+    let trace_sample_rate = option_env!("MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_TRACE_SAMPLE_RATE")
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| (0.0..=1.0).contains(value))
+        .unwrap_or(0.001);
     let options = sentry::ClientOptions::new()
         .release(release)
         .environment(environment)
-        .traces_sample_rate(1.0)
+        .traces_sample_rate(trace_sample_rate)
         .send_default_pii(false)
         .default_integrations(false);
     sentry::init((FRAMEWORK_DSN, options))
@@ -71,6 +75,7 @@ impl Telemetry for SentryMoonLightTelemetry {
             transaction,
             info,
             started: Instant::now(),
+            stages: Vec::new(),
             finished: false,
         }))
     }
@@ -80,10 +85,16 @@ struct SentryObservation {
     transaction: Option<Transaction>,
     info: RequestInfo,
     started: Instant,
+    stages: Vec<(&'static str, u64)>,
     finished: bool,
 }
 
 impl RequestObservation for SentryObservation {
+    fn record_stage(&mut self, name: &'static str, duration: std::time::Duration) {
+        self.stages
+            .push((name, duration.as_micros().min(u128::from(u64::MAX)) as u64));
+    }
+
     fn finish(mut self: Box<Self>, outcome: RequestOutcome) {
         self.finished = true;
         self.record(outcome);
@@ -94,6 +105,17 @@ impl SentryObservation {
     fn record(&mut self, outcome: RequestOutcome) {
         let transaction = self.transaction.take();
         let duration_micros = self.started.elapsed().as_micros() as u64;
+        if let Some(transaction) = &transaction
+            && !self.stages.is_empty()
+        {
+            let stages = self
+                .stages
+                .iter()
+                .map(|(name, duration)| format!("{name}={duration}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            transaction.set_data("moonlight_bridge.function_durations_us", stages.into());
+        }
         match outcome {
             RequestOutcome::Success { response_bytes } => {
                 if let Some(transaction) = transaction {

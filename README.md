@@ -25,6 +25,9 @@ The first vertical slice already defines the wire header and contains:
   trace propagation without overhead on the default path.
 - a non-blocking embedded Paper/Folia facade with scheduler-aware callbacks and
   reconnect supervision; no separate bridge plugin is required.
+- built-in health/readiness, reconnect-safe Rust-to-Java events, and
+  idempotency/revision primitives for safe mutations.
+- Gradle and Cargo build helpers for generated, compatibility-checked APIs.
 
 ## Run the vertical slice
 
@@ -86,10 +89,10 @@ latency without scheduling one Minecraft callback per request.
 
 1. **M0 — framing:** request/response over TCP, multiplexing, limits.
 2. **M1 — lifecycle:** handshake, deadlines, cancellation, heartbeat and safe reconnect (implemented).
-3. **M2 — schema:** Protobuf contracts, unary Java/Rust code generation and compatibility lock (implemented); events follow.
+3. **M2 — schema:** Protobuf contracts, unary Java/Rust code generation, typed events and compatibility lock (implemented).
 4. **M3 — Minecraft SDK:** Paper/Folia scheduler-aware completion helpers (implemented).
 5. **M4 — load control:** bounded queues, batching, tick batches, metrics (transport implemented; tick aggregation follows).
-6. **M5 — backend process management:** extraction, startup and health supervision.
+6. **M5 — backend process management:** extraction/startup remains; protocol health supervision is implemented.
 
 See [`docs/protocol.md`](docs/protocol.md) for the byte-level contract and
 [`docs/architecture.md`](docs/architecture.md) for scope decisions.

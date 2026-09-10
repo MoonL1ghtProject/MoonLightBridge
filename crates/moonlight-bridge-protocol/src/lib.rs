@@ -16,8 +16,14 @@ pub const FEATURE_DEADLINES: u64 = 1;
 pub const FEATURE_CANCELLATION: u64 = 1 << 1;
 pub const FEATURE_HEARTBEAT: u64 = 1 << 2;
 pub const FEATURE_TRACE_CONTEXT: u64 = 1 << 3;
-pub const SERVER_FEATURES: u64 =
-    FEATURE_DEADLINES | FEATURE_CANCELLATION | FEATURE_HEARTBEAT | FEATURE_TRACE_CONTEXT;
+pub const FEATURE_SERVER_EVENTS: u64 = 1 << 4;
+pub const FEATURE_HEALTH: u64 = 1 << 5;
+pub const SERVER_FEATURES: u64 = FEATURE_DEADLINES
+    | FEATURE_CANCELLATION
+    | FEATURE_HEARTBEAT
+    | FEATURE_TRACE_CONTEXT
+    | FEATURE_SERVER_EVENTS
+    | FEATURE_HEALTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TraceContext {
@@ -62,6 +68,9 @@ pub enum FrameKind {
     Ping = 19,
     Pong = 20,
     Goodbye = 21,
+    Health = 22,
+    HealthStatus = 23,
+    Event = 24,
 }
 
 impl TryFrom<u8> for FrameKind {
@@ -78,6 +87,9 @@ impl TryFrom<u8> for FrameKind {
             19 => Ok(Self::Ping),
             20 => Ok(Self::Pong),
             21 => Ok(Self::Goodbye),
+            22 => Ok(Self::Health),
+            23 => Ok(Self::HealthStatus),
+            24 => Ok(Self::Event),
             other => Err(ProtocolError::UnknownKind(other)),
         }
     }

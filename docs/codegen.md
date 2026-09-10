@@ -6,6 +6,7 @@ the same descriptor set and generates the RPC-specific layer:
 
 - Java typed clients returning `CompletableFuture<Response>`;
 - Rust service traits and router registration functions;
+- typed Rust publishers and Java listeners for messages whose names end in `Event`;
 - identical numeric method IDs in both languages.
 
 Example schema:
@@ -71,11 +72,21 @@ message Player {
 The checker rejects changed field types/numbers/names, removed messages and
 services, changed RPC signatures, and enum number reuse.
 
+## Developer build helpers
+
+Java projects can apply `id("ru.moonlightproject.bridge")`. Its
+`moonlightBridge` extension configures proto/schema paths and executable names;
+generation is wired into `compileJava` and compatibility validation into `check`.
+
+Rust API crates use `moonlight_bridge_codegen::compile_rust_api(RustBuildConfig
+{ ... })` from `build.rs` to run prost, check the schema lock, and generate the
+service layer in one call.
+
 ## Current M2 limits
 
 - unary request/response methods only;
 - top-level Protobuf message types;
-- no generated event API yet;
+- events use the explicit `*Event` message naming convention;
 - Java generation currently invokes the locally installed `protoc`.
 
 Streaming methods are rejected during generation instead of silently producing

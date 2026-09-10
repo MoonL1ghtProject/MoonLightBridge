@@ -16,6 +16,7 @@ and displayed correctly.
 - stable method ID and connection-local request ID;
 - request/response byte counts;
 - duration and success/error status;
+- generated protobuf encode/decode and backend-handler stage durations;
 - Java exceptions and Rust `INTERNAL` handler failures.
 
 Request and response bodies are never logged or attached to Sentry. Player
@@ -117,6 +118,14 @@ routine success logs can be enabled only while compiling a diagnostic backend:
 ```bash
 MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_SUCCESS_LOGS=true cargo build --release
 ```
+
+Standalone Rust traces also default to `0.001`; diagnostic builds can embed
+`MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_TRACE_SAMPLE_RATE`. Generated functions are
+timed automatically. Custom Rust code can use `trace_function` or
+`trace_async_function`; custom Java code can use
+`MoonLightTelemetry.traceFunction("function.name", () -> calculate())`. The
+lower-level `function(name)` scope is available when manual failure annotation
+is useful.
 
 `MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_ENVIRONMENT` and
 `MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_RELEASE` may likewise be embedded by the

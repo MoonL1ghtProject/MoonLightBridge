@@ -18,11 +18,7 @@ public final class PaperDispatchers {
                 unavailable.run();
                 return;
             }
-            try {
-                plugin.getServer().getGlobalRegionScheduler().execute(plugin, action);
-            } catch (RuntimeException error) {
-                unavailable.run();
-            }
+            plugin.getServer().getGlobalRegionScheduler().execute(plugin, action);
         };
     }
 
@@ -34,11 +30,7 @@ public final class PaperDispatchers {
                 unavailable.run();
                 return;
             }
-            try {
-                plugin.getServer().getRegionScheduler().execute(plugin, target, action);
-            } catch (RuntimeException error) {
-                unavailable.run();
-            }
+            plugin.getServer().getRegionScheduler().execute(plugin, target, action);
         };
     }
 
@@ -50,11 +42,7 @@ public final class PaperDispatchers {
                 unavailable.run();
                 return;
             }
-            try {
-                if (!entity.getScheduler().execute(plugin, action, unavailable, 1L)) {
-                    unavailable.run();
-                }
-            } catch (RuntimeException error) {
+            if (!entity.getScheduler().execute(plugin, action, unavailable, 1L)) {
                 unavailable.run();
             }
         };

@@ -2,6 +2,8 @@ package ru.moonlightproject.bridge.paper;
 
 import ru.moonlightproject.bridge.client.MoonLightChannel;
 import ru.moonlightproject.bridge.client.ReconnectingMoonLightClient;
+import ru.moonlightproject.bridge.client.MoonLightHealth;
+import java.time.Duration;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -34,6 +36,9 @@ public final class MoonLightBridge implements AutoCloseable {
     public boolean isConnected() { return client.isConnected(); }
 
     public boolean isClosed() { return closed.get(); }
+    public Throwable lastFailure() { return client.lastFailure(); }
+    public int pendingRequests() { return client.pendingRequests(); }
+    public CompletableFuture<MoonLightHealth> health(Duration timeout) { return client.health(timeout); }
 
     public CompletionStage<Void> firstConnection() { return client.firstConnection(); }
 

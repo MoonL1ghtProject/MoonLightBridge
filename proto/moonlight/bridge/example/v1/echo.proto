@@ -16,3 +16,8 @@ message EchoRequest {
 message EchoResponse {
   string message = 1;
 }
+
+// The Event suffix enables typed Rust publishing and Java subscription code generation.
+message BackendNoticeEvent {
+  string message = 1;
+}

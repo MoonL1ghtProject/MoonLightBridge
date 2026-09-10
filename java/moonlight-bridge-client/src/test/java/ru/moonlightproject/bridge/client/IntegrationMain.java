@@ -40,6 +40,10 @@ public final class IntegrationMain {
             }
             CompletableFuture.allOf(checks.toArray(CompletableFuture[]::new)).join();
             client.ping(Duration.ofSeconds(1)).join();
+            MoonLightHealth health = client.health(Duration.ofSeconds(1)).join();
+            if (!health.ready() || health.protocolVersion() != 1 || health.activeConnections() < 1) {
+                throw new AssertionError("unexpected health status: " + health);
+            }
 
             try {
                 client.request(999, new byte[0], Duration.ofSeconds(1)).join();
@@ -63,7 +67,7 @@ public final class IntegrationMain {
                 throw new AssertionError("unexpected metrics: " + snapshot);
             }
 
-            System.out.println("MoonLightBridge " + transport + " integration passed: handshake, trace context, metrics, 100 multiplexed requests, ping, typed error, timeout/cancel");
+            System.out.println("MoonLightBridge " + transport + " integration passed: handshake, health, trace context, metrics, 100 multiplexed requests, ping, typed error, timeout/cancel");
         }
     }
 }

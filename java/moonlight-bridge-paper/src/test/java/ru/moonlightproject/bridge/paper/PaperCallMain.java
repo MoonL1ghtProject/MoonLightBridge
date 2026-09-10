@@ -12,6 +12,7 @@ public final class PaperCallMain {
         wrappedFailureIsUnwrapped();
         closedBridgeRejectsCallback();
         retiredTargetRejectsCallback();
+        schedulerFailureIsNotReportedAsRetiredTarget();
         System.out.println("MoonLightBridge Paper/Folia completion dispatch tests passed");
     }
 
@@ -39,6 +40,19 @@ public final class PaperCallMain {
     private static void retiredTargetRejectsCallback() {
         var call = new PaperCall<>(CompletableFuture.completedFuture("late"), null, () -> true);
         assertUnavailable(call.whenComplete((action, unavailable) -> unavailable.run(), (result, error) -> { }));
+    }
+
+    private static void schedulerFailureIsNotReportedAsRetiredTarget() {
+        var call = new PaperCall<>(CompletableFuture.completedFuture("late"), null, () -> true);
+        try {
+            call.whenComplete((action, unavailable) -> {
+                throw new IllegalArgumentException("scheduler bug");
+            }, (result, error) -> { }).join();
+            throw new AssertionError("scheduler failure should have failed the callback");
+        } catch (CompletionException error) {
+            if (!(error.getCause() instanceof PaperCall.CallbackDispatchException)
+                || !(error.getCause().getCause() instanceof IllegalArgumentException)) throw error;
+        }
     }
 
     private static PaperDispatcher direct() {

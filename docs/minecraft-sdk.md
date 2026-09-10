@@ -35,6 +35,11 @@ Use `whenCompleteOnGlobal` for console/server-wide state, `whenCompleteAt` for
 location-owned state, and `whenCompleteFor` for players/entities/command
 senders. Call `bridge.close()` from `onDisable`.
 
+Use `bridge.health(timeout)`, `bridge.isConnected()`,
+`bridge.pendingRequests()`, and `bridge.lastFailure()` for readiness. Generated
+`*Events` helpers subscribe to typed backend events and subscriptions are
+restored after reconnect.
+
 Scheduler dispatch intentionally waits for a safe Paper/Folia execution point,
 which can add up to one server tick after the RPC has already completed. Measure
 transport latency before entering the scheduled callback. Pure Java processing

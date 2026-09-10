@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.function.Consumer;
 
 public final class ReconnectingMoonLightClient implements MoonLightChannel {
     private final String endpoint;
@@ -17,6 +18,9 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean();
     private final AtomicInteger failedAttempts = new AtomicInteger();
     private final CompletableFuture<Void> firstConnection = new CompletableFuture<>();
+    private final ConcurrentMap<Integer, CopyOnWriteArrayList<Consumer<byte[]>>> eventListeners =
+        new ConcurrentHashMap<>();
+    private final AtomicReference<Throwable> lastFailure = new AtomicReference<>();
 
     private ReconnectingMoonLightClient(
         String endpoint,
@@ -82,6 +86,11 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
     }
 
     public boolean isConnected() { return active.get() != null; }
+    public Throwable lastFailure() { return lastFailure.get(); }
+    public int pendingRequests() {
+        MoonLightClient client = active.get();
+        return client == null ? 0 : client.pendingRequests();
+    }
 
     /** Completes once after the first successful connection. */
     public CompletionStage<Void> firstConnection() { return firstConnection; }
@@ -102,16 +111,43 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         return client.ping(timeout);
     }
 
+    @Override
+    public CompletableFuture<MoonLightHealth> health(Duration timeout) {
+        MoonLightClient client = active.get();
+        if (client == null) return CompletableFuture.failedFuture(new BackendUnavailableException(endpoint));
+        return client.health(timeout);
+    }
+
+    @Override
+    public AutoCloseable subscribe(int eventId, Consumer<byte[]> listener) {
+        if (eventId == 0) throw new IllegalArgumentException("eventId must not be zero");
+        Consumer<byte[]> checked = Objects.requireNonNull(listener, "listener");
+        CopyOnWriteArrayList<Consumer<byte[]>> listeners =
+            eventListeners.computeIfAbsent(eventId, ignored -> new CopyOnWriteArrayList<>());
+        listeners.addIfAbsent(checked);
+        MoonLightClient client = active.get();
+        if (client != null) client.subscribe(eventId, checked);
+        return () -> {
+            listeners.remove(checked);
+            if (listeners.isEmpty()) eventListeners.remove(eventId, listeners);
+            MoonLightClient current = active.get();
+            if (current != null) current.removeEventListener(eventId, checked);
+        };
+    }
+
     private void install(MoonLightClient client) {
         if (closed.get()) {
             try { client.close(); } catch (IOException ignored) { }
             return;
         }
         active.set(client);
+        eventListeners.forEach((eventId, listeners) ->
+            listeners.forEach(listener -> client.subscribe(eventId, listener)));
         firstConnection.complete(null);
         failedAttempts.set(0);
         reconnectScheduled.set(false);
         client.termination().thenAccept(reason -> {
+            lastFailure.set(reason);
             if (active.compareAndSet(client, null) && !closed.get()) scheduleReconnect();
         });
     }
@@ -132,7 +168,10 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         reconnectScheduled.set(false);
         if (closed.get() || active.get() != null) return;
         try { install(MoonLightClient.connect(endpoint, performance, telemetry)); }
-        catch (IOException | RuntimeException error) { scheduleReconnect(); }
+        catch (IOException | RuntimeException error) {
+            lastFailure.set(error);
+            scheduleReconnect();
+        }
     }
 
     private static MoonLightPerformanceOptions automaticPerformance(String endpoint) throws IOException {

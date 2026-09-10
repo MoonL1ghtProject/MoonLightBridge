@@ -1,101 +1,261 @@
-# MoonLightBridge
+<div align="center">
+  <img src="docs/assets/moonlightbridge-banner.svg" alt="MoonLightBridge" width="820">
 
-MoonLightBridge is a Minecraft-oriented RPC bridge between a Java plugin and a
-Rust backend. The project is intentionally starting with a small, measurable
-core: framing, multiplexed request/response, timeouts, and explicit failure
-modes.
+  <p><strong>A fast, typed bridge between Minecraft plugins and Rust backends.</strong></p>
+  <p>Keep Bukkit work on the server thread. Move expensive state, simulation and data processing to Rust.</p>
 
-Developed by `~VicTim~` for [MoonLightProject](https://dev.moonlightproject.ru).
+  [![Release](https://img.shields.io/github/v/release/MoonL1ghtProject/MoonLightBridge?style=flat-square&color=7c5cff)](https://github.com/MoonL1ghtProject/MoonLightBridge/releases)
+  [![Stars](https://img.shields.io/github/stars/MoonL1ghtProject/MoonLightBridge?style=flat-square&color=f4c542)](https://github.com/MoonL1ghtProject/MoonLightBridge/stargazers)
+  [![Java 21+](https://img.shields.io/badge/Java-21%2B-f89820?style=flat-square&logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
+  [![Rust 1.88+](https://img.shields.io/badge/Rust-1.88%2B-000000?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+  [![Qodana](https://github.com/MoonL1ghtProject/MoonLightBridge/actions/workflows/qodana.yml/badge.svg)](https://github.com/MoonL1ghtProject/MoonLightBridge/actions/workflows/qodana.yml)
+  [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-2ea44f?style=flat-square)](#license)
+</div>
 
-## Current status
+MoonLightBridge is a library, not another server plugin. Add it to your Paper or Folia
+plugin, describe the API once with Protocol Buffers, and call a Rust service through a
+generated `CompletableFuture` client. TCP, mTLS and Unix-domain sockets use the same API.
 
-MoonLightBridge is a production-oriented alpha. The implemented surface includes:
+## Why MoonLightBridge?
 
-- a Rust Tokio server with concurrent request dispatch over TCP or Unix sockets;
-- a dependency-free Java client using `CompletableFuture`;
-- an echo backend used as an end-to-end integration test;
-- protocol validation and payload size limits;
-- capability handshake, request deadlines, cancellation and heartbeat;
-- structured errors and bounded in-flight requests;
-- Protobuf message generation, typed Java/Rust service bindings, and a checked
-  compatibility lock.
-- bounded dedicated writers, burst write coalescing, pooled temporary buffers,
-  and generated batch RPC methods.
-- opt-in metrics, payload-safe structured logs, and sampled Java-to-Rust Sentry
-  trace propagation without overhead on the default path.
-- a non-blocking embedded Paper/Folia facade with scheduler-aware callbacks and
-  reconnect supervision; no separate bridge plugin is required.
-- built-in health/readiness, reconnect-safe Rust-to-Java events, and
-  idempotency/revision primitives for safe mutations.
-- Gradle and Cargo build helpers for generated, compatibility-checked APIs.
+- **Typed end to end.** One `.proto` schema generates Java clients, Rust service traits,
+  batch methods and server events.
+- **Built for the hot path.** Multiplexed requests, a dedicated bounded writer, burst
+  coalescing and reusable buffers keep the bridge overhead small.
+- **Minecraft-aware.** Paper and Folia callbacks return through the correct scheduler;
+  network I/O never has to block the tick thread.
+- **Failure is explicit.** Deadlines, cancellation, heartbeat, reconnect supervision,
+  backpressure, protocol validation and structured remote errors are part of the core.
+- **Observable without plugin boilerplate.** Framework-owned Sentry errors and sampled
+  traces are automatic; JFR remains available for local profiling.
 
-## Run the vertical slice
+```mermaid
+flowchart LR
+    P[Paper / Folia plugin] -->|generated async client| J[MoonLightBridge Java library]
+    J -->|UDS · TCP · mTLS| R[MoonLightBridge Rust server]
+    R --> S[Your services and storage]
+    R -. typed events .-> J
+```
 
-Requirements: stable Rust/Cargo, JDK 21 or newer, and `protoc`. The complete
-transport integration suite additionally uses OpenSSL and the JDK `keytool`.
-The checked-in Gradle wrapper is used for the Java build.
+## Install
+
+MoonLightBridge `0.1.0` is prepared for publication as small modules and as one convenient
+framework dependency. After the `v0.1.0` release completes, a typical Minecraft plugin uses:
+
+```kotlin
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation("ru.moonlightproject:moonlight-bridge-framework:0.1.0")
+}
+```
+
+MoonLightBridge is embedded into your plugin. If you build a shaded JAR, relocate its
+dependencies and merge service descriptors:
+
+```kotlin
+tasks.shadowJar {
+    mergeServiceFiles()
+    relocate("com.google.protobuf", "your.plugin.internal.protobuf")
+    relocate("io.sentry", "your.plugin.internal.sentry")
+}
+```
+
+The same Java artifacts are mirrored to GitHub Packages by the release pipeline. Maven Central is recommended
+for consumers because it needs no GitHub credentials; see
+[the publishing guide](docs/publishing.md#github-packages) when you specifically want the
+GitHub registry.
+
+Add the Rust runtime to the backend:
+
+```toml
+[dependencies]
+moonlight-bridge-server = "0.1.0"
+moonlight-bridge-sentry = "0.1.0" # optional framework telemetry
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+Requirements are Java 21 or newer, Rust 1.88 or newer, and `protoc` for schema generation.
+
+## Define an API once
+
+```proto
+syntax = "proto3";
+package my.plugin.v1;
+
+service ProfileService {
+  rpc LoadProfile(LoadProfileRequest) returns (Profile);
+}
+
+message LoadProfileRequest { string player_id = 1; }
+message Profile { string display_name = 1; int64 balance = 2; }
+```
+
+Apply the generator to the Java API module:
+
+```kotlin
+// settings.gradle.kts
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+```
+
+```kotlin
+// build.gradle.kts
+plugins {
+    id("ru.moonlightproject.bridge") version "0.1.0"
+}
+
+dependencies {
+    implementation("ru.moonlightproject:moonlight-bridge-client:0.1.0")
+    implementation("com.google.protobuf:protobuf-java:4.36.1")
+}
+```
+
+The plugin reads `src/main/proto`, generates Protobuf messages and typed clients, then
+checks `schema.lock` during `check`. The Rust side uses the same descriptor through
+`moonlight-bridge-codegen`; details and the complete `build.rs` are in
+[the code generation guide](docs/codegen.md).
+
+## Call Rust from a plugin
+
+```java
+public final class ProfilesPlugin extends JavaPlugin {
+    private MoonLightBridge bridge;
+    private ProfileServiceClient profiles;
+
+    @Override
+    public void onEnable() {
+        try {
+            bridge = MoonLightBridge.start(this, "unix:/run/moonlightbridge/backend.sock");
+            profiles = new ProfileServiceClient(bridge.channel());
+        } catch (IOException error) {
+            throw new IllegalStateException("Cannot start MoonLightBridge", error);
+        }
+    }
+
+    public void showProfile(Player player) {
+        var request = LoadProfileRequest.newBuilder()
+            .setPlayerId(player.getUniqueId().toString())
+            .build();
+
+        bridge.call(profiles.loadProfile(request))
+            .whenCompleteFor(player, (profile, error) -> {
+                if (error != null) {
+                    player.sendMessage("Backend unavailable: " + error.getMessage());
+                    return;
+                }
+                player.sendMessage(profile.getDisplayName() + ": " + profile.getBalance());
+            });
+    }
+
+    @Override
+    public void onDisable() {
+        if (bridge == null) return;
+        try {
+            bridge.close();
+        } catch (IOException error) {
+            getLogger().warning("MoonLightBridge shutdown failed: " + error.getMessage());
+        }
+    }
+}
+```
+
+`whenCompleteFor` dispatches safely for the target entity. Global and region-aware
+variants are available for work that is not tied to a player.
+
+## Implement the backend
+
+The generator creates the `ProfileService` trait and `register_profile_service` function:
+
+```rust
+use std::sync::Arc;
+use moonlight_bridge_server::{HandlerError, Router, Server};
+use my_plugin_api::{
+    ProfileService, register_profile_service,
+    model::{LoadProfileRequest, Profile},
+};
+
+struct Profiles;
+
+impl ProfileService for Profiles {
+    async fn load_profile(
+        &self,
+        request: LoadProfileRequest,
+    ) -> Result<Profile, HandlerError> {
+        Ok(Profile {
+            display_name: request.player_id,
+            balance: 1_000,
+        })
+    }
+}
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let router = register_profile_service(Router::builder(), Arc::new(Profiles)).build();
+    Server::bind_tcp("127.0.0.1:38191", router).await?.run().await
+}
+```
+
+For Pterodactyl, a shared Unix socket is the fastest same-host topology. Use mTLS when
+the backend is in another container or on another machine. The supported layouts are
+documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
+
+## What is included
+
+| Area | Available in 0.1.0 |
+|---|---|
+| Transport | Unix socket, TCP, mutual TLS |
+| RPC | Multiplexing, typed unary calls, typed batches, deadlines, cancellation |
+| Load control | Bounded outgoing/in-flight queues, dedicated writer, write coalescing |
+| Lifecycle | HELLO timeout, heartbeat, reconnect, health/readiness |
+| Server push | Reconnect-safe typed Rust-to-Java events |
+| Safety | Payload limits, method/response validation, duplicate-ID rejection |
+| Minecraft | Paper/Folia scheduler-aware callbacks, no separate bridge plugin |
+| Operations | Metrics, structured errors, Sentry traces/errors, JFR events |
+
+## Documentation
+
+- [Architecture and scope](docs/architecture.md)
+- [Minecraft SDK](docs/minecraft-sdk.md)
+- [Protocol reference](docs/protocol.md)
+- [Schema and code generation](docs/codegen.md)
+- [Performance and tuning](docs/performance.md)
+- [Observability and privacy](docs/observability.md)
+- [Pterodactyl deployment](docs/deployment-pterodactyl.md)
+- [Security model](docs/security.md)
+- [Development and verification](docs/development.md)
+- [Publishing and releases](docs/publishing.md)
+- [Changelog](CHANGELOG.md)
+
+The repository contains a working [Paper plugin](examples/paper-test-plugin), its
+[Rust backend](examples/test-plugin-backend), and a separate
+[load-test plugin](examples/paper-load-test-plugin).
+
+## Project status
+
+Version `0.1.0` is prepared as the first stable public API release. The transport and
+lifecycle are fully tested, but the project is still young: benchmark your own workload
+and pin exact versions in production. Backward-incompatible changes follow semantic
+versioning.
+
+## Contributing
+
+Bug reports, focused pull requests and reproducible performance profiles are welcome.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending a change. The full local check is:
 
 ```bash
 ./scripts/integration-test.sh
 ```
 
-Java selects a transport without changing the RPC API:
+## License
 
-```java
-var local = MoonLightClient.connect("unix:/home/container/.moonlight-bridge/backend.sock");
-var remote = MoonLightClient.connect("tcp://backend.internal:38191");
-var secure = MoonLightClient.connect("tls://backend.example.com:38191");
-```
+Copyright © 2026 ~VicTim~ and MoonLightProject contributors.
 
-Plugin authors depend on the single
-`ru.moonlightproject:moonlight-bridge-framework` artifact. Its runtime Sentry
-provider is discovered automatically; plugin code does not initialize or import
-Sentry. When producing a shaded Paper plugin, merge `META-INF/services` entries
-so the provider remains discoverable.
-
-Rust can listen with `Server::bind_unix(path, router)`,
-`Server::bind_tcp(address, router).await`, or `Server::bind_tls(...)`. See
-[`docs/deployment-pterodactyl.md`](docs/deployment-pterodactyl.md) for container
-topologies and current security limits.
-
-For a supervised connection that recovers after a backend restart without
-replaying interrupted calls:
-
-```java
-var backend = ReconnectingMoonLightClient.connect("tls://backend.example.com:38191");
-```
-
-TLS endpoints require a trusted server certificate and a client certificate.
-The Rust helper `load_mtls_server_config` builds a mandatory-client-auth rustls
-configuration from PEM files.
-
-The first schema-first API is generated from
-[`proto/moonlight/bridge/example/v1/echo.proto`](proto/moonlight/bridge/example/v1/echo.proto). See
-[`docs/codegen.md`](docs/codegen.md) for the generated client/service workflow.
-Performance presets and measured baselines are documented in
-[`docs/performance.md`](docs/performance.md).
-Observability, Sentry sampling, privacy, and profiling are documented in
-[`docs/observability.md`](docs/observability.md).
-Paper/Folia integration is documented in
-[`docs/minecraft-sdk.md`](docs/minecraft-sdk.md).
-Build, verification, CI, and repository layout are documented in
-[`docs/development.md`](docs/development.md).
-
-An installable Paper example and matching Rust backend live in
-[`examples/paper-test-plugin`](examples/paper-test-plugin). The shaded plugin is
-compiled to Java 21 bytecode and needs no separate MoonLightBridge server plugin.
-The separate [`examples/paper-load-test-plugin`](examples/paper-load-test-plugin)
-drives bounded concurrent RPC load and reports throughput plus p50/p95/p99/max
-latency without scheduling one Minecraft callback per request.
-
-## Milestone status
-
-1. **M0 — framing:** request/response over TCP, multiplexing, limits (implemented).
-2. **M1 — lifecycle:** handshake, deadlines, cancellation, heartbeat and safe reconnect (implemented).
-3. **M2 — schema:** Protobuf contracts, unary Java/Rust code generation, typed events and compatibility lock (implemented).
-4. **M3 — Minecraft SDK:** Paper/Folia scheduler-aware completion helpers (implemented).
-5. **M4 — load control:** bounded queues, write batching, typed batch calls and metrics (implemented).
-6. **M5 — operations:** health supervision and reconnect are implemented; optional backend packaging/process startup remains future work.
-
-See [`docs/protocol.md`](docs/protocol.md) for the byte-level contract and
-[`docs/architecture.md`](docs/architecture.md) for scope decisions.
+MoonLightBridge is available under your choice of the
+[MIT License](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE).

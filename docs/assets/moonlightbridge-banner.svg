@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title description">
+  <title id="title">MoonLightBridge</title>
+  <desc id="description">A moon above a bridge connecting Java plugins to Rust backends</desc>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111329"/>
+      <stop offset="0.55" stop-color="#261d52"/>
+      <stop offset="1" stop-color="#101827"/>
+    </linearGradient>
+    <linearGradient id="bridge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f89820"/>
+      <stop offset="0.5" stop-color="#ad72ff"/>
+      <stop offset="1" stop-color="#dea584"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1200" height="300" rx="24" fill="url(#sky)"/>
+  <g fill="#ffffff" opacity=".7">
+    <circle cx="74" cy="66" r="2"/><circle cx="168" cy="112" r="1.5"/><circle cx="252" cy="48" r="2"/>
+    <circle cx="980" cy="57" r="1.5"/><circle cx="1100" cy="110" r="2"/><circle cx="1044" cy="196" r="1.5"/>
+  </g>
+  <path d="M196 74a58 58 0 1 0 62 84 67 67 0 0 1-62-84z" fill="#fff1ae" filter="url(#glow)"/>
+  <g fill="none" stroke="url(#bridge)" stroke-linecap="round" filter="url(#glow)">
+    <path d="M114 230c170-92 802-92 972 0" stroke-width="9"/>
+    <path d="M152 240h896" stroke-width="5" opacity=".85"/>
+    <path d="M250 194v48M950 194v48M398 164v78M802 164v78" stroke-width="5"/>
+  </g>
+  <text x="600" y="125" text-anchor="middle" fill="#fff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="64" font-weight="750" letter-spacing="-2">MoonLightBridge</text>
+  <text x="600" y="168" text-anchor="middle" fill="#c9c5e9" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" letter-spacing="4">JAVA  ↔  RUST</text>
+</svg>

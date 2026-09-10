@@ -6,6 +6,13 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "Schema compatibility checker and Java/Rust binding generator for MoonLightBridge"
+documentation = "https://docs.rs/moonlight-bridge-codegen"
+publish = ["crates-io"]
 
 [dependencies]
 prost.workspace = true

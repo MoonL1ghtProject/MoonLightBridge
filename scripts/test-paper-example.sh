@@ -20,6 +20,7 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$project_dir"
+project_version="$(sed -n 's/^version=//p' gradle.properties)"
 cargo build --package moonlight-bridge-test-plugin-backend
 cargo run --quiet --package moonlight-bridge-test-plugin-backend >"$backend_log" 2>&1 &
 backend_pid=$!
@@ -32,4 +33,4 @@ done
 "$project_dir/gradlew" :examples:paper-test-plugin:backendSmokeTest
 "$project_dir/gradlew" :examples:paper-test-plugin:shadowJar
 
-echo "Plugin: $project_dir/examples/paper-test-plugin/build/libs/paper-test-plugin-0.1.0-SNAPSHOT.jar"
+echo "Plugin: $project_dir/examples/paper-test-plugin/build/libs/paper-test-plugin-$project_version.jar"

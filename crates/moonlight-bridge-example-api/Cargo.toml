@@ -6,15 +6,16 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
+publish = false
 
 [dependencies]
-moonlight-bridge-protocol = { path = "../moonlight-bridge-protocol" }
-moonlight-bridge-server = { path = "../moonlight-bridge-server" }
+moonlight-bridge-protocol = { version = "0.1.0", path = "../moonlight-bridge-protocol" }
+moonlight-bridge-server = { version = "0.1.0", path = "../moonlight-bridge-server" }
 prost.workspace = true
 
 [dev-dependencies]
-moonlight-bridge-codegen = { path = "../moonlight-bridge-codegen" }
+moonlight-bridge-codegen = { version = "0.1.0", path = "../moonlight-bridge-codegen" }
 
 [build-dependencies]
 prost-build.workspace = true
-moonlight-bridge-codegen = { path = "../moonlight-bridge-codegen" }
+moonlight-bridge-codegen = { version = "0.1.0", path = "../moonlight-bridge-codegen" }

@@ -17,7 +17,7 @@ Use the checked-in Gradle wrapper instead of relying on a system Gradle version.
 | `java/` | Java transport, Paper/Folia facade, telemetry provider, and Gradle plugin |
 | `proto/` | Shared protobuf contract and compatibility lock |
 | `examples/` | Example Rust backends and shaded Paper plugins |
-| `scripts/` | End-to-end integration, example, and performance runners |
+| `scripts/` | End-to-end integration, example, performance, and release runners |
 | `docs/` | Protocol, deployment, performance, security, and SDK documentation |
 
 ## Fast checks
@@ -83,3 +83,8 @@ The Qodana workflow has two independent jobs:
 
 `QODANA_TOKEN` is configured as a GitHub Actions secret and must never be placed
 in workflow YAML or source files.
+
+Tagged releases additionally verify a shared Cargo/Gradle version, package all
+public modules, publish Rust crates and Java artifacts, and attach checksummed
+JARs to GitHub Releases. See [publishing.md](publishing.md) for the registry
+setup and guarded release procedure.

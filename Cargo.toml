@@ -13,10 +13,14 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["~VicTim~"]
 homepage = "https://dev.moonlightproject.ru"
 repository = "https://github.com/MoonL1ghtProject/MoonLightBridge"
+readme = "README.md"
+keywords = ["minecraft", "rpc", "paper", "folia", "protobuf"]
+categories = ["network-programming", "asynchronous"]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "io-util", "sync", "time"] }

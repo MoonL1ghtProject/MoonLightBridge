@@ -6,5 +6,12 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "Wire protocol primitives for MoonLightBridge Java-to-Rust RPC"
+documentation = "https://docs.rs/moonlight-bridge-protocol"
+publish = ["crates-io"]
 
 [dependencies]

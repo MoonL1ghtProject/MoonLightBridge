@@ -31,6 +31,7 @@ val traceSampleRate = telemetryRate("moonlightBridge.internal.telemetry.traceSam
 val profileSampleRate = telemetryRate("moonlightBridge.internal.telemetry.profileSampleRate", "0.0")
 val successLogs = providers.gradleProperty("moonlightBridge.internal.telemetry.successLogs").getOrElse("false")
 val sentryDebug = providers.gradleProperty("moonlightBridge.internal.telemetry.debug").getOrElse("false")
+val telemetryRelease = project.version.toString()
 require(successLogs == "true" || successLogs == "false") {
     "moonlightBridge.internal.telemetry.successLogs must be true or false"
 }
@@ -44,7 +45,7 @@ tasks.processResources {
         "profileSampleRate" to profileSampleRate,
         "successLogs" to successLogs,
         "sentryDebug" to sentryDebug,
-        "telemetryRelease" to project.version.toString()
+        "telemetryRelease" to telemetryRelease
     )
     filesMatching("META-INF/moonlight-bridge/telemetry.properties") {
         expand(
@@ -52,7 +53,7 @@ tasks.processResources {
             "profileSampleRate" to profileSampleRate,
             "successLogs" to successLogs,
             "sentryDebug" to sentryDebug,
-            "telemetryRelease" to project.version.toString()
+            "telemetryRelease" to telemetryRelease
         )
     }
 }

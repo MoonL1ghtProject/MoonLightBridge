@@ -6,9 +6,16 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "Opt-in Sentry tracing integration for MoonLightBridge Rust backends"
+documentation = "https://docs.rs/moonlight-bridge-sentry"
+publish = ["crates-io"]
 
 [dependencies]
-moonlight-bridge-server = { path = "../moonlight-bridge-server" }
+moonlight-bridge-server = { version = "0.1.0", path = "../moonlight-bridge-server" }
 sentry.workspace = true
 sentry-tracing.workspace = true
 tracing.workspace = true

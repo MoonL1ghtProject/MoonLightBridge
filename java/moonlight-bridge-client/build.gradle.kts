@@ -37,7 +37,9 @@ tasks.register<JavaExec>("reconnectIntegrationTest") {
     dependsOn(tasks.testClasses)
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "ru.moonlightproject.bridge.client.ReconnectIntegrationMain"
-    args(providers.gradleProperty("moonlightBridgeMarkerDirectory").get())
+    doFirst {
+        args(providers.gradleProperty("moonlightBridgeMarkerDirectory").get())
+    }
 }
 
 val nonBlockingStartTest = tasks.register<JavaExec>("nonBlockingStartTest") {

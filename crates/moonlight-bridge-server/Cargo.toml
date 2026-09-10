@@ -6,9 +6,16 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "High-throughput Tokio RPC server for MoonLightBridge"
+documentation = "https://docs.rs/moonlight-bridge-server"
+publish = ["crates-io"]
 
 [dependencies]
-moonlight-bridge-protocol = { path = "../moonlight-bridge-protocol" }
+moonlight-bridge-protocol = { version = "0.1.0", path = "../moonlight-bridge-protocol" }
 tokio.workspace = true
 tokio-rustls.workspace = true
 rustls-pemfile.workspace = true

@@ -92,6 +92,10 @@ Maven Central is a separate optional job. After the `ru.moonlightproject` namesp
 set the repository variable `MAVEN_CENTRAL_ENABLED=true`; until then the job is skipped and cannot
 make an otherwise valid release fail.
 
+If GitHub Packages alone fails after verification, run `Retry Java GitHub Packages` for the existing
+tag. The recovery workflow verifies that the tag version matches the sources and never republishes
+Cargo crates or contacts Maven Central.
+
 Do not run `cargo publish` manually for the workspace: its dependency order and registry
 propagation waits are encoded in `scripts/publish-crates.sh`.
 

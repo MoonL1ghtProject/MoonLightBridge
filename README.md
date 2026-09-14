@@ -43,7 +43,7 @@ flowchart LR
 
 ## Install
 
-MoonLightBridge `0.2.0` is available from Maven Central without repository credentials.
+MoonLightBridge `0.2.1` is available from Maven Central without repository credentials.
 
 For any Java 21+ application:
 
@@ -53,7 +53,7 @@ repositories {
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-java:0.2.0")
+    implementation("ru.moonlightproject:moonlight-bridge-java:0.2.1")
 }
 ```
 
@@ -61,7 +61,7 @@ For Paper or Folia, use the adapter instead; it already includes the universal r
 
 ```kotlin
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-paper:0.2.0")
+    implementation("ru.moonlightproject:moonlight-bridge-paper:0.2.1")
 }
 ```
 
@@ -92,7 +92,7 @@ Add the Rust runtime to the backend:
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.2.0"
+moonlight-bridge-server = "0.2.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -127,11 +127,11 @@ pluginManagement {
 ```kotlin
 // build.gradle.kts
 plugins {
-    id("ru.moonlightproject.bridge") version "0.2.0"
+    id("ru.moonlightproject.bridge") version "0.2.1"
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-client:0.2.0")
+    implementation("ru.moonlightproject:moonlight-bridge-client:0.2.1")
     implementation("com.google.protobuf:protobuf-java:4.36.1")
 }
 ```
@@ -255,7 +255,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 
 ## What is included
 
-| Area | Available in 0.2.0 |
+| Area | Available in 0.2.1 |
 |---|---|
 | Transport | Unix socket, TCP, mutual TLS |
 | RPC | Multiplexing, typed unary calls, typed batches, deadlines, cancellation |
@@ -265,7 +265,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 | Safety | Payload limits, method/response validation, duplicate-ID rejection |
 | Java | Universal Java 21+ lifecycle API with no Bukkit dependency |
 | Minecraft | Thin Paper/Folia scheduler-aware adapter, no separate bridge plugin |
-| Operations | Health, metrics, structured errors, sampled traces and JFR events |
+| Operations | Health, local metrics, structured errors and JFR events |
 
 ## Documentation
 
@@ -275,7 +275,6 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 - [Protocol reference](docs/protocol.md)
 - [Schema and code generation](docs/codegen.md)
 - [Performance and tuning](docs/performance.md)
-- [Observability and privacy](docs/observability.md)
 - [Pterodactyl deployment](docs/deployment-pterodactyl.md)
 - [Security model](docs/security.md)
 - [Development and verification](docs/development.md)
@@ -288,7 +287,7 @@ The repository contains a working [Paper plugin](examples/paper-test-plugin), it
 
 ## Project status
 
-Version `0.2.0` is a stable public API release. The transport and
+Version `0.2.1` is a stable public API release. The transport and
 lifecycle are fully tested, but the project is still young: benchmark your own workload
 and pin exact versions in production. Backward-incompatible changes follow semantic
 versioning.

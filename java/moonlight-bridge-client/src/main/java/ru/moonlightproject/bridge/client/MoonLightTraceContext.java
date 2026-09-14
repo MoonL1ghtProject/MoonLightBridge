@@ -11,7 +11,13 @@ public final class MoonLightTraceContext {
     private final byte[] parentSpanId;
     private final boolean sampled;
 
-    /** Creates a validated trace context and defensively copies both identifiers. */
+    /**
+     * Creates a validated trace context and defensively copies both identifiers.
+     *
+     * @param traceId 16-byte distributed trace identifier
+     * @param parentSpanId eight-byte parent span identifier
+     * @param sampled whether the originating trace was selected for recording
+     */
     public MoonLightTraceContext(byte[] traceId, byte[] parentSpanId, boolean sampled) {
         if (traceId.length != 16) throw new IllegalArgumentException("traceId must contain 16 bytes");
         if (parentSpanId.length != 8) throw new IllegalArgumentException("parentSpanId must contain 8 bytes");
@@ -20,11 +26,17 @@ public final class MoonLightTraceContext {
         this.sampled = sampled;
     }
 
-    /** Returns a copy of the 16-byte trace identifier. */
+    /** Returns a copy of the 16-byte trace identifier.
+     * @return defensive trace-ID copy
+     */
     public byte[] traceId() { return traceId.clone(); }
-    /** Returns a copy of the eight-byte parent span identifier. */
+    /** Returns a copy of the eight-byte parent span identifier.
+     * @return defensive parent-span-ID copy
+     */
     public byte[] parentSpanId() { return parentSpanId.clone(); }
-    /** Returns whether the originating trace was sampled. */
+    /** Returns whether the originating trace was sampled.
+     * @return sampling decision propagated on the wire
+     */
     public boolean sampled() { return sampled; }
 
     void writeTo(java.nio.ByteBuffer target) {

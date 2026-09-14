@@ -13,8 +13,8 @@ Use the checked-in Gradle wrapper instead of relying on a system Gradle version.
 
 | Path | Purpose |
 |---|---|
-| `crates/` | Rust protocol, server, telemetry, schema generator, and generated example API |
-| `java/` | Java transport, Paper/Folia facade, telemetry provider, and Gradle plugin |
+| `crates/` | Rust protocol, server, schema generator, and generated example API |
+| `java/` | Java transport, universal runtime, Paper/Folia facade, and Gradle plugin |
 | `proto/` | Shared protobuf contract and compatibility lock |
 | `examples/` | Example Rust backends and shaded Paper plugins |
 | `scripts/` | End-to-end integration, example, performance, and release runners |
@@ -68,10 +68,9 @@ profiles, and test logs are ignored. Generated Java/Rust bindings are produced
 from `proto/` during the build and are not committed. The Gradle wrapper JAR and
 `Cargo.lock` are intentionally tracked for reproducible builds.
 
-Do not commit credentials, Sentry authentication tokens, Qodana tokens, TLS
-private keys, generated reports, or server runtime data. Framework-owned Sentry
-DSNs may be embedded by telemetry policy; unlike auth tokens, DSNs are project
-routing identifiers rather than account credentials.
+Do not commit authentication tokens, Qodana tokens, TLS private keys, generated
+reports, profiles, or server runtime data. Private runtime instrumentation is an
+implementation detail and must not become a public dependency or documented API.
 
 ## Continuous integration
 

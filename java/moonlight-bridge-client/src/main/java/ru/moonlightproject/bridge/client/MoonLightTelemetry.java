@@ -5,18 +5,42 @@ import java.util.ServiceLoader;
 
 /** Vendor-neutral instrumentation SPI used around connection and request lifecycle. */
 public interface MoonLightTelemetry {
-    /** Starts one request observation; returning {@code null} skips instrumentation. */
+    /**
+     * Starts one request observation; returning {@code null} skips instrumentation.
+     *
+     * @param request stable request metadata without application payload contents
+     * @return observation completed by the response path, or {@code null}
+     */
     RequestObservation startRequest(RequestInfo request);
 
-    /** Starts a named child function observation. */
+    /**
+     * Starts a named child function observation.
+     *
+     * @param name stable function or stage name
+     * @return closeable observation, normally {@link FunctionObservation#DISABLED}
+     */
     default FunctionObservation startFunction(String name) { return FunctionObservation.DISABLED; }
 
-    /** Starts a framework-owned span for an application function or serialization stage. */
+    /**
+     * Starts a framework-owned span for an application function or serialization stage.
+     *
+     * @param name stable function or stage name
+     * @return closeable observation loaded from the bundled provider
+     */
     static FunctionObservation function(String name) {
         return Automatic.INSTANCE.startFunction(name);
     }
 
-    /** Executes a synchronous function inside an automatically completed observation. */
+    /**
+     * Executes a synchronous function inside an automatically completed observation.
+     *
+     * @param name stable function or stage name
+     * @param function operation to execute
+     * @param <T> returned value type
+     * @param <E> checked error type declared by the operation
+     * @return operation result
+     * @throws E when the operation fails
+     */
     static <T, E extends Throwable> T traceFunction(
         String name, ThrowingSupplier<T, E> function
     ) throws E {
@@ -32,16 +56,29 @@ public interface MoonLightTelemetry {
 
     /** Reports a successful protocol handshake. */
     default void connectionOpened() { }
-    /** Reports direct connection termination. */
+    /**
+     * Reports direct connection termination.
+     *
+     * @param cause close or transport failure reason
+     */
     default void connectionClosed(Throwable cause) { }
 
-    /** Returns the allocation-free no-op telemetry implementation. */
+    /** Returns the allocation-free no-op telemetry implementation.
+     * @return singleton disabled implementation
+     */
     static MoonLightTelemetry disabled() { return Disabled.INSTANCE; }
 
-    /** Loads bundled MoonLightBridge-owned telemetry providers once; returns no-op when none are present. */
+    /** Loads bundled MoonLightBridge-owned telemetry providers once; returns no-op when none are present.
+     * @return automatically discovered instrumentation
+     */
     static MoonLightTelemetry automatic() { return Automatic.INSTANCE; }
 
-    /** Combines non-null telemetry implementations into one fan-out adapter. */
+    /**
+     * Combines non-null telemetry implementations into one fan-out adapter.
+     *
+     * @param delegates local instrumentation implementations
+     * @return one implementation forwarding to every non-null delegate
+     */
     static MoonLightTelemetry composite(MoonLightTelemetry... delegates) {
         MoonLightTelemetry[] copy = Arrays.stream(delegates)
             .filter(delegate -> delegate != null && delegate != Disabled.INSTANCE)
@@ -51,14 +88,27 @@ public interface MoonLightTelemetry {
         return new Composite(copy);
     }
 
-    /** Stable metadata known when the client submits a request. */
+    /**
+     * Stable metadata known when the client submits a request.
+     *
+     * @param methodId stable generated method identifier
+     * @param requestId connection-local request identifier
+     * @param requestBytes encoded application payload size
+     */
     record RequestInfo(int methodId, long requestId, int requestBytes) { }
 
     /** Per-request instrumentation completed by the response or failure path. */
     interface RequestObservation {
-        /** Returns optional wire trace context to propagate to Rust. */
+        /** Returns optional wire trace context to propagate to Rust.
+         * @return trace context, or {@code null} when this request is not sampled
+         */
         MoonLightTraceContext traceContext();
-        /** Completes the request observation. */
+        /**
+         * Completes the request observation.
+         *
+         * @param responseBytes encoded successful response size, or zero on failure
+         * @param error completion failure, or {@code null} for success
+         */
         void finish(int responseBytes, Throwable error);
     }
 
@@ -66,15 +116,29 @@ public interface MoonLightTelemetry {
     interface FunctionObservation extends AutoCloseable {
         /** Allocation-free disabled observation. */
         FunctionObservation DISABLED = new FunctionObservation() { };
-        /** Marks the observed function as failed. */
+        /**
+         * Marks the observed function as failed.
+         *
+         * @param error function failure
+         */
         default void failed(Throwable error) { }
         @Override default void close() { }
     }
 
+    /**
+     * Supplier whose operation may throw a checked exception.
+     *
+     * @param <T> supplied value type
+     * @param <E> declared checked error type
+     */
     @FunctionalInterface
-    /** Supplier whose operation may throw a checked exception. */
     interface ThrowingSupplier<T, E extends Throwable> {
-        /** Computes the result or throws the declared error type. */
+        /**
+         * Computes the result or throws the declared error type.
+         *
+         * @return computed result
+         * @throws E declared operation failure
+         */
         T get() throws E;
     }
 

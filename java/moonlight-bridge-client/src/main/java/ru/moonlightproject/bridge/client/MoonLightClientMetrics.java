@@ -5,6 +5,8 @@ import java.util.concurrent.atomic.LongAdder;
 
 /** In-memory client counters suitable for health endpoints and tests. */
 public final class MoonLightClientMetrics implements MoonLightTelemetry {
+    /** Creates zeroed in-memory counters. */
+    public MoonLightClientMetrics() { }
     private final LongAdder started = new LongAdder();
     private final LongAdder succeeded = new LongAdder();
     private final LongAdder failed = new LongAdder();
@@ -36,7 +38,11 @@ public final class MoonLightClientMetrics implements MoonLightTelemetry {
         };
     }
 
-    /** Returns an immutable point-in-time copy of all counters. */
+    /**
+     * Returns an immutable point-in-time copy of all counters.
+     *
+     * @return current cumulative counters
+     */
     public Snapshot snapshot() {
         return new Snapshot(
             started.sum(), succeeded.sum(), failed.sum(), requestBytes.sum(), responseBytes.sum(),
@@ -44,7 +50,17 @@ public final class MoonLightClientMetrics implements MoonLightTelemetry {
         );
     }
 
-    /** Cumulative request counts, bytes, and latency values. */
+    /**
+     * Cumulative request counts, bytes, and latency values.
+     *
+     * @param started submitted requests
+     * @param succeeded successfully completed requests
+     * @param failed exceptionally completed requests
+     * @param requestBytes encoded request payload bytes
+     * @param responseBytes successful response payload bytes
+     * @param totalLatencyNanos total observed request latency in nanoseconds
+     * @param maxLatencyNanos greatest observed request latency in nanoseconds
+     */
     public record Snapshot(
         long started,
         long succeeded,

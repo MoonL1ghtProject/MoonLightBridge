@@ -19,17 +19,14 @@ Maven coordinates use the `ru.moonlightproject` group:
 - `moonlight-bridge-framework` — compatibility aggregate for 0.1.x consumers;
 - `moonlight-bridge-gradle-plugin` and the `ru.moonlightproject.bridge` marker.
 
-The framework may carry private implementation artifacts transitively. They are not supported
-consumer entry points and are intentionally absent from installation documentation.
+Private implementation code is bundled and relocated inside the universal runtime. It is not a
+separate Maven coordinate, a supported consumer entry point, or a GitHub Release artifact.
 
 crates.io receives these packages in dependency order:
 
 1. `moonlight-bridge-protocol`;
 2. `moonlight-bridge-codegen`;
 3. `moonlight-bridge-server`;
-
-`moonlight-bridge-sentry` is an internal workspace component and is not published after
-`0.1.0`. It must not be added to application dependencies or included in the public release list.
 
 Examples and generated example APIs have `publish = false` and are never uploaded.
 
@@ -59,12 +56,12 @@ Set the same version in `Cargo.toml`, `gradle.properties`, and every versioned l
 dependency. Then run:
 
 ```bash
-./scripts/check-release-version.sh 0.2.0
+./scripts/check-release-version.sh 0.2.1
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 ./gradlew check
-./scripts/package-release.sh 0.2.0
+./scripts/package-release.sh 0.2.1
 ```
 
 `package-release.sh` performs a complete Cargo package verification for independent
@@ -80,8 +77,8 @@ contain sources, Javadoc, license, developer, SCM and issue-tracker metadata.
 Commit the version, merge it to `main`, then create and push the exact tag:
 
 ```bash
-git tag -s v0.2.0 -m "MoonLightBridge 0.2.0"
-git push origin v0.2.0
+git tag -s v0.2.1 -m "MoonLightBridge 0.2.1"
+git push origin v0.2.1
 ```
 
 Only tags shaped like `vMAJOR.MINOR.PATCH` start `.github/workflows/release.yml`. The

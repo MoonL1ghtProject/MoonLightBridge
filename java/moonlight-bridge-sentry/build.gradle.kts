@@ -13,7 +13,8 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 dependencies {
-    api(project(":java:moonlight-bridge-client"))
+    compileOnly(project(":java:moonlight-bridge-client"))
+    testImplementation(project(":java:moonlight-bridge-client"))
     implementation("io.sentry:sentry:8.55.0")
     runtimeOnly("io.sentry:sentry-async-profiler:8.55.0")
 }

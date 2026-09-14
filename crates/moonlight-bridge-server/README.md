@@ -27,7 +27,7 @@ out of order. The optional Paper/Folia adapter keeps Minecraft world access on t
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.2.0"
+moonlight-bridge-server = "0.2.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 

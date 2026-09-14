@@ -7,14 +7,13 @@ authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
 description = "Internal Sentry telemetry adapter for MoonLightBridge builds"
 publish = false
 
 [dependencies]
-moonlight-bridge-server = { version = "0.2.0", path = "../moonlight-bridge-server" }
+moonlight-bridge-server = { version = "0.2.1", path = "../moonlight-bridge-server" }
 sentry.workspace = true
 sentry-tracing.workspace = true
 tracing.workspace = true

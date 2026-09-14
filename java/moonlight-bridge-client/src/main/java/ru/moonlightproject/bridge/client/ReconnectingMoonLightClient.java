@@ -45,19 +45,41 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         }
     }
 
-    /** Connects immediately using default reconnect and transport settings. */
+    /**
+     * Connects immediately using default reconnect and transport settings.
+     *
+     * @param endpoint complete transport endpoint
+     * @return client after its first successful handshake
+     * @throws IOException when the first connection cannot be established
+     */
     public static ReconnectingMoonLightClient connect(String endpoint) throws IOException {
         return new ReconnectingMoonLightClient(
             endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), MoonLightTelemetry.automatic(), true);
     }
 
-    /** Connects immediately using the supplied reconnect policy. */
+    /**
+     * Connects immediately using the supplied reconnect policy.
+     *
+     * @param endpoint complete transport endpoint
+     * @param policy reconnect backoff policy
+     * @return client after its first successful handshake
+     * @throws IOException when the first connection cannot be established
+     */
     public static ReconnectingMoonLightClient connect(String endpoint, ReconnectPolicy policy) throws IOException {
         return new ReconnectingMoonLightClient(
             endpoint, policy, automaticPerformance(endpoint), MoonLightTelemetry.automatic(), true);
     }
 
-    /** Connects immediately using explicit reconnect, performance, and telemetry settings. */
+    /**
+     * Connects immediately using explicit reconnect, performance, and instrumentation settings.
+     *
+     * @param endpoint complete transport endpoint
+     * @param policy reconnect backoff policy
+     * @param performance writer, batching, and buffer settings
+     * @param telemetry local instrumentation implementation
+     * @return client after its first successful handshake
+     * @throws IOException when the first connection cannot be established
+     */
     public static ReconnectingMoonLightClient connect(
         String endpoint,
         ReconnectPolicy policy,
@@ -70,19 +92,39 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
     /**
      * Starts a supervised client without performing network I/O on the calling thread.
      * Requests fail fast until the first connection is established.
+     *
+     * @param endpoint complete transport endpoint
+     * @return client whose supervisor connects in the background
+     * @throws IOException when the endpoint configuration is invalid
      */
     public static ReconnectingMoonLightClient start(String endpoint) throws IOException {
         return new ReconnectingMoonLightClient(
             endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), MoonLightTelemetry.automatic(), false);
     }
 
-    /** Starts asynchronous connection supervision using the supplied reconnect policy. */
+    /**
+     * Starts asynchronous connection supervision using the supplied reconnect policy.
+     *
+     * @param endpoint complete transport endpoint
+     * @param policy reconnect backoff policy
+     * @return client whose supervisor connects in the background
+     * @throws IOException when the endpoint configuration is invalid
+     */
     public static ReconnectingMoonLightClient start(String endpoint, ReconnectPolicy policy) throws IOException {
         return new ReconnectingMoonLightClient(
             endpoint, policy, automaticPerformance(endpoint), MoonLightTelemetry.automatic(), false);
     }
 
-    /** Starts asynchronous supervision using explicit reconnect, performance, and telemetry settings. */
+    /**
+     * Starts asynchronous supervision using explicit reconnect, performance, and instrumentation settings.
+     *
+     * @param endpoint complete transport endpoint
+     * @param policy reconnect backoff policy
+     * @param performance writer, batching, and buffer settings
+     * @param telemetry local instrumentation implementation
+     * @return client whose supervisor connects in the background
+     * @throws IOException when the endpoint configuration is invalid
+     */
     public static ReconnectingMoonLightClient start(
         String endpoint,
         ReconnectPolicy policy,
@@ -92,17 +134,25 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         return new ReconnectingMoonLightClient(endpoint, policy, performance, telemetry, false);
     }
 
-    /** Returns whether a physical connection is currently installed. */
+    /** Returns whether a physical connection is currently installed.
+     * @return {@code true} while requests can be accepted
+     */
     public boolean isConnected() { return active.get() != null; }
-    /** Returns the most recent connection failure, or {@code null}. */
+    /** Returns the most recent connection failure, or {@code null}.
+     * @return latest supervision failure, or {@code null}
+     */
     public Throwable lastFailure() { return lastFailure.get(); }
-    /** Returns requests waiting on the active connection, or zero while disconnected. */
+    /** Returns requests waiting on the active connection, or zero while disconnected.
+     * @return current in-flight request count
+     */
     public int pendingRequests() {
         MoonLightClient client = active.get();
         return client == null ? 0 : client.pendingRequests();
     }
 
-    /** Completes once after the first successful connection. */
+    /** Completes once after the first successful connection.
+     * @return shared initial-readiness stage
+     */
     public CompletionStage<Void> firstConnection() { return firstConnection; }
 
     public CompletableFuture<byte[]> request(int methodId, byte[] body, Duration deadline) {
@@ -201,8 +251,14 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         if (client != null) client.close();
     }
 
-    /** Exponential reconnect-backoff bounds; each attempt also receives random jitter. */
+    /**
+     * Exponential reconnect-backoff bounds; each attempt also receives random jitter.
+     *
+     * @param initialDelay delay before the first reconnect attempt
+     * @param maxDelay upper bound for exponential backoff
+     */
     public record ReconnectPolicy(Duration initialDelay, Duration maxDelay) {
+        /** Validates positive, ordered reconnect bounds. */
         public ReconnectPolicy {
             Objects.requireNonNull(initialDelay);
             Objects.requireNonNull(maxDelay);
@@ -210,7 +266,11 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
             if (maxDelay.compareTo(initialDelay) < 0) throw new IllegalArgumentException("maxDelay must not be less than initialDelay");
         }
 
-        /** Returns a 100 ms initial delay capped at five seconds. */
+        /**
+         * Returns a 100 ms initial delay capped at five seconds.
+         *
+         * @return default reconnect policy
+         */
         public static ReconnectPolicy defaults() {
             return new ReconnectPolicy(Duration.ofMillis(100), Duration.ofSeconds(5));
         }
@@ -221,7 +281,11 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         @Serial
         private static final long serialVersionUID = 1L;
 
-        /** Creates an exception naming the disconnected endpoint. */
+        /**
+         * Creates an exception naming the disconnected endpoint.
+         *
+         * @param endpoint endpoint that had no active connection
+         */
         public BackendUnavailableException(String endpoint) {
             super("MoonLightBridge backend is disconnected: " + endpoint);
         }

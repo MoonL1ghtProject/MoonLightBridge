@@ -62,6 +62,8 @@ jobs:
             -path '*/build/libs/*.jar' \
             -type f \
             ! -path '*/moonlight-bridge-example-api/*' \
+            ! -path '*/moonlight-bridge-sentry/*' \
+            ! -name '*-plain.jar' \
             -exec cp {} release-artifacts/ \;
           (cd release-artifacts && sha256sum ./*.jar > SHA256SUMS)
 

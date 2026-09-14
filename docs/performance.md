@@ -68,8 +68,8 @@ Measured on the development machine with a release Rust backend, JDK 24, a
 | Unix socket | 53.7 µs | 76.9 µs | 105.8 µs | 148,763 req/s |
 
 The latest clean transport run measured TCP at 71.9/96.6/115.3 µs and 95,910
-req/s. This benchmark uses `moonlight-bridge-client` without the Sentry provider, so it is a
-transport baseline rather than a production-plugin simulation.
+req/s. This benchmark uses `moonlight-bridge-client` without the bundled runtime
+instrumentation, so it is a transport baseline rather than a production-plugin simulation.
 
 These are a regression baseline, not portable guarantees. Run
 `./scripts/benchmark.sh` on the production CPU/kernel/JVM before tuning presets.
@@ -86,8 +86,8 @@ the default embedded telemetry policy, a one-million-request run at concurrency
 JFR identified protobuf encoding/decoding and `CompletableFuture` lifecycle as
 the main Java allocation sources. Linux `perf` showed Tokio scheduling,
 per-request semaphore handling, and the cancellation table on Rust. These are
-currently required features. A Sentry scope lookup on every unsampled Java RPC
-was not required and was moved behind the 0.1% sampling decision.
+currently required features. Remote tracing work on every unsampled Java RPC was
+not required and was moved behind the sampling decision.
 
 ## Remaining allocation work
 

@@ -17,7 +17,7 @@ The plugin only uses stable Bukkit/Paper API shared by the supported releases.
 Calls to Rust run asynchronously and `MoonLightBridge` schedules Bukkit access
 onto the correct Paper global or Folia entity/region scheduler. During
 asynchronous connection the example performs one hidden
-warm-up RPC so generated Protobuf classes, Sentry profiling, and the complete
+warm-up RPC so generated Protobuf classes, runtime instrumentation, and the complete
 transport path are initialized before a command can use the client.
 
 ## Build and test
@@ -31,7 +31,7 @@ Run the complete Java-to-Rust smoke test:
 It verifies a generated unary RPC and a 32-request batch, then creates:
 
 ```text
-examples/paper-test-plugin/build/libs/paper-test-plugin-0.2.0.jar
+examples/paper-test-plugin/build/libs/paper-test-plugin-0.2.1.jar
 ```
 
 To run it on Paper:
@@ -58,8 +58,7 @@ plugin's `config.yml` for a different host/container. A shared-volume Unix
 socket can instead use `unix:/path/to/backend.sock` and start the backend with
 `MOONLIGHT_BRIDGE_UNIX_PATH=/path/to/backend.sock`.
 
-The shaded JAR includes the framework, generated API, Protobuf runtime, and the
-framework-owned Sentry provider. Protobuf and Sentry are relocated under
+The shaded JAR includes the framework, generated API, Protobuf runtime, and its
+private runtime implementation. Third-party packages are relocated under
 `ru.moonlightproject.bridge.internal` so versions exposed by Paper forks cannot
-conflict with MoonLightBridge. Plugin code neither imports nor initializes
-Sentry.
+conflict with MoonLightBridge. Plugin code only uses the public bridge API.

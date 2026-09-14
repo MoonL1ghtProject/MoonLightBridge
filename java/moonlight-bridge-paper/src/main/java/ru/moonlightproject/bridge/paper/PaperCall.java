@@ -13,7 +13,11 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Entity;
 import org.bukkit.plugin.Plugin;
 
-/** A non-blocking RPC result that can only enter Bukkit state through a scheduler. */
+/**
+ * A non-blocking RPC result that can only enter Bukkit state through a scheduler.
+ *
+ * @param <T> asynchronous result type
+ */
 public final class PaperCall<T> {
     private final CompletionStage<T> source;
     private final Plugin plugin;
@@ -25,27 +29,55 @@ public final class PaperCall<T> {
         this.active = Objects.requireNonNull(active, "active");
     }
 
-    /** Runs a successful completion against server-global state. */
+    /**
+     * Runs a successful completion against server-global state.
+     *
+     * @param action successful result callback
+     * @return future completed after callback execution
+     */
     public CompletableFuture<Void> thenOnGlobal(Consumer<? super T> action) {
         return whenCompleteOnGlobal(successOnly(action));
     }
 
-    /** Runs a successful completion on the region owning {@code location}. */
+    /**
+     * Runs a successful completion on the region owning {@code location}.
+     *
+     * @param location location whose region scheduler owns the callback
+     * @param action successful result callback
+     * @return future completed after callback execution
+     */
     public CompletableFuture<Void> thenAt(Location location, Consumer<? super T> action) {
         return whenCompleteAt(location, successOnly(action));
     }
 
-    /** Runs a successful completion through the entity scheduler. */
+    /**
+     * Runs a successful completion through the entity scheduler.
+     *
+     * @param entity entity whose scheduler owns the callback
+     * @param action successful result callback
+     * @return future completed after callback execution
+     */
     public CompletableFuture<Void> thenFor(Entity entity, Consumer<? super T> action) {
         return whenCompleteFor(entity, successOnly(action));
     }
 
-    /** Runs success or failure completion against server-global state. */
+    /**
+     * Runs success or failure completion against server-global state.
+     *
+     * @param action callback receiving either a value or failure
+     * @return future completed after callback execution
+     */
     public CompletableFuture<Void> whenCompleteOnGlobal(BiConsumer<? super T, ? super Throwable> action) {
         return whenComplete(PaperDispatchers.global(requirePlugin()), action);
     }
 
-    /** Runs success or failure completion on the region owning {@code location}. */
+    /**
+     * Runs success or failure completion on the region owning {@code location}.
+     *
+     * @param location location whose region scheduler owns the callback
+     * @param action callback receiving either a value or failure
+     * @return future completed after callback execution
+     */
     public CompletableFuture<Void> whenCompleteAt(
         Location location,
         BiConsumer<? super T, ? super Throwable> action
@@ -53,7 +85,13 @@ public final class PaperCall<T> {
         return whenComplete(PaperDispatchers.at(requirePlugin(), location), action);
     }
 
-    /** Runs success or failure completion through the entity scheduler. */
+    /**
+     * Runs success or failure completion through the entity scheduler.
+     *
+     * @param entity entity whose scheduler owns the callback
+     * @param action callback receiving either a value or failure
+     * @return future completed after callback execution
+     */
     public CompletableFuture<Void> whenCompleteFor(
         Entity entity,
         BiConsumer<? super T, ? super Throwable> action
@@ -61,7 +99,13 @@ public final class PaperCall<T> {
         return whenComplete(PaperDispatchers.forEntity(requirePlugin(), entity), action);
     }
 
-    /** Dispatches according to whether the sender is an entity, block, or global sender. */
+    /**
+     * Dispatches according to whether the sender is an entity, block, or global sender.
+     *
+     * @param sender command sender determining the safe scheduler
+     * @param action callback receiving either a value or failure
+     * @return future completed after callback execution
+     */
     public CompletableFuture<Void> whenCompleteFor(
         CommandSender sender,
         BiConsumer<? super T, ? super Throwable> action
@@ -69,7 +113,13 @@ public final class PaperCall<T> {
         return whenComplete(PaperDispatchers.forSender(requirePlugin(), sender), action);
     }
 
-    /** Runs success or failure completion through a custom dispatcher. */
+    /**
+     * Runs success or failure completion through a custom dispatcher.
+     *
+     * @param dispatcher scheduler adapter responsible for safe execution
+     * @param action callback receiving either a value or failure
+     * @return future completed after callback execution
+     */
     public CompletableFuture<Void> whenComplete(
         PaperDispatcher dispatcher,
         BiConsumer<? super T, ? super Throwable> action
@@ -142,7 +192,11 @@ public final class PaperCall<T> {
         @Serial
         private static final long serialVersionUID = 1L;
 
-        /** Wraps the scheduler or programming failure that prevented dispatch. */
+        /**
+         * Wraps the scheduler or programming failure that prevented dispatch.
+         *
+         * @param cause scheduler or callback-dispatch failure
+         */
         public CallbackDispatchException(Throwable cause) {
             super("Paper/Folia scheduler failed to dispatch the callback", cause);
         }

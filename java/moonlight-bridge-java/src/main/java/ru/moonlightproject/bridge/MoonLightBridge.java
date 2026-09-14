@@ -52,32 +52,56 @@ public final class MoonLightBridge implements MoonLightChannel {
         return new MoonLightBridge(ReconnectingMoonLightClient.connect(endpoint));
     }
 
-    /** Returns this instance as the channel accepted by generated clients. */
+    /**
+     * Returns this instance as the channel accepted by generated clients.
+     *
+     * @return this bridge
+     */
     public MoonLightChannel channel() {
         return this;
     }
 
-    /** Returns whether a physical connection is currently ready. */
+    /**
+     * Returns whether a physical connection is currently ready.
+     *
+     * @return {@code true} while the supervised connection can accept requests
+     */
     public boolean isConnected() {
         return client.isConnected();
     }
 
-    /** Returns whether this lifecycle facade has been closed. */
+    /**
+     * Returns whether this lifecycle facade has been closed.
+     *
+     * @return {@code true} after the first call to {@link #close()}
+     */
     public boolean isClosed() {
         return closed.get();
     }
 
-    /** Returns the most recent connection failure, or {@code null}. */
+    /**
+     * Returns the most recent connection failure, or {@code null}.
+     *
+     * @return the latest supervision failure, or {@code null} before any failure
+     */
     public Throwable lastFailure() {
         return client.lastFailure();
     }
 
-    /** Returns the number of requests waiting for a response on the active connection. */
+    /**
+     * Returns the number of requests waiting for a response on the active connection.
+     *
+     * @return current number of in-flight requests
+     */
     public int pendingRequests() {
         return client.pendingRequests();
     }
 
-    /** Completes once, after the first successful connection. */
+    /**
+     * Completes once, after the first successful connection.
+     *
+     * @return a stage shared by callers waiting for initial readiness
+     */
     public CompletionStage<Void> firstConnection() {
         return client.firstConnection();
     }

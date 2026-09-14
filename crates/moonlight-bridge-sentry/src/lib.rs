@@ -16,7 +16,7 @@ pub fn init_framework_sentry() -> sentry::ClientInitGuard {
     let environment =
         option_env!("MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_ENVIRONMENT").unwrap_or("production");
     let release = option_env!("MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_RELEASE")
-        .unwrap_or("moonlight-bridge@0.2.0");
+        .unwrap_or("moonlight-bridge@0.2.1");
     let trace_sample_rate = option_env!("MOONLIGHT_BRIDGE_INTERNAL_TELEMETRY_TRACE_SAMPLE_RATE")
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| (0.0..=1.0).contains(value))

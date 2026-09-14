@@ -8,6 +8,8 @@ import jdk.jfr.StackTrace;
 
 /** Optional per-request JFR events for controlled profiling sessions. */
 public final class MoonLightJfrTelemetry implements MoonLightTelemetry {
+    /** Creates an instrumentation adapter that emits events only during an active JFR recording. */
+    public MoonLightJfrTelemetry() { }
     @Override
     public RequestObservation startRequest(RequestInfo request) {
         RpcEvent event = new RpcEvent();

@@ -1,4 +1,5 @@
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
+import org.gradle.external.javadoc.StandardJavadocDocletOptions
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.tasks.bundling.Jar
 
@@ -34,7 +35,6 @@ val publishedJavaProjects = mapOf(
     ":java:moonlight-bridge-client" to "Core asynchronous Java client and transport runtime",
     ":java:moonlight-bridge-java" to "Universal Java 21+ runtime for MoonLightBridge Rust services",
     ":java:moonlight-bridge-paper" to "Paper and Folia integration built on the universal Java runtime",
-    ":java:moonlight-bridge-sentry" to "Internal telemetry provider for MoonLightBridge runtime artifacts",
     ":java:moonlight-bridge-framework" to "Compatibility aggregate for MoonLightBridge 0.1.x consumers",
     ":java:moonlight-bridge-gradle-plugin" to "Gradle schema and code-generation plugin for MoonLightBridge",
 )
@@ -103,6 +103,10 @@ configure(subprojects.filter { it.path in publishedJavaProjects }) {
 
     tasks.withType<Jar>().configureEach {
         manifest.attributes("Implementation-Version" to project.version)
+    }
+
+    tasks.withType<Javadoc>().configureEach {
+        (options as StandardJavadocDocletOptions).addBooleanOption("Werror", true)
     }
 }
 

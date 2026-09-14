@@ -11,7 +11,12 @@ import org.bukkit.plugin.Plugin;
 public final class PaperDispatchers {
     private PaperDispatchers() { }
 
-    /** Creates a dispatcher for server-global state. */
+    /**
+     * Creates a dispatcher for server-global state.
+     *
+     * @param plugin plugin owning the scheduled task
+     * @return global-region dispatcher
+     */
     public static PaperDispatcher global(Plugin plugin) {
         Objects.requireNonNull(plugin, "plugin");
         return (action, unavailable) -> {
@@ -23,7 +28,13 @@ public final class PaperDispatchers {
         };
     }
 
-    /** Creates a dispatcher for the region owning a cloned location. */
+    /**
+     * Creates a dispatcher for the region owning a cloned location.
+     *
+     * @param plugin plugin owning the scheduled task
+     * @param location location used to select the region
+     * @return region dispatcher retaining a cloned location
+     */
     public static PaperDispatcher at(Plugin plugin, Location location) {
         Objects.requireNonNull(plugin, "plugin");
         Location target = Objects.requireNonNull(location, "location").clone();
@@ -36,7 +47,13 @@ public final class PaperDispatchers {
         };
     }
 
-    /** Creates a dispatcher following an entity's scheduler and retirement state. */
+    /**
+     * Creates a dispatcher following an entity's scheduler and retirement state.
+     *
+     * @param plugin plugin owning the scheduled task
+     * @param entity entity whose scheduler owns the callback
+     * @return entity dispatcher
+     */
     public static PaperDispatcher forEntity(Plugin plugin, Entity entity) {
         Objects.requireNonNull(plugin, "plugin");
         Objects.requireNonNull(entity, "entity");
@@ -51,7 +68,13 @@ public final class PaperDispatchers {
         };
     }
 
-    /** Chooses entity, block-region, or global dispatch for a command sender. */
+    /**
+     * Chooses entity, block-region, or global dispatch for a command sender.
+     *
+     * @param plugin plugin owning the scheduled task
+     * @param sender command sender that determines scheduler ownership
+     * @return appropriate entity, region, or global dispatcher
+     */
     public static PaperDispatcher forSender(Plugin plugin, CommandSender sender) {
         Objects.requireNonNull(sender, "sender");
         if (sender instanceof Entity entity) return forEntity(plugin, entity);

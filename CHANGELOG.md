@@ -3,6 +3,12 @@
 MoonLightBridge follows [Semantic Versioning](https://semver.org/). This file records
 user-visible framework changes; low-level refactors stay in the Git history.
 
+## 0.2.1 — Private runtime packaging
+
+- Embedded and relocated remote instrumentation inside `moonlight-bridge-java`.
+- Removed the private provider from Maven, GitHub Packages, release assets, and public guides.
+- Added a packaged-runtime test and completed high-level lifecycle Javadocs.
+
 ## 0.2.0 — Universal Java runtime
 
 - Added `moonlight-bridge-java`, the recommended Java 21+ lifecycle facade without Bukkit dependencies.
@@ -15,7 +21,7 @@ user-visible framework changes; low-level refactors stay in the Git history.
 
 - Expanded crates.io and docs.rs documentation for the server, code generator, and wire protocol.
 - Added checked examples for transports, routing, schema locks, errors, metrics, events, and safe mutations.
-- Made the framework-owned Rust Sentry adapter private and ended its separate crates.io publication.
+- Made the framework-owned remote telemetry adapter private and ended its separate publication.
 - Separated optional Maven Central publishing from crates.io, GitHub Packages, and GitHub Releases.
 
 ## 0.1.0 — first public release
@@ -26,5 +32,5 @@ user-visible framework changes; low-level refactors stay in the Git history.
 - Added deadlines, cancellation, heartbeat, reconnect supervision and health/readiness.
 - Added Paper/Folia scheduler-aware completions without a separate bridge server plugin.
 - Added schema compatibility locking, duplicate method/request protection and strict response validation.
-- Added framework-owned Sentry errors/traces, propagated spans, metrics and Java Flight Recorder events.
+- Added framework-owned error reporting, propagated traces, metrics and Java Flight Recorder events.
 - Added Maven Central, GitHub Packages, crates.io and checksummed GitHub Release automation.

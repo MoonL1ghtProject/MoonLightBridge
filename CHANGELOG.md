@@ -3,6 +3,11 @@
 MoonLightBridge follows [Semantic Versioning](https://semver.org/). This file records
 user-visible framework changes; low-level refactors stay in the Git history.
 
+## 0.2.2 — Publication metadata fix
+
+- Restored the `sources` artifact on the relocated universal Java publication.
+- Added a release-time assertion for the main, sources, and Javadoc classifiers.
+
 ## 0.2.1 — Private runtime packaging
 
 - Embedded and relocated remote instrumentation inside `moonlight-bridge-java`.

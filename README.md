@@ -43,7 +43,7 @@ flowchart LR
 
 ## Install
 
-MoonLightBridge `0.2.1` is available from Maven Central without repository credentials.
+MoonLightBridge `0.2.2` is available from Maven Central without repository credentials.
 
 For any Java 21+ application:
 
@@ -53,7 +53,7 @@ repositories {
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-java:0.2.1")
+    implementation("ru.moonlightproject:moonlight-bridge-java:0.2.2")
 }
 ```
 
@@ -61,7 +61,7 @@ For Paper or Folia, use the adapter instead; it already includes the universal r
 
 ```kotlin
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-paper:0.2.1")
+    implementation("ru.moonlightproject:moonlight-bridge-paper:0.2.2")
 }
 ```
 
@@ -92,7 +92,7 @@ Add the Rust runtime to the backend:
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.2.1"
+moonlight-bridge-server = "0.2.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -127,11 +127,11 @@ pluginManagement {
 ```kotlin
 // build.gradle.kts
 plugins {
-    id("ru.moonlightproject.bridge") version "0.2.1"
+    id("ru.moonlightproject.bridge") version "0.2.2"
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-client:0.2.1")
+    implementation("ru.moonlightproject:moonlight-bridge-client:0.2.2")
     implementation("com.google.protobuf:protobuf-java:4.36.1")
 }
 ```
@@ -255,7 +255,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 
 ## What is included
 
-| Area | Available in 0.2.1 |
+| Area | Available in 0.2.2 |
 |---|---|
 | Transport | Unix socket, TCP, mutual TLS |
 | RPC | Multiplexing, typed unary calls, typed batches, deadlines, cancellation |
@@ -287,7 +287,7 @@ The repository contains a working [Paper plugin](examples/paper-test-plugin), it
 
 ## Project status
 
-Version `0.2.1` is a stable public API release. The transport and
+Version `0.2.2` is a stable public API release. The transport and
 lifecycle are fully tested, but the project is still young: benchmark your own workload
 and pin exact versions in production. Backward-incompatible changes follow semantic
 versioning.

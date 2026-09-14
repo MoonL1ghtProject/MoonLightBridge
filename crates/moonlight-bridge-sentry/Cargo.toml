@@ -13,7 +13,7 @@ description = "Internal Sentry telemetry adapter for MoonLightBridge builds"
 publish = false
 
 [dependencies]
-moonlight-bridge-server = { version = "0.2.1", path = "../moonlight-bridge-server" }
+moonlight-bridge-server = { version = "0.2.2", path = "../moonlight-bridge-server" }
 sentry.workspace = true
 sentry-tracing.workspace = true
 tracing.workspace = true

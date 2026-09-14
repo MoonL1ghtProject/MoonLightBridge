@@ -12,6 +12,7 @@ plugins {
 java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
+    withSourcesJar()
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -50,6 +51,9 @@ tasks.assemble {
 publishing.publications.withType<MavenPublication>().configureEach {
     artifacts.removeIf { it.classifier == null && it.extension == "jar" }
     artifact(tasks.named("shadowJar"))
+    artifact(tasks.named("sourcesJar")) {
+        classifier = "sources"
+    }
 }
 
 // The Java component describes the intentionally unpublished thin JAR. Maven consumers receive
@@ -81,5 +85,18 @@ val embeddedRuntimeTest = tasks.register<JavaExec>("embeddedRuntimeTest") {
 }
 
 tasks.check {
-    dependsOn(universalLifecycleTest, embeddedRuntimeTest)
+    dependsOn(universalLifecycleTest, embeddedRuntimeTest, "validatePublishedRuntime")
+}
+
+tasks.register("validatePublishedRuntime") {
+    group = "verification"
+    description = "Verifies the public runtime has main, sources, and Javadoc artifacts"
+    dependsOn("shadowJar", "sourcesJar", "plainJavadocJar", "generatePomFileForMavenPublication")
+    doLast {
+        val artifacts = publishing.publications.named<MavenPublication>("maven").get().artifacts
+        val classifiers = artifacts.map { it.classifier ?: "main" }.toSet()
+        check(classifiers == setOf("main", "sources", "javadoc")) {
+            "unexpected moonlight-bridge-java publication classifiers: $classifiers"
+        }
+    }
 }

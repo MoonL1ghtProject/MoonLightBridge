@@ -31,7 +31,7 @@ Run the complete Java-to-Rust smoke test:
 It verifies a generated unary RPC and a 32-request batch, then creates:
 
 ```text
-examples/paper-test-plugin/build/libs/paper-test-plugin-0.2.1.jar
+examples/paper-test-plugin/build/libs/paper-test-plugin-0.2.2.jar
 ```
 
 To run it on Paper:

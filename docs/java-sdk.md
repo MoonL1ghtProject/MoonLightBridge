@@ -11,7 +11,7 @@ only adds scheduler-safe Minecraft callbacks.
 repositories { mavenCentral() }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-java:0.2.1")
+    implementation("ru.moonlightproject:moonlight-bridge-java:0.2.2")
 }
 ```
 

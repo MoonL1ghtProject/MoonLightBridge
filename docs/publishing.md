@@ -56,12 +56,12 @@ Set the same version in `Cargo.toml`, `gradle.properties`, and every versioned l
 dependency. Then run:
 
 ```bash
-./scripts/check-release-version.sh 0.2.1
+./scripts/check-release-version.sh 0.2.2
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 ./gradlew check
-./scripts/package-release.sh 0.2.1
+./scripts/package-release.sh 0.2.2
 ```
 
 `package-release.sh` performs a complete Cargo package verification for independent
@@ -77,8 +77,8 @@ contain sources, Javadoc, license, developer, SCM and issue-tracker metadata.
 Commit the version, merge it to `main`, then create and push the exact tag:
 
 ```bash
-git tag -s v0.2.1 -m "MoonLightBridge 0.2.1"
-git push origin v0.2.1
+git tag -s v0.2.2 -m "MoonLightBridge 0.2.2"
+git push origin v0.2.2
 ```
 
 Only tags shaped like `vMAJOR.MINOR.PATCH` start `.github/workflows/release.yml`. The

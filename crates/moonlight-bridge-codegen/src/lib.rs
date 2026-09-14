@@ -9,13 +9,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Schema-lock creation and backward-compatibility validation.
 pub mod schema;
 
 /// Complete Cargo build-script configuration for models, compatibility checks and bindings.
 pub struct RustBuildConfig {
+    /// Protobuf source files passed to `prost-build`.
     pub protos: Vec<PathBuf>,
+    /// Import roots used to resolve Protobuf imports.
     pub includes: Vec<PathBuf>,
+    /// Compatibility baseline checked during the build.
     pub schema_lock: PathBuf,
+    /// Filename written into Cargo's `OUT_DIR` for generated service bindings.
     pub generated_services_name: String,
 }
 
@@ -39,6 +44,7 @@ pub fn compile_rust_api(config: RustBuildConfig) -> Result<PathBuf, Box<dyn std:
     Ok(generated)
 }
 
+/// Generates Rust service traits, registrations, and event publishers from descriptors.
 pub fn generate_rust(
     descriptor_path: impl AsRef<Path>,
     output: impl AsRef<Path>,
@@ -56,17 +62,28 @@ pub fn generate_rust(
     for file in &descriptor.file {
         for service in &file.service {
             let service_name = required(&service.name, "service name")?;
+            writeln!(
+                code,
+                "/// Typed implementation of the `{service_name}` Protobuf service."
+            )
+            .unwrap();
             writeln!(code, "pub trait {service_name}: Send + Sync + 'static {{").unwrap();
             for method in &service.method {
                 let method_name = required(&method.name, "method name")?;
                 let rust_method = snake_case(method_name);
                 let input = rust_message_type(method.input_type.as_deref())?;
                 let output = rust_message_type(method.output_type.as_deref())?;
+                writeln!(code, "    /// Handles the `{method_name}` RPC.").unwrap();
                 writeln!(code, "    fn {rust_method}(&self, request: crate::model::{input}) -> impl Future<Output = Result<crate::model::{output}, HandlerError>> + Send;").unwrap();
             }
             writeln!(code, "}}\n").unwrap();
 
             let register_name = format!("register_{}", snake_case(service_name));
+            writeln!(
+                code,
+                "/// Registers every `{service_name}` RPC handler on a router builder."
+            )
+            .unwrap();
             writeln!(code, "pub fn {register_name}<S>(mut builder: RouterBuilder, service: Arc<S>) -> RouterBuilder where S: {service_name} {{").unwrap();
             for method in &service.method {
                 generate_rust_method(&mut code, file, service_name, method)?;
@@ -79,13 +96,13 @@ pub fn generate_rust(
                 let id = method_id(&canonical_event(file, name));
                 writeln!(
                     code,
-                    "pub const {}_ID: u32 = 0x{id:08X};",
+                    "/// Stable wire ID of the `{name}` event.\npub const {}_ID: u32 = 0x{id:08X};",
                     upper_snake(name)
                 )
                 .unwrap();
                 writeln!(
                     code,
-                    "pub fn publish_{}(events: &EventHub, event: crate::model::{name}) -> usize {{",
+                    "/// Publishes a `{name}` event and returns the number of active receivers.\npub fn publish_{}(events: &EventHub, event: crate::model::{name}) -> usize {{",
                     snake_case(name)
                 )
                 .unwrap();
@@ -102,6 +119,7 @@ pub fn generate_rust(
     fs::write(output, code)
 }
 
+/// Generates Java asynchronous clients and typed event helpers from descriptors.
 pub fn generate_java(
     descriptor_path: impl AsRef<Path>,
     output_root: impl AsRef<Path>,
@@ -128,14 +146,17 @@ pub fn generate_java(
                  import java.util.Objects;\n\
                  import java.util.concurrent.CompletableFuture;\n\
                  import java.util.concurrent.CompletionException;\n\n\
+                 /** Asynchronous typed client for the {{@code {service_name}}} Protobuf service. */\n\
                  public final class {class_name} {{\n\
                  private final MoonLightChannel channel;\n\
                  private final Duration deadline;\n\n\
+                 /** Creates a client using a two-second default deadline. */\n\
                  public {class_name}(MoonLightChannel channel) {{ this(channel, Duration.ofSeconds(2)); }}\n\
                  private {class_name}(MoonLightChannel channel, Duration deadline) {{\n\
                  this.channel = Objects.requireNonNull(channel);\n\
                  this.deadline = Objects.requireNonNull(deadline);\n\
                  }}\n\
+                 /** Returns an immutable client view using {{@code deadline}} for subsequent calls. */\n\
                  public {class_name} withDeadline(Duration deadline) {{ return new {class_name}(channel, deadline); }}\n\n"
             );
             for method in &service.method {
@@ -166,6 +187,7 @@ pub fn generate_java(
                  import ru.moonlightproject.bridge.client.MoonLightChannel;\n\
                  import java.util.concurrent.CompletionException;\n\
                  import java.util.function.Consumer;\n\n\
+                 /** Typed subscriptions for events declared in {{@code {file_name}}}. */\n\
                  public final class {class_name} {{\n\
                  private {class_name}() {{ }}\n\n"
             );
@@ -174,8 +196,13 @@ pub fn generate_java(
                 let id = method_id(&canonical_event(file, name));
                 writeln!(
                     code,
-                    "public static final int {}_ID = 0x{id:08X};",
+                    "/** Stable wire ID of the {{@code {name}}} event. */\npublic static final int {}_ID = 0x{id:08X};",
                     upper_snake(name)
+                )
+                .unwrap();
+                writeln!(
+                    code,
+                    "/** Subscribes to {{@code {name}}} events; close the result to unsubscribe. */"
                 )
                 .unwrap();
                 writeln!(code, "public static AutoCloseable on{name}(MoonLightChannel channel, Consumer<{name}> listener) {{").unwrap();
@@ -254,13 +281,13 @@ fn generate_java_method(
     let java_method = lower_camel(name);
     writeln!(
         code,
-        "public static final int {}_METHOD_ID = 0x{id:08X};",
+        "/** Stable wire ID of the {{@code {name}}} RPC. */\npublic static final int {}_METHOD_ID = 0x{id:08X};",
         upper_snake(name)
     )
     .unwrap();
     writeln!(
         code,
-        "public CompletableFuture<{output}> {java_method}({input} request) {{"
+        "/** Calls {{@code {name}}} asynchronously using this client's deadline. */\npublic CompletableFuture<{output}> {java_method}({input} request) {{"
     )
     .unwrap();
     writeln!(code, "    byte[] payload = MoonLightTelemetry.traceFunction(\"protobuf.encode.{service}.{name}\", request::toByteArray);").unwrap();
@@ -276,7 +303,7 @@ fn generate_java_method(
     writeln!(code, "}}\n").unwrap();
     writeln!(
         code,
-        "public CompletableFuture<List<{output}>> {java_method}Batch(List<{input}> requests) {{"
+        "/** Calls {{@code {name}}} for every request and preserves input order. */\npublic CompletableFuture<List<{output}>> {java_method}Batch(List<{input}> requests) {{"
     )
     .unwrap();
     writeln!(code, "    List<MoonLightRequest> calls = requests.stream().map(request -> new MoonLightRequest({}_METHOD_ID, request.toByteArray(), deadline)).toList();", upper_snake(name)).unwrap();
@@ -381,6 +408,7 @@ fn canonical_event(file: &FileDescriptorProto, message: &str) -> String {
     format!("event:{package}.{message}")
 }
 
+/// Computes the stable 32-bit FNV-1a wire ID for a canonical method or event name.
 pub const fn method_id(name: &str) -> u32 {
     let bytes = name.as_bytes();
     let mut hash = 0x811C_9DC5u32;

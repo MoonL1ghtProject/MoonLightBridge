@@ -13,7 +13,7 @@ repositories {
 }
 
 dependencies {
-    implementation(project(":java:moonlight-bridge-framework"))
+    implementation(project(":java:moonlight-bridge-paper"))
     implementation(project(":java:moonlight-bridge-example-api"))
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
 }

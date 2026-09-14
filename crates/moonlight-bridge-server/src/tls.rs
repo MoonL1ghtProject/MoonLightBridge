@@ -6,6 +6,7 @@ use std::{
 };
 use tokio_rustls::rustls::{RootCertStore, ServerConfig, server::WebPkiClientVerifier};
 
+/// Loads a PEM certificate chain, private key, and client CA into an mTLS configuration.
 pub fn load_mtls_server_config(
     certificate_chain: impl AsRef<Path>,
     private_key: impl AsRef<Path>,

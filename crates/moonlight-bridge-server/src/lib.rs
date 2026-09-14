@@ -28,6 +28,7 @@ use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 use tracing::Instrument;
 
 pub mod idempotency;
+/// Helpers for loading mutual-TLS server configuration from PEM files.
 pub mod tls;
 
 tokio::task_local! {
@@ -64,11 +65,16 @@ type Handler = Arc<dyn Fn(Vec<u8>) -> HandlerFuture + Send + Sync>;
 type ActiveRequests = Arc<Mutex<HashMap<u64, AbortHandle>>>;
 
 #[derive(Clone)]
+/// Bounded broadcast channel for one-way events sent to connected clients.
 pub struct EventHub {
     sender: broadcast::Sender<Frame>,
 }
 
 impl EventHub {
+    /// Creates a hub with the specified per-receiver backlog capacity.
+    ///
+    /// # Panics
+    /// Panics when `capacity` is zero.
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "event broadcast capacity must be positive");
         let (sender, _) = broadcast::channel(capacity);
@@ -91,18 +97,26 @@ impl Default for EventHub {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Point-in-time health and load information for a server.
 pub struct ServerHealth {
+    /// Whether the accept loop has started and the server is ready.
     pub ready: bool,
+    /// Number of currently open client connections.
     pub active_connections: u64,
+    /// Number of handlers currently executing across all connections.
     pub active_requests: u64,
+    /// Configured concurrent-request limit for one connection.
     pub max_in_flight_per_connection: u32,
+    /// Time elapsed since server construction.
     pub uptime: Duration,
 }
 
 #[derive(Clone)]
+/// Cheap cloneable handle for reading server health while the server is running.
 pub struct HealthHandle(Arc<RuntimeState>);
 
 impl HealthHandle {
+    /// Reads a lock-free snapshot of the current server state.
     pub fn snapshot(&self) -> ServerHealth {
         ServerHealth {
             ready: self.0.ready.load(Ordering::Relaxed),
@@ -139,32 +153,53 @@ impl Drop for RequestGuard {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Request metadata supplied to a [`Telemetry`] implementation.
 pub struct RequestInfo {
+    /// Generated method identifier.
     pub method_id: u32,
+    /// Connection-local correlation identifier.
     pub request_id: u64,
+    /// Decoded application payload size in bytes.
     pub request_bytes: usize,
+    /// Propagated trace identifiers, when provided by the client.
     pub trace_context: Option<TraceContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Terminal result reported to a request observation.
 pub enum RequestOutcome {
-    Success { response_bytes: usize },
-    Error { code: ErrorCode },
+    /// Handler returned a successful response.
+    Success {
+        /// Encoded response size in bytes.
+        response_bytes: usize,
+    },
+    /// Handler or runtime returned a transport-level error.
+    Error {
+        /// Stable protocol error classification.
+        code: ErrorCode,
+    },
 }
 
+/// Per-request observation created by a [`Telemetry`] implementation.
 pub trait RequestObservation: Send {
+    /// Records a named generated or user-instrumented backend stage.
     fn record_stage(&mut self, _name: &'static str, _duration: Duration) {}
+    /// Completes this observation with the request's terminal outcome.
     fn finish(self: Box<Self>, outcome: RequestOutcome);
 }
 
+/// Pluggable request instrumentation invoked outside application handlers.
 pub trait Telemetry: Send + Sync {
+    /// Starts an observation, or returns `None` to skip this request.
     fn start_request(&self, info: RequestInfo) -> Option<Box<dyn RequestObservation>>;
 }
 
 #[derive(Default)]
+/// Fan-out adapter that forwards observations to multiple telemetry delegates.
 pub struct TelemetryChain(Vec<Arc<dyn Telemetry>>);
 
 impl TelemetryChain {
+    /// Creates a chain in delegate iteration order.
     pub fn new(delegates: impl IntoIterator<Item = Arc<dyn Telemetry>>) -> Self {
         Self(delegates.into_iter().collect())
     }
@@ -202,6 +237,7 @@ impl RequestObservation for ChainedObservation {
 }
 
 #[derive(Clone, Default)]
+/// Lock-free aggregate request counters implementing [`Telemetry`].
 pub struct MoonLightMetrics(Arc<MetricsInner>);
 
 #[derive(Default)]
@@ -216,17 +252,26 @@ struct MetricsInner {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Cumulative counters returned by [`MoonLightMetrics::snapshot`].
 pub struct MetricsSnapshot {
+    /// Requests for which an observation was started.
     pub started: u64,
+    /// Successfully completed requests.
     pub succeeded: u64,
+    /// Failed, cancelled, or abandoned requests.
     pub failed: u64,
+    /// Total decoded request payload bytes.
     pub request_bytes: u64,
+    /// Total successful response payload bytes.
     pub response_bytes: u64,
+    /// Sum of observed request latency in nanoseconds.
     pub total_latency_nanos: u64,
+    /// Largest observed request latency in nanoseconds.
     pub max_latency_nanos: u64,
 }
 
 impl MoonLightMetrics {
+    /// Reads all counters without blocking request processing.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
             started: self.0.started.load(Ordering::Relaxed),
@@ -304,12 +349,16 @@ impl Drop for MetricsObservation {
 }
 
 #[derive(Debug)]
+/// Handler failure converted into a structured ERROR frame.
 pub struct HandlerError {
+    /// Stable transport error classification.
     pub code: ErrorCode,
+    /// Human-readable diagnostic message, not a stable application contract.
     pub message: String,
 }
 
 impl HandlerError {
+    /// Creates a handler error with an explicit wire code.
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -317,23 +366,27 @@ impl HandlerError {
         }
     }
 
+    /// Creates an [`ErrorCode::Internal`] handler error.
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Internal, message)
     }
 }
 
 #[derive(Clone, Default)]
+/// Immutable method router consumed by a [`Server`].
 pub struct Router {
     handlers: Arc<HashMap<u32, Handler>>,
     telemetry: Option<Arc<dyn Telemetry>>,
 }
 
+/// Builder that registers handlers and request telemetry.
 pub struct RouterBuilder {
     handlers: HashMap<u32, Handler>,
     telemetry: Option<Arc<dyn Telemetry>>,
 }
 
 impl Router {
+    /// Starts an empty router builder.
     pub fn builder() -> RouterBuilder {
         RouterBuilder {
             handlers: HashMap::new(),
@@ -448,11 +501,18 @@ impl Router {
 }
 
 impl RouterBuilder {
+    /// Installs the telemetry implementation used for handled requests.
     pub fn telemetry(mut self, telemetry: Arc<dyn Telemetry>) -> Self {
         self.telemetry = Some(telemetry);
         self
     }
 
+    /// Registers an asynchronous byte-level handler for a method ID.
+    ///
+    /// Generated registration functions should normally be preferred.
+    ///
+    /// # Panics
+    /// Panics when the method ID has already been registered.
     pub fn route<F, Fut>(mut self, method_id: u32, handler: F) -> Self
     where
         F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
@@ -468,6 +528,7 @@ impl RouterBuilder {
         self
     }
 
+    /// Freezes handler registration into a cloneable router.
     pub fn build(self) -> Router {
         Router {
             handlers: Arc::new(self.handlers),
@@ -482,6 +543,7 @@ fn finish_observation(observation: Option<Box<dyn RequestObservation>>, outcome:
     }
 }
 
+/// Tokio server accepting MoonLightBridge connections over one configured transport.
 pub struct Server {
     listener: Listener,
     router: Router,
@@ -512,10 +574,12 @@ impl Server {
         )
     }
 
+    /// Alias for [`Server::bind_tcp`].
     pub async fn bind(address: &str, router: Router) -> io::Result<Self> {
         Self::bind_tcp(address, router).await
     }
 
+    /// Binds a plaintext TCP listener without starting the accept loop.
     pub async fn bind_tcp(address: &str, router: Router) -> io::Result<Self> {
         let settings = PeerSettings {
             max_body_len: DEFAULT_MAX_BODY_LEN,
@@ -533,6 +597,7 @@ impl Server {
         })
     }
 
+    /// Binds a TCP listener and performs TLS for every accepted connection.
     pub async fn bind_tls(
         address: &str,
         router: Router,
@@ -555,6 +620,7 @@ impl Server {
     }
 
     #[cfg(unix)]
+    /// Binds a Unix-domain socket without starting the accept loop.
     pub fn bind_unix(path: impl AsRef<Path>, router: Router) -> io::Result<Self> {
         let settings = PeerSettings {
             max_body_len: DEFAULT_MAX_BODY_LEN,
@@ -582,6 +648,7 @@ impl Server {
         self
     }
 
+    /// Returns the event hub associated with this server.
     pub fn events(&self) -> EventHub {
         self.events.clone()
     }
@@ -592,10 +659,12 @@ impl Server {
         self
     }
 
+    /// Returns a handle that remains usable after [`Server::run`] takes ownership.
     pub fn health(&self) -> HealthHandle {
         HealthHandle(self.runtime.clone())
     }
 
+    /// Runs the accept loop until an unrecoverable listener error occurs.
     pub async fn run(self) -> io::Result<()> {
         self.runtime.ready.store(true, Ordering::Relaxed);
         match self.listener {

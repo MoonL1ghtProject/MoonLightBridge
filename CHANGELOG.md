@@ -3,6 +3,14 @@
 MoonLightBridge follows [Semantic Versioning](https://semver.org/). This file records
 user-visible framework changes; low-level refactors stay in the Git history.
 
+## 0.2.0 — Universal Java runtime
+
+- Added `moonlight-bridge-java`, the recommended Java 21+ lifecycle facade without Bukkit dependencies.
+- Rebuilt `moonlight-bridge-paper` as a thin scheduler-safe adapter over the universal runtime.
+- Kept `moonlight-bridge-framework` as a compatibility aggregate for existing 0.1.x consumers.
+- Made Maven Central the primary Java source and retained GitHub Packages as a mirror.
+- Expanded Java guides, generated-client Javadocs, crates.io READMEs, and strict public Rust API documentation.
+
 ## 0.1.1 — Rust documentation
 
 - Expanded crates.io and docs.rs documentation for the server, code generator, and wire protocol.

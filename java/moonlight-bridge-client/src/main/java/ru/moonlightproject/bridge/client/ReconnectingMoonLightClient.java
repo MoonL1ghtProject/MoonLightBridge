@@ -8,6 +8,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.Consumer;
 
+/** Low-level connection supervisor that reconnects without replaying interrupted requests. */
 public final class ReconnectingMoonLightClient implements MoonLightChannel {
     private final String endpoint;
     private final ReconnectPolicy policy;
@@ -44,16 +45,19 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         }
     }
 
+    /** Connects immediately using default reconnect and transport settings. */
     public static ReconnectingMoonLightClient connect(String endpoint) throws IOException {
         return new ReconnectingMoonLightClient(
             endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), MoonLightTelemetry.automatic(), true);
     }
 
+    /** Connects immediately using the supplied reconnect policy. */
     public static ReconnectingMoonLightClient connect(String endpoint, ReconnectPolicy policy) throws IOException {
         return new ReconnectingMoonLightClient(
             endpoint, policy, automaticPerformance(endpoint), MoonLightTelemetry.automatic(), true);
     }
 
+    /** Connects immediately using explicit reconnect, performance, and telemetry settings. */
     public static ReconnectingMoonLightClient connect(
         String endpoint,
         ReconnectPolicy policy,
@@ -72,11 +76,13 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
             endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), MoonLightTelemetry.automatic(), false);
     }
 
+    /** Starts asynchronous connection supervision using the supplied reconnect policy. */
     public static ReconnectingMoonLightClient start(String endpoint, ReconnectPolicy policy) throws IOException {
         return new ReconnectingMoonLightClient(
             endpoint, policy, automaticPerformance(endpoint), MoonLightTelemetry.automatic(), false);
     }
 
+    /** Starts asynchronous supervision using explicit reconnect, performance, and telemetry settings. */
     public static ReconnectingMoonLightClient start(
         String endpoint,
         ReconnectPolicy policy,
@@ -86,8 +92,11 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         return new ReconnectingMoonLightClient(endpoint, policy, performance, telemetry, false);
     }
 
+    /** Returns whether a physical connection is currently installed. */
     public boolean isConnected() { return active.get() != null; }
+    /** Returns the most recent connection failure, or {@code null}. */
     public Throwable lastFailure() { return lastFailure.get(); }
+    /** Returns requests waiting on the active connection, or zero while disconnected. */
     public int pendingRequests() {
         MoonLightClient client = active.get();
         return client == null ? 0 : client.pendingRequests();
@@ -192,6 +201,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         if (client != null) client.close();
     }
 
+    /** Exponential reconnect-backoff bounds; each attempt also receives random jitter. */
     public record ReconnectPolicy(Duration initialDelay, Duration maxDelay) {
         public ReconnectPolicy {
             Objects.requireNonNull(initialDelay);
@@ -200,15 +210,18 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
             if (maxDelay.compareTo(initialDelay) < 0) throw new IllegalArgumentException("maxDelay must not be less than initialDelay");
         }
 
+        /** Returns a 100 ms initial delay capped at five seconds. */
         public static ReconnectPolicy defaults() {
             return new ReconnectPolicy(Duration.ofMillis(100), Duration.ofSeconds(5));
         }
     }
 
+    /** Indicates that no active backend connection could accept a call. */
     public static final class BackendUnavailableException extends IOException {
         @Serial
         private static final long serialVersionUID = 1L;
 
+        /** Creates an exception naming the disconnected endpoint. */
         public BackendUnavailableException(String endpoint) {
             super("MoonLightBridge backend is disconnected: " + endpoint);
         }

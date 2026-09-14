@@ -25,22 +25,27 @@ public final class PaperCall<T> {
         this.active = Objects.requireNonNull(active, "active");
     }
 
+    /** Runs a successful completion against server-global state. */
     public CompletableFuture<Void> thenOnGlobal(Consumer<? super T> action) {
         return whenCompleteOnGlobal(successOnly(action));
     }
 
+    /** Runs a successful completion on the region owning {@code location}. */
     public CompletableFuture<Void> thenAt(Location location, Consumer<? super T> action) {
         return whenCompleteAt(location, successOnly(action));
     }
 
+    /** Runs a successful completion through the entity scheduler. */
     public CompletableFuture<Void> thenFor(Entity entity, Consumer<? super T> action) {
         return whenCompleteFor(entity, successOnly(action));
     }
 
+    /** Runs success or failure completion against server-global state. */
     public CompletableFuture<Void> whenCompleteOnGlobal(BiConsumer<? super T, ? super Throwable> action) {
         return whenComplete(PaperDispatchers.global(requirePlugin()), action);
     }
 
+    /** Runs success or failure completion on the region owning {@code location}. */
     public CompletableFuture<Void> whenCompleteAt(
         Location location,
         BiConsumer<? super T, ? super Throwable> action
@@ -48,6 +53,7 @@ public final class PaperCall<T> {
         return whenComplete(PaperDispatchers.at(requirePlugin(), location), action);
     }
 
+    /** Runs success or failure completion through the entity scheduler. */
     public CompletableFuture<Void> whenCompleteFor(
         Entity entity,
         BiConsumer<? super T, ? super Throwable> action
@@ -55,6 +61,7 @@ public final class PaperCall<T> {
         return whenComplete(PaperDispatchers.forEntity(requirePlugin(), entity), action);
     }
 
+    /** Dispatches according to whether the sender is an entity, block, or global sender. */
     public CompletableFuture<Void> whenCompleteFor(
         CommandSender sender,
         BiConsumer<? super T, ? super Throwable> action
@@ -62,6 +69,7 @@ public final class PaperCall<T> {
         return whenComplete(PaperDispatchers.forSender(requirePlugin(), sender), action);
     }
 
+    /** Runs success or failure completion through a custom dispatcher. */
     public CompletableFuture<Void> whenComplete(
         PaperDispatcher dispatcher,
         BiConsumer<? super T, ? super Throwable> action
@@ -118,10 +126,12 @@ public final class PaperCall<T> {
         return error;
     }
 
+    /** Indicates that a plugin, entity, or region target retired before callback execution. */
     public static final class CallbackUnavailableException extends IllegalStateException {
         @Serial
         private static final long serialVersionUID = 1L;
 
+        /** Creates an unavailable-target exception. */
         public CallbackUnavailableException() {
             super("Paper/Folia callback target is no longer available");
         }
@@ -132,6 +142,7 @@ public final class PaperCall<T> {
         @Serial
         private static final long serialVersionUID = 1L;
 
+        /** Wraps the scheduler or programming failure that prevented dispatch. */
         public CallbackDispatchException(Throwable cause) {
             super("Paper/Folia scheduler failed to dispatch the callback", cause);
         }

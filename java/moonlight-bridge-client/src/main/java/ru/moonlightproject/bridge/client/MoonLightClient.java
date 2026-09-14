@@ -23,6 +23,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 
+/** One direct, multiplexed MoonLightBridge connection without reconnect supervision. */
 public final class MoonLightClient implements MoonLightChannel {
     private static final System.Logger LOGGER = System.getLogger("ru.moonlightproject.bridge.client");
     private static final int MAGIC = 0x4D4C4252;
@@ -68,14 +69,17 @@ public final class MoonLightClient implements MoonLightChannel {
     private final Thread writerThread;
     private final MoonLightTelemetry telemetry;
 
+    /** Opens a plaintext TCP connection with automatic defaults. */
     public MoonLightClient(String host, int port) throws IOException {
         this(openTcp(host, port), MoonLightPerformanceOptions.automatic("tcp"), MoonLightTelemetry.automatic());
     }
 
+    /** Opens a plaintext TCP connection with automatic defaults. */
     public static MoonLightClient tcp(String host, int port) throws IOException {
         return new MoonLightClient(openTcp(host, port), MoonLightPerformanceOptions.automatic("tcp"), MoonLightTelemetry.automatic());
     }
 
+    /** Opens a {@code tcp://}, {@code tls://}, or {@code unix:} endpoint. */
     public static MoonLightClient connect(String endpoint) throws IOException {
         URI uri;
         try { uri = URI.create(endpoint); }
@@ -84,6 +88,7 @@ public final class MoonLightClient implements MoonLightChannel {
         return connect(uri, MoonLightPerformanceOptions.automatic(uri.getScheme()), MoonLightTelemetry.automatic());
     }
 
+    /** Opens an endpoint using explicit writer and pooling settings. */
     public static MoonLightClient connect(String endpoint, MoonLightPerformanceOptions performance) throws IOException {
         URI uri;
         try { uri = URI.create(endpoint); }
@@ -91,6 +96,7 @@ public final class MoonLightClient implements MoonLightChannel {
         return connect(uri, performance, MoonLightTelemetry.automatic());
     }
 
+    /** Opens an endpoint using explicit performance and telemetry implementations. */
     public static MoonLightClient connect(
         String endpoint, MoonLightPerformanceOptions performance, MoonLightTelemetry telemetry
     ) throws IOException {
@@ -129,14 +135,17 @@ public final class MoonLightClient implements MoonLightChannel {
         };
     }
 
+    /** Opens a Unix-domain socket using automatic local-transport defaults. */
     public static MoonLightClient unix(Path path) throws IOException {
         return unix(path, MoonLightPerformanceOptions.automatic("unix"), MoonLightTelemetry.automatic());
     }
 
+    /** Opens a Unix-domain socket using explicit performance settings. */
     public static MoonLightClient unix(Path path, MoonLightPerformanceOptions performance) throws IOException {
         return unix(path, performance, MoonLightTelemetry.automatic());
     }
 
+    /** Opens a Unix-domain socket using explicit performance and telemetry settings. */
     public static MoonLightClient unix(
         Path path, MoonLightPerformanceOptions performance, MoonLightTelemetry telemetry
     ) throws IOException {
@@ -155,10 +164,12 @@ public final class MoonLightClient implements MoonLightChannel {
         }
     }
 
+    /** Opens a TLS connection using certificates and keys supplied by {@code context}. */
     public static MoonLightClient tls(String host, int port, SSLContext context) throws IOException {
         return openTls(host, port, context, MoonLightPerformanceOptions.automatic("tls"), MoonLightTelemetry.automatic());
     }
 
+    /** Opens a TLS connection using explicit performance settings. */
     public static MoonLightClient tls(
         String host, int port, SSLContext context, MoonLightPerformanceOptions performance
     ) throws IOException {
@@ -243,12 +254,17 @@ public final class MoonLightClient implements MoonLightChannel {
         }
     }
 
+    /** Returns the feature-bit intersection negotiated during HELLO/WELCOME. */
     public long negotiatedFeatures() { return negotiatedFeatures; }
 
+    /** Completes with the reason when the reader loop terminates. */
     public CompletionStage<Throwable> termination() { return termination; }
 
+    /** Returns whether this direct connection has been closed. */
     public boolean isClosed() { return closed.get(); }
+    /** Returns the number of requests awaiting responses. */
     public int pendingRequests() { return pending.size(); }
+    /** Returns the reader/writer failure that closed the connection, or {@code null}. */
     public Throwable lastFailure() { return lastFailure.get(); }
 
     public CompletableFuture<byte[]> request(int methodId, byte[] body, Duration deadline) {
@@ -646,18 +662,34 @@ public final class MoonLightClient implements MoonLightChannel {
 
     private record OutboundFrame(byte[] bytes, int length, CompletableFuture<Void> written) { }
 
+    /** Backpressure failure raised when the bounded writer queue cannot accept a frame. */
     public static final class OutgoingQueueFullException extends IOException {
+        /** Creates a failure containing the configured queue capacity. */
         public OutgoingQueueFullException(int capacity) {
             super("MoonLightBridge outgoing queue is full (capacity=" + capacity + ")");
         }
     }
 
+    /** Transport-level error classification decoded from an ERROR response. */
     public enum ErrorCode {
-        UNKNOWN_METHOD(1), INVALID_REQUEST(2), DEADLINE_EXCEEDED(3), CANCELLED(4),
-        RESOURCE_EXHAUSTED(5), INTERNAL(6), UNKNOWN(-1);
+        /** Requested method is not registered. */
+        UNKNOWN_METHOD(1),
+        /** Payload or request metadata is invalid. */
+        INVALID_REQUEST(2),
+        /** Backend deadline expired. */
+        DEADLINE_EXCEEDED(3),
+        /** Request was cancelled. */
+        CANCELLED(4),
+        /** Backend concurrency or resource limit was reached. */
+        RESOURCE_EXHAUSTED(5),
+        /** Backend handler failed unexpectedly. */
+        INTERNAL(6),
+        /** Received an error code newer than this client understands. */
+        UNKNOWN(-1);
 
         private final int wireValue;
         ErrorCode(int wireValue) { this.wireValue = wireValue; }
+        /** Returns the unsigned protocol value, or {@code -1} for {@link #UNKNOWN}. */
         public int wireValue() { return wireValue; }
         static ErrorCode fromWire(int value) {
             for (ErrorCode code : values()) if (code.wireValue == value) return code;
@@ -665,17 +697,21 @@ public final class MoonLightClient implements MoonLightChannel {
         }
     }
 
+    /** Structured remote handler failure retaining method and transport error code. */
     public static final class MoonLightRemoteException extends RuntimeException {
         private final int methodId;
         private final ErrorCode code;
 
+        /** Creates a decoded remote failure. */
         public MoonLightRemoteException(int methodId, ErrorCode code, String message) {
             super(message);
             this.methodId = methodId;
             this.code = code;
         }
 
+        /** Returns the generated method ID that failed. */
         public int methodId() { return methodId; }
+        /** Returns the decoded transport error code. */
         public ErrorCode code() { return code; }
     }
 }

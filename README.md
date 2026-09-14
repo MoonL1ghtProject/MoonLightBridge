@@ -1,10 +1,11 @@
 <div align="center">
   <img src="docs/assets/moonlightbridge-banner.svg" alt="MoonLightBridge" width="820">
 
-  <p><strong>A fast, typed bridge between Minecraft plugins and Rust backends.</strong></p>
-  <p>Keep Bukkit work on the server thread. Move expensive state, simulation and data processing to Rust.</p>
+  <p><strong>A fast, typed bridge between Java applications and Rust backends.</strong></p>
+  <p>Use the universal Java runtime anywhere, or add the scheduler-safe Paper/Folia layer for Minecraft.</p>
 
   [![Release](https://img.shields.io/github/v/release/MoonL1ghtProject/MoonLightBridge?style=flat-square&color=7c5cff)](https://github.com/MoonL1ghtProject/MoonLightBridge/releases)
+  [![Maven Central](https://img.shields.io/maven-central/v/ru.moonlightproject/moonlight-bridge-java?style=flat-square&color=blue)](https://central.sonatype.com/namespace/ru.moonlightproject)
   [![Stars](https://img.shields.io/github/stars/MoonL1ghtProject/MoonLightBridge?style=flat-square&color=f4c542)](https://github.com/MoonL1ghtProject/MoonLightBridge/stargazers)
   [![Java 21+](https://img.shields.io/badge/Java-21%2B-f89820?style=flat-square&logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
   [![Rust 1.88+](https://img.shields.io/badge/Rust-1.88%2B-000000?style=flat-square&logo=rust)](https://www.rust-lang.org/)
@@ -12,9 +13,10 @@
   [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-2ea44f?style=flat-square)](#license)
 </div>
 
-MoonLightBridge is a library, not another server plugin. Add it to your Paper or Folia
-plugin, describe the API once with Protocol Buffers, and call a Rust service through a
-generated `CompletableFuture` client. TCP, mTLS and Unix-domain sockets use the same API.
+MoonLightBridge is an embedded Java 21+ library, not a sidecar SDK or mandatory Minecraft plugin.
+Describe an API once with Protocol Buffers and call a Rust service through a generated
+`CompletableFuture` client. The same API works in ordinary JVM applications and Paper/Folia plugins,
+over TCP, mutual TLS, or Unix-domain sockets.
 
 ## Why MoonLightBridge?
 
@@ -22,42 +24,54 @@ generated `CompletableFuture` client. TCP, mTLS and Unix-domain sockets use the 
   batch methods and server events.
 - **Built for the hot path.** Multiplexed requests, a dedicated bounded writer, burst
   coalescing and reusable buffers keep the bridge overhead small.
-- **Minecraft-aware.** Paper and Folia callbacks return through the correct scheduler;
-  network I/O never has to block the tick thread.
+- **Universal first.** The lifecycle, reconnect, batching, health and event API has no Bukkit
+  dependency; Paper/Folia support is a thin scheduler-aware adapter.
 - **Failure is explicit.** Deadlines, cancellation, heartbeat, reconnect supervision,
   backpressure, protocol validation and structured remote errors are part of the core.
-- **Observable without plugin boilerplate.** Framework-owned Sentry errors and sampled
-  traces are automatic; JFR remains available for local profiling.
+- **Operational by default.** Health, metrics, errors, sampled traces and JFR hooks require no
+  application boilerplate and never include request or response bodies.
 
 ```mermaid
 flowchart LR
-    P[Paper / Folia plugin] -->|generated async client| J[MoonLightBridge Java library]
-    J -->|UDS · TCP · mTLS| R[MoonLightBridge Rust server]
+    A[Java 21+ application] --> J[moonlight-bridge-java]
+    P[Paper / Folia plugin] --> PA[moonlight-bridge-paper]
+    PA --> J
+    J -->|generated async client · UDS · TCP · mTLS| R[MoonLightBridge Rust server]
     R --> S[Your services and storage]
     R -. typed events .-> J
 ```
 
 ## Install
 
-MoonLightBridge `0.1.1` is published as small modules and as one convenient framework dependency.
-Until the Maven Central namespace is verified, Java artifacts are available from GitHub Packages:
+MoonLightBridge `0.2.0` is available from Maven Central without repository credentials.
+
+For any Java 21+ application:
 
 ```kotlin
 repositories {
     mavenCentral()
-    maven {
-        url = uri("https://maven.pkg.github.com/MoonL1ghtProject/MoonLightBridge")
-        credentials {
-            username = providers.gradleProperty("gpr.user").orNull
-            password = providers.gradleProperty("gpr.key").orNull
-        }
-    }
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-framework:0.1.1")
+    implementation("ru.moonlightproject:moonlight-bridge-java:0.2.0")
 }
 ```
+
+For Paper or Folia, use the adapter instead; it already includes the universal runtime:
+
+```kotlin
+dependencies {
+    implementation("ru.moonlightproject:moonlight-bridge-paper:0.2.0")
+}
+```
+
+| Artifact | Use it for |
+|---|---|
+| `moonlight-bridge-java` | Recommended lifecycle/runtime API for any Java 21+ application |
+| `moonlight-bridge-paper` | Paper/Folia lifecycle and scheduler-safe completion callbacks |
+| `moonlight-bridge-client` | Low-level transport SPI for generated code and advanced integrations |
+| `moonlight-bridge-framework` | Compatibility aggregate for applications written against 0.1.x |
+| `ru.moonlightproject.bridge` | Gradle plugin that generates typed Java clients from Protobuf |
 
 MoonLightBridge is embedded into your plugin. If you build a shaded JAR, relocate its
 dependencies and merge service descriptors:
@@ -66,12 +80,11 @@ dependencies and merge service descriptors:
 tasks.shadowJar {
     mergeServiceFiles()
     relocate("com.google.protobuf", "your.plugin.internal.protobuf")
-    relocate("io.sentry", "your.plugin.internal.sentry")
 }
 ```
 
-The same Java artifacts are mirrored to GitHub Packages by the release pipeline. Maven Central is recommended
-for consumers because it needs no GitHub credentials; see
+Artifacts are also mirrored to GitHub Packages by the release pipeline. Maven Central is the
+recommended source because it needs no GitHub credentials; see
 [the publishing guide](docs/publishing.md#github-packages) when you specifically want the
 GitHub registry.
 
@@ -79,7 +92,7 @@ Add the Rust runtime to the backend:
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.1.1"
+moonlight-bridge-server = "0.2.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -114,11 +127,11 @@ pluginManagement {
 ```kotlin
 // build.gradle.kts
 plugins {
-    id("ru.moonlightproject.bridge") version "0.1.1"
+    id("ru.moonlightproject.bridge") version "0.2.0"
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-client:0.1.1")
+    implementation("ru.moonlightproject:moonlight-bridge-client:0.2.0")
     implementation("com.google.protobuf:protobuf-java:4.36.1")
 }
 ```
@@ -128,7 +141,35 @@ checks `schema.lock` during `check`. The Rust side uses the same descriptor thro
 `moonlight-bridge-codegen`; details and the complete `build.rs` are in
 [the code generation guide](docs/codegen.md).
 
-## Call Rust from a plugin
+## Call Rust from Java
+
+Generated clients accept the common `MoonLightChannel` interface. `start` returns immediately and
+reconnects in the background; `connect` waits for the first connection and is convenient for a CLI
+or service startup that should fail fast:
+
+```java
+import java.time.Duration;
+import ru.moonlightproject.bridge.MoonLightBridge;
+
+try (var bridge = MoonLightBridge.connect("tcp://127.0.0.1:38191")) {
+    var profiles = new ProfileServiceClient(bridge.channel());
+    var request = LoadProfileRequest.newBuilder()
+        .setPlayerId("b98e6a77-cc91-4e94-8e1e-4d40c86a70cd")
+        .build();
+
+    var profile = profiles.withDeadline(Duration.ofMillis(250))
+        .loadProfile(request)
+        .join();
+    System.out.println(profile.getDisplayName());
+}
+```
+
+For long-running applications, keep one bridge per backend endpoint for the process lifetime. Do
+not open a connection for every call. `firstConnection()`, `isConnected()`, `lastFailure()`,
+`health()`, `pendingRequests()`, `warmUp(...)` and typed event subscriptions cover lifecycle and
+operations without requiring direct access to the transport implementation.
+
+## Call Rust from Paper or Folia
 
 ```java
 public final class ProfilesPlugin extends JavaPlugin {
@@ -214,7 +255,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 
 ## What is included
 
-| Area | Available in 0.1.1 |
+| Area | Available in 0.2.0 |
 |---|---|
 | Transport | Unix socket, TCP, mutual TLS |
 | RPC | Multiplexing, typed unary calls, typed batches, deadlines, cancellation |
@@ -222,12 +263,14 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 | Lifecycle | HELLO timeout, heartbeat, reconnect, health/readiness |
 | Server push | Reconnect-safe typed Rust-to-Java events |
 | Safety | Payload limits, method/response validation, duplicate-ID rejection |
-| Minecraft | Paper/Folia scheduler-aware callbacks, no separate bridge plugin |
-| Operations | Metrics, structured errors, Sentry traces/errors, JFR events |
+| Java | Universal Java 21+ lifecycle API with no Bukkit dependency |
+| Minecraft | Thin Paper/Folia scheduler-aware adapter, no separate bridge plugin |
+| Operations | Health, metrics, structured errors, sampled traces and JFR events |
 
 ## Documentation
 
 - [Architecture and scope](docs/architecture.md)
+- [Universal Java SDK](docs/java-sdk.md)
 - [Minecraft SDK](docs/minecraft-sdk.md)
 - [Protocol reference](docs/protocol.md)
 - [Schema and code generation](docs/codegen.md)
@@ -245,7 +288,7 @@ The repository contains a working [Paper plugin](examples/paper-test-plugin), it
 
 ## Project status
 
-Version `0.1.1` is a stable public API release. The transport and
+Version `0.2.0` is a stable public API release. The transport and
 lifecycle are fully tested, but the project is still young: benchmark your own workload
 and pin exact versions in production. Backward-incompatible changes follow semantic
 versioning.

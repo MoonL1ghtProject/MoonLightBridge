@@ -3,9 +3,12 @@ package ru.moonlightproject.bridge.client;
 import java.util.Arrays;
 import java.util.ServiceLoader;
 
+/** Vendor-neutral instrumentation SPI used around connection and request lifecycle. */
 public interface MoonLightTelemetry {
+    /** Starts one request observation; returning {@code null} skips instrumentation. */
     RequestObservation startRequest(RequestInfo request);
 
+    /** Starts a named child function observation. */
     default FunctionObservation startFunction(String name) { return FunctionObservation.DISABLED; }
 
     /** Starts a framework-owned span for an application function or serialization stage. */
@@ -13,6 +16,7 @@ public interface MoonLightTelemetry {
         return Automatic.INSTANCE.startFunction(name);
     }
 
+    /** Executes a synchronous function inside an automatically completed observation. */
     static <T, E extends Throwable> T traceFunction(
         String name, ThrowingSupplier<T, E> function
     ) throws E {
@@ -26,14 +30,18 @@ public interface MoonLightTelemetry {
         }
     }
 
+    /** Reports a successful protocol handshake. */
     default void connectionOpened() { }
+    /** Reports direct connection termination. */
     default void connectionClosed(Throwable cause) { }
 
+    /** Returns the allocation-free no-op telemetry implementation. */
     static MoonLightTelemetry disabled() { return Disabled.INSTANCE; }
 
     /** Loads bundled MoonLightBridge-owned telemetry providers once; returns no-op when none are present. */
     static MoonLightTelemetry automatic() { return Automatic.INSTANCE; }
 
+    /** Combines non-null telemetry implementations into one fan-out adapter. */
     static MoonLightTelemetry composite(MoonLightTelemetry... delegates) {
         MoonLightTelemetry[] copy = Arrays.stream(delegates)
             .filter(delegate -> delegate != null && delegate != Disabled.INSTANCE)
@@ -43,24 +51,34 @@ public interface MoonLightTelemetry {
         return new Composite(copy);
     }
 
+    /** Stable metadata known when the client submits a request. */
     record RequestInfo(int methodId, long requestId, int requestBytes) { }
 
+    /** Per-request instrumentation completed by the response or failure path. */
     interface RequestObservation {
+        /** Returns optional wire trace context to propagate to Rust. */
         MoonLightTraceContext traceContext();
+        /** Completes the request observation. */
         void finish(int responseBytes, Throwable error);
     }
 
+    /** Auto-closeable child stage for generated codecs and application functions. */
     interface FunctionObservation extends AutoCloseable {
+        /** Allocation-free disabled observation. */
         FunctionObservation DISABLED = new FunctionObservation() { };
+        /** Marks the observed function as failed. */
         default void failed(Throwable error) { }
         @Override default void close() { }
     }
 
     @FunctionalInterface
+    /** Supplier whose operation may throw a checked exception. */
     interface ThrowingSupplier<T, E extends Throwable> {
+        /** Computes the result or throws the declared error type. */
         T get() throws E;
     }
 
+    /** Internal singleton no-op implementation exposed through {@link #disabled()}. */
     final class Disabled implements MoonLightTelemetry, RequestObservation {
         private static final Disabled INSTANCE = new Disabled();
         private Disabled() { }
@@ -69,6 +87,7 @@ public interface MoonLightTelemetry {
         @Override public void finish(int responseBytes, Throwable error) { }
     }
 
+    /** Internal holder that loads bundled providers once. */
     final class Automatic {
         private static final System.Logger LOGGER = System.getLogger("ru.moonlightproject.bridge.telemetry");
         private static final MoonLightTelemetry INSTANCE = load();
@@ -93,6 +112,7 @@ public interface MoonLightTelemetry {
         }
     }
 
+    /** Internal fan-out implementation returned by {@link #composite}. */
     final class Composite implements MoonLightTelemetry {
         private final MoonLightTelemetry[] delegates;
         private Composite(MoonLightTelemetry[] delegates) { this.delegates = delegates; }

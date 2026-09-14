@@ -35,6 +35,8 @@ trap cleanup EXIT
 
 cd "$project_dir"
 cargo test --workspace
+RUSTDOCFLAGS="-D missing-docs" cargo doc \
+    -p moonlight-bridge-protocol -p moonlight-bridge-server -p moonlight-bridge-codegen --no-deps
 
 cargo run --quiet --package moonlight-bridge-example-backend >"$backend_log" 2>&1 &
 backend_pid=$!

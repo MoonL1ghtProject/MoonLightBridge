@@ -11,6 +11,7 @@ import org.bukkit.plugin.Plugin;
 public final class PaperDispatchers {
     private PaperDispatchers() { }
 
+    /** Creates a dispatcher for server-global state. */
     public static PaperDispatcher global(Plugin plugin) {
         Objects.requireNonNull(plugin, "plugin");
         return (action, unavailable) -> {
@@ -22,6 +23,7 @@ public final class PaperDispatchers {
         };
     }
 
+    /** Creates a dispatcher for the region owning a cloned location. */
     public static PaperDispatcher at(Plugin plugin, Location location) {
         Objects.requireNonNull(plugin, "plugin");
         Location target = Objects.requireNonNull(location, "location").clone();
@@ -34,6 +36,7 @@ public final class PaperDispatchers {
         };
     }
 
+    /** Creates a dispatcher following an entity's scheduler and retirement state. */
     public static PaperDispatcher forEntity(Plugin plugin, Entity entity) {
         Objects.requireNonNull(plugin, "plugin");
         Objects.requireNonNull(entity, "entity");
@@ -48,6 +51,7 @@ public final class PaperDispatchers {
         };
     }
 
+    /** Chooses entity, block-region, or global dispatch for a command sender. */
     public static PaperDispatcher forSender(Plugin plugin, CommandSender sender) {
         Objects.requireNonNull(sender, "sender");
         if (sender instanceof Entity entity) return forEntity(plugin, entity);

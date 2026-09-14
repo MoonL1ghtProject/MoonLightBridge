@@ -54,7 +54,7 @@ timeout also emits `CANCEL` so work can be aborted promptly.
 When flag bit 1 is set, the deadline (when present) is followed by a 25-byte
 trace context: 16 bytes of trace ID, 8 bytes of parent span ID, and one sampling
 byte (`0` or `1`). It is sent only when the feature was negotiated. This compact
-layout is compatible with Sentry trace IDs but does not make the core protocol
+layout is compatible with common distributed trace IDs but does not make the core protocol
 depend on a particular observability vendor.
 
 An error body begins with a two-byte code followed by a UTF-8 message. Codes are

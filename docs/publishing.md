@@ -1,7 +1,7 @@
 # Publishing MoonLightBridge
 
 MoonLightBridge releases one semantic version across Cargo, Maven and GitHub. Java libraries are
-published to GitHub Packages and, once the namespace is enabled, Maven Central. Public Rust
+published to Maven Central and mirrored to GitHub Packages. Public Rust
 libraries are published to crates.io. A temporary Maven Central setup problem does not block the
 other registries or the GitHub Release.
 
@@ -13,9 +13,10 @@ version when an already-published artifact itself is wrong.
 
 Maven coordinates use the `ru.moonlightproject` group:
 
-- `moonlight-bridge-framework` — recommended all-in-one plugin dependency;
-- `moonlight-bridge-client` — transport and asynchronous RPC client;
-- `moonlight-bridge-paper` — Paper/Folia lifecycle and dispatch facade;
+- `moonlight-bridge-java` — recommended universal Java 21+ runtime;
+- `moonlight-bridge-paper` — Paper/Folia adapter over the universal runtime;
+- `moonlight-bridge-client` — low-level transport and asynchronous RPC SPI;
+- `moonlight-bridge-framework` — compatibility aggregate for 0.1.x consumers;
 - `moonlight-bridge-gradle-plugin` and the `ru.moonlightproject.bridge` marker.
 
 The framework may carry private implementation artifacts transitively. They are not supported
@@ -58,12 +59,12 @@ Set the same version in `Cargo.toml`, `gradle.properties`, and every versioned l
 dependency. Then run:
 
 ```bash
-./scripts/check-release-version.sh 0.1.1
+./scripts/check-release-version.sh 0.2.0
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 ./gradlew check
-./scripts/package-release.sh 0.1.1
+./scripts/package-release.sh 0.2.0
 ```
 
 `package-release.sh` performs a complete Cargo package verification for independent
@@ -79,8 +80,8 @@ contain sources, Javadoc, license, developer, SCM and issue-tracker metadata.
 Commit the version, merge it to `main`, then create and push the exact tag:
 
 ```bash
-git tag -s v0.1.1 -m "MoonLightBridge 0.1.1"
-git push origin v0.1.1
+git tag -s v0.2.0 -m "MoonLightBridge 0.2.0"
+git push origin v0.2.0
 ```
 
 Only tags shaped like `vMAJOR.MINOR.PATCH` start `.github/workflows/release.yml`. The
@@ -88,9 +89,8 @@ workflow checks that the tag, Cargo version and Gradle version match, reruns the
 quality suite, prepares packages, waits for approval, publishes crates.io and GitHub Packages,
 then creates a GitHub Release with JARs and SHA-256 checksums.
 
-Maven Central is a separate optional job. After the `ru.moonlightproject` namespace is verified,
-set the repository variable `MAVEN_CENTRAL_ENABLED=true`; until then the job is skipped and cannot
-make an otherwise valid release fail.
+Maven Central is a separate release job controlled by `MAVEN_CENTRAL_ENABLED=true`, allowing a
+failed registry upload to be diagnosed independently from crates.io and GitHub Packages.
 
 If GitHub Packages alone fails after verification, run `Retry Java GitHub Packages` for the existing
 tag. The recovery workflow verifies that the tag version matches the sources and never republishes

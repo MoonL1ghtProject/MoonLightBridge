@@ -57,6 +57,7 @@ struct LockedMethod {
     server_streaming: bool,
 }
 
+/// Writes a normalized compatibility baseline from a Protobuf descriptor set.
 pub fn write_lock(
     descriptor_path: impl AsRef<Path>,
     lock_path: impl AsRef<Path>,
@@ -66,6 +67,7 @@ pub fn write_lock(
     fs::write(lock_path, format!("{json}\n"))
 }
 
+/// Rejects schema changes that are incompatible with an existing lock file.
 pub fn check_lock(
     descriptor_path: impl AsRef<Path>,
     lock_path: impl AsRef<Path>,

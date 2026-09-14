@@ -20,7 +20,7 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 dependencies {
-    api(project(":java:moonlight-bridge-client"))
+    api(project(":java:moonlight-bridge-java"))
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
     testImplementation("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
 }

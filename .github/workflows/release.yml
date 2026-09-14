@@ -43,6 +43,11 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace --locked
+          RUSTDOCFLAGS="-D missing-docs" cargo doc \
+            -p moonlight-bridge-protocol \
+            -p moonlight-bridge-server \
+            -p moonlight-bridge-codegen \
+            --no-deps
           ./gradlew check
 
       - name: Prepare registry packages

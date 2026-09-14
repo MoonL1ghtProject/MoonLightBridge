@@ -5,8 +5,8 @@
 [![license](https://img.shields.io/crates/l/moonlight-bridge-protocol.svg)](https://github.com/MoonL1ghtProject/MoonLightBridge#license)
 
 Runtime-independent wire primitives for
-[MoonLightBridge](https://github.com/MoonL1ghtProject/MoonLightBridge), the typed bridge between Java
-Minecraft plugins and Rust backends.
+[MoonLightBridge](https://github.com/MoonL1ghtProject/MoonLightBridge), the typed bridge between
+Java 21+ applications and Rust backends.
 
 Most applications should use [`moonlight-bridge-server`](https://crates.io/crates/moonlight-bridge-server)
 instead. This low-level crate is intended for alternate runtimes, diagnostics, protocol conformance
@@ -26,7 +26,7 @@ tests and tools that need to encode or inspect frames.
 
 ```toml
 [dependencies]
-moonlight-bridge-protocol = "0.1.1"
+moonlight-bridge-protocol = "0.2.0"
 ```
 
 Rust 1.88 or newer is required.
@@ -98,8 +98,8 @@ Sending a feature's frame or flag without negotiation is invalid.
 `FLAG_HAS_TRACE_CONTEXT` adds 16 trace-ID bytes, 8 parent-span-ID bytes and one sampled byte.
 Transport runtimes remove these prefixes before handler dispatch.
 
-Trace context is vendor-neutral wire data. This crate does not initialize or depend on Sentry or
-another observability SDK.
+Trace context is vendor-neutral wire data. This crate does not initialize or depend on an
+observability SDK.
 
 ## Errors and validation
 

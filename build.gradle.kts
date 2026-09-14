@@ -32,9 +32,10 @@ allprojects {
 
 val publishedJavaProjects = mapOf(
     ":java:moonlight-bridge-client" to "Core asynchronous Java client and transport runtime",
-    ":java:moonlight-bridge-paper" to "Paper and Folia integration for MoonLightBridge",
-    ":java:moonlight-bridge-sentry" to "Automatic Sentry telemetry provider for MoonLightBridge",
-    ":java:moonlight-bridge-framework" to "Complete MoonLightBridge library for Minecraft plugins",
+    ":java:moonlight-bridge-java" to "Universal Java 21+ runtime for MoonLightBridge Rust services",
+    ":java:moonlight-bridge-paper" to "Paper and Folia integration built on the universal Java runtime",
+    ":java:moonlight-bridge-sentry" to "Internal telemetry provider for MoonLightBridge runtime artifacts",
+    ":java:moonlight-bridge-framework" to "Compatibility aggregate for MoonLightBridge 0.1.x consumers",
     ":java:moonlight-bridge-gradle-plugin" to "Gradle schema and code-generation plugin for MoonLightBridge",
 )
 

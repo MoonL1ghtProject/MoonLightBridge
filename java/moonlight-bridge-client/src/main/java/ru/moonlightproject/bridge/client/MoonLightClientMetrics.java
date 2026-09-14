@@ -3,6 +3,7 @@ package ru.moonlightproject.bridge.client;
 import java.util.concurrent.atomic.LongAccumulator;
 import java.util.concurrent.atomic.LongAdder;
 
+/** In-memory client counters suitable for health endpoints and tests. */
 public final class MoonLightClientMetrics implements MoonLightTelemetry {
     private final LongAdder started = new LongAdder();
     private final LongAdder succeeded = new LongAdder();
@@ -35,6 +36,7 @@ public final class MoonLightClientMetrics implements MoonLightTelemetry {
         };
     }
 
+    /** Returns an immutable point-in-time copy of all counters. */
     public Snapshot snapshot() {
         return new Snapshot(
             started.sum(), succeeded.sum(), failed.sum(), requestBytes.sum(), responseBytes.sum(),
@@ -42,6 +44,7 @@ public final class MoonLightClientMetrics implements MoonLightTelemetry {
         );
     }
 
+    /** Cumulative request counts, bytes, and latency values. */
     public record Snapshot(
         long started,
         long succeeded,

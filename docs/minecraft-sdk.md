@@ -1,7 +1,8 @@
 # Embedded Paper/Folia SDK
 
-MoonLightBridge is linked into each plugin as a library. Server owners do not
-install a separate bridge plugin, and plugin code does not initialize Sentry.
+`moonlight-bridge-paper` is a thin adapter over the universal `moonlight-bridge-java` runtime and
+is linked into each plugin as a library. Server owners do not
+install a separate bridge plugin, and plugin code does not initialize framework telemetry.
 
 Start supervision in `onEnable`; it performs no network I/O on the server
 thread and reconnects after backend restarts:
@@ -45,6 +46,6 @@ which can add up to one server tick after the RPC has already completed. Measure
 transport latency before entering the scheduled callback. Pure Java processing
 that does not touch Bukkit state can remain on the original completion stage.
 
-The plugin must include `folia-supported: true` in `plugin.yml` and shade the
-framework with merged `META-INF/services` resources. The example build also
-relocates Protobuf and Sentry to prevent classpath conflicts with server forks.
+The plugin must include `folia-supported: true` in `plugin.yml` and shade
+`moonlight-bridge-paper` with merged `META-INF/services` resources. The example build also
+relocates bundled dependencies to prevent classpath conflicts with server forks.

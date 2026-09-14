@@ -5,11 +5,11 @@
 [![license](https://img.shields.io/crates/l/moonlight-bridge-server.svg)](https://github.com/MoonL1ghtProject/MoonLightBridge#license)
 
 The Tokio backend runtime for [MoonLightBridge](https://github.com/MoonL1ghtProject/MoonLightBridge),
-a typed RPC bridge between Java Minecraft plugins and Rust services.
+a typed RPC bridge between Java 21+ applications and Rust services.
 
-MoonLightBridge keeps Bukkit/Paper world access in Java and moves isolated business logic, state,
-persistence and batchable computation to a Rust process. One long-lived connection carries many
-concurrent requests; responses may complete out of order without blocking the Minecraft tick.
+MoonLightBridge moves isolated business logic, state, persistence and batchable computation to a
+Rust process. One long-lived connection carries many concurrent requests and responses may complete
+out of order. The optional Paper/Folia adapter keeps Minecraft world access on the correct scheduler.
 
 ## Features
 
@@ -27,7 +27,7 @@ concurrent requests; responses may complete out of order without blocking the Mi
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.1.1"
+moonlight-bridge-server = "0.2.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 

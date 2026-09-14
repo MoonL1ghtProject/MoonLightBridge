@@ -13,7 +13,5 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 dependencies {
-    api(project(":java:moonlight-bridge-client"))
     api(project(":java:moonlight-bridge-paper"))
-    runtimeOnly(project(":java:moonlight-bridge-sentry"))
 }

@@ -14,6 +14,9 @@ import org.gradle.api.tasks.SourceSetContainer;
 
 /** Convention plugin for the repeatable Java side of MoonLightBridge code generation. */
 public final class MoonLightBridgePlugin implements Plugin<Project> {
+    /** Creates the stateless Gradle plugin. */
+    public MoonLightBridgePlugin() { }
+
     @Override
     public void apply(Project project) {
         project.getPluginManager().apply(JavaPlugin.class);

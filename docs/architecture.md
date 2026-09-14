@@ -2,9 +2,10 @@
 
 ## Product boundary
 
-MoonLightBridge is an RPC runtime, not a remote implementation of the Bukkit API. Java
-owns Minecraft objects and scheduler affinity. Rust owns isolated business
-logic, persistence, caches, and batchable computation.
+MoonLightBridge is a universal Java-to-Rust RPC runtime, not a remote implementation of the Bukkit
+API. `moonlight-bridge-java` owns transport lifecycle for any Java 21+ process. The optional
+`moonlight-bridge-paper` adapter owns Minecraft scheduler affinity, while Rust owns isolated
+business logic, persistence, caches, and batchable computation.
 
 ## Performance rule
 

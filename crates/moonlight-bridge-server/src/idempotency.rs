@@ -22,7 +22,9 @@ pub struct IdempotencyCache<K, V, E> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Cached operation result and whether it was reused by this caller.
 pub struct Idempotent<V> {
+    /// Shared operation result.
     pub value: V,
     /// True when this caller reused an existing in-flight or completed operation.
     pub replayed: bool,
@@ -34,6 +36,7 @@ where
     V: Clone,
     E: Clone,
 {
+    /// Creates a process-local cache with a maximum entry count and retention time.
     pub fn new(capacity: usize, ttl: Duration) -> Self {
         assert!(capacity > 0, "idempotency cache capacity must be positive");
         assert!(!ttl.is_zero(), "idempotency cache TTL must be positive");
@@ -44,6 +47,7 @@ where
         }
     }
 
+    /// Executes `operation` once per live key and shares it with concurrent callers.
     pub async fn execute<F, Fut>(&self, key: K, operation: F) -> Result<Idempotent<V>, E>
     where
         F: FnOnce() -> Fut,
@@ -92,18 +96,23 @@ struct RevisionState<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Optimistic-concurrency failure caused by a stale expected revision.
 pub struct RevisionConflict {
+    /// Revision supplied by the caller.
     pub expected: u64,
+    /// Current stored revision.
     pub actual: u64,
 }
 
 impl<T> Revisioned<T> {
+    /// Wraps a value at initial revision zero.
     pub fn new(value: T) -> Self {
         Self {
             state: RwLock::new(RevisionState { revision: 0, value }),
         }
     }
 
+    /// Returns the current revision and a clone of the value.
     pub async fn read(&self) -> (u64, T)
     where
         T: Clone,
@@ -112,6 +121,7 @@ impl<T> Revisioned<T> {
         (state.revision, state.value.clone())
     }
 
+    /// Applies an update only if `expected_revision` is still current.
     pub async fn update<R>(
         &self,
         expected_revision: u64,

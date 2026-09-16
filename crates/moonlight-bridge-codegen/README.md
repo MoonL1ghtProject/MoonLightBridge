@@ -120,8 +120,9 @@ moonlight-bridge-codegen lock build/api.pb schema.lock --check
 ```
 
 The checker rejects removed services/messages/methods, field identity or type changes, number reuse,
-changed RPC signatures, unsafe enum changes and generated ID collisions. Adding a field with a new
-number is compatible. To remove a field safely, reserve its old number and name:
+changed RPC signatures, unsafe enum changes and generated ID collisions. Reservations recorded by
+an existing lock must remain reserved in later schemas for both messages and enums. Adding a field
+with a new number is compatible. To remove a field safely, reserve its old number and name:
 
 ```proto
 message ProfileResponse {

@@ -7,11 +7,12 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, OnceCell, RwLock};
+use tokio::sync::{Mutex, Notify, OnceCell, RwLock};
 
 struct Entry<V, E> {
     created: Instant,
     result: OnceCell<Result<V, E>>,
+    ready: Notify,
 }
 
 /// A bounded TTL cache that coalesces concurrent calls carrying the same operation ID.
@@ -33,8 +34,8 @@ pub struct Idempotent<V> {
 impl<K, V, E> IdempotencyCache<K, V, E>
 where
     K: Clone + Eq + Hash,
-    V: Clone,
-    E: Clone,
+    V: Clone + Send + Sync + 'static,
+    E: Clone + Send + Sync + 'static,
 {
     /// Creates a process-local cache with a maximum entry count and retention time.
     pub fn new(capacity: usize, ttl: Duration) -> Self {
@@ -48,10 +49,14 @@ where
     }
 
     /// Executes `operation` once per live key and shares it with concurrent callers.
+    ///
+    /// The operation runs in an independent Tokio task, so cancelling the caller does not cancel a
+    /// mutation that may already have committed an external side effect. Later callers with the
+    /// same key continue waiting for and reuse that operation's result.
     pub async fn execute<F, Fut>(&self, key: K, operation: F) -> Result<Idempotent<V>, E>
     where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<V, E>>,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<V, E>> + Send + 'static,
     {
         let now = Instant::now();
         let (entry, replayed) = {
@@ -75,13 +80,31 @@ where
                 let entry = Arc::new(Entry {
                     created: now,
                     result: OnceCell::new(),
+                    ready: Notify::new(),
                 });
                 entries.insert(key, entry.clone());
                 (entry, false)
             }
         };
-        let result = entry.result.get_or_init(operation).await.clone();
-        result.map(|value| Idempotent { value, replayed })
+        if !replayed {
+            let worker_entry = entry.clone();
+            tokio::spawn(async move {
+                let result = operation().await;
+                if worker_entry.result.set(result).is_ok() {
+                    worker_entry.ready.notify_waiters();
+                }
+            });
+        }
+
+        loop {
+            if let Some(result) = entry.result.get() {
+                return result.clone().map(|value| Idempotent { value, replayed });
+            }
+            let notified = entry.ready.notified();
+            if entry.result.get().is_none() {
+                notified.await;
+            }
+        }
     }
 }
 
@@ -151,17 +174,19 @@ mod tests {
     #[tokio::test]
     async fn replays_an_operation_only_once() {
         let cache = IdempotencyCache::new(8, Duration::from_secs(60));
-        let calls = AtomicUsize::new(0);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_calls = calls.clone();
         let first = cache
-            .execute("operation", || async {
-                calls.fetch_add(1, Ordering::Relaxed);
+            .execute("operation", move || async move {
+                first_calls.fetch_add(1, Ordering::Relaxed);
                 Ok::<_, ()>(42)
             })
             .await
             .unwrap();
+        let replay_calls = calls.clone();
         let replay = cache
-            .execute("operation", || async {
-                calls.fetch_add(1, Ordering::Relaxed);
+            .execute("operation", move || async move {
+                replay_calls.fetch_add(1, Ordering::Relaxed);
                 Ok::<_, ()>(99)
             })
             .await
@@ -180,6 +205,44 @@ mod tests {
                 replayed: true
             }
         );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn operation_survives_cancellation_of_its_first_waiter() {
+        let cache = Arc::new(IdempotencyCache::new(8, Duration::from_secs(60)));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (complete_tx, complete_rx) = tokio::sync::oneshot::channel();
+
+        let first_cache = cache.clone();
+        let first_calls = calls.clone();
+        let first = tokio::spawn(async move {
+            first_cache
+                .execute("operation", move || async move {
+                    first_calls.fetch_add(1, Ordering::Relaxed);
+                    let _ = started_tx.send(());
+                    let _ = complete_rx.await;
+                    Ok::<_, ()>(42)
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+        first.abort();
+
+        let replay_cache = cache.clone();
+        let replay_calls = calls.clone();
+        let replay = tokio::spawn(async move {
+            replay_cache
+                .execute("operation", move || async move {
+                    replay_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok::<_, ()>(99)
+                })
+                .await
+        });
+        complete_tx.send(()).unwrap();
+
+        assert_eq!(replay.await.unwrap().unwrap().value, 42);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 

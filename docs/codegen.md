@@ -70,7 +70,8 @@ message Player {
 ```
 
 The checker rejects changed field types/numbers/names, removed messages and
-services, changed RPC signatures, and enum number reuse.
+services, changed RPC signatures, enum number reuse, and removal or reuse of
+previously recorded message and enum reservations.
 
 ## Developer build helpers
 

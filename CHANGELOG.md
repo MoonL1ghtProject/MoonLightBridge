@@ -3,6 +3,13 @@
 MoonLightBridge follows [Semantic Versioning](https://semver.org/). This file records
 user-visible framework changes; low-level refactors stay in the Git history.
 
+## Unreleased
+
+- Made connection reads cancellation-safe when server events are published concurrently.
+- Made idempotent operations survive cancellation of the request that started them.
+- Enforced the negotiated body limit for every outbound server response.
+- Rejected reuse of message and enum reservations recorded in a schema lock.
+
 ## 0.2.2 — Publication metadata fix
 
 - Restored the `sources` artifact on the relocated universal Java publication.

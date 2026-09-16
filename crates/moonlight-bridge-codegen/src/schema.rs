@@ -241,6 +241,15 @@ fn compatibility_errors(old: &SchemaLock, new: &SchemaLock) -> Vec<String> {
             errors.push(format!("message {name} was removed"));
             continue;
         };
+        check_preserved_reservations(
+            "message",
+            name,
+            &old_message.reserved_ranges,
+            &old_message.reserved_names,
+            &new_message.reserved_ranges,
+            &new_message.reserved_names,
+            &mut errors,
+        );
         for (number, old_field) in &old_message.fields {
             match new_message.fields.get(number) {
                 Some(new_field) if new_field != old_field => errors.push(format!(
@@ -259,6 +268,15 @@ fn compatibility_errors(old: &SchemaLock, new: &SchemaLock) -> Vec<String> {
             errors.push(format!("enum {name} was removed"));
             continue;
         };
+        check_preserved_reservations(
+            "enum",
+            name,
+            &old_enum.reserved_ranges,
+            &old_enum.reserved_names,
+            &new_enum.reserved_ranges,
+            &new_enum.reserved_names,
+            &mut errors,
+        );
         for (number, old_name) in &old_enum.values {
             match new_enum.values.get(number) {
                 Some(new_name) if new_name != old_name => errors.push(format!("enum value {name}.{old_name} #{number} changed to {new_name}")),
@@ -286,6 +304,51 @@ fn compatibility_errors(old: &SchemaLock, new: &SchemaLock) -> Vec<String> {
         }
     }
     errors
+}
+
+fn check_preserved_reservations(
+    kind: &str,
+    name: &str,
+    old_ranges: &[NumberRange],
+    old_names: &[String],
+    new_ranges: &[NumberRange],
+    new_names: &[String],
+    errors: &mut Vec<String>,
+) {
+    for range in old_ranges {
+        if !range_is_covered(range, new_ranges) {
+            errors.push(format!(
+                "{kind} {name} no longer reserves numbers {}..{}",
+                range.start, range.end
+            ));
+        }
+    }
+    for reserved_name in old_names {
+        if !new_names.iter().any(|name| name == reserved_name) {
+            errors.push(format!(
+                "{kind} {name} no longer reserves name {reserved_name}"
+            ));
+        }
+    }
+}
+
+fn range_is_covered(required: &NumberRange, available: &[NumberRange]) -> bool {
+    let mut ranges = available.iter().collect::<Vec<_>>();
+    ranges.sort_by_key(|range| range.start);
+    let mut cursor = required.start;
+    for range in ranges {
+        if range.end <= cursor {
+            continue;
+        }
+        if range.start > cursor {
+            return false;
+        }
+        cursor = cursor.max(range.end);
+        if cursor >= required.end {
+            return true;
+        }
+    }
+    cursor >= required.end
 }
 
 fn is_reserved(number: i32, name: &str, ranges: &[NumberRange], names: &[String]) -> bool {
@@ -368,6 +431,59 @@ mod tests {
             .push(NumberRange { start: 1, end: 2 });
         message.reserved_names.push("name".to_owned());
         assert!(compatibility_errors(&old, &invalid).is_empty());
+    }
+
+    #[test]
+    fn existing_message_reservations_cannot_be_reused() {
+        let mut old = example_lock();
+        let old_message = old.messages.get_mut("test.Player").unwrap();
+        old_message
+            .reserved_ranges
+            .push(NumberRange { start: 2, end: 3 });
+        old_message.reserved_names.push("legacy".to_owned());
+
+        let mut new = old.clone();
+        let new_message = new.messages.get_mut("test.Player").unwrap();
+        new_message.reserved_ranges.clear();
+        new_message.reserved_names.clear();
+        new_message.fields.insert(
+            2,
+            LockedField {
+                name: "replacement".to_owned(),
+                number: 2,
+                label: 1,
+                kind: 9,
+                type_name: String::new(),
+                oneof_index: None,
+                proto3_optional: false,
+            },
+        );
+
+        let errors = compatibility_errors(&old, &new);
+        assert!(errors.iter().any(|error| error.contains("numbers 2..3")));
+        assert!(errors.iter().any(|error| error.contains("name legacy")));
+    }
+
+    #[test]
+    fn existing_enum_reservations_cannot_be_reused() {
+        let mut old = example_lock();
+        old.enums.insert(
+            "test.State".to_owned(),
+            LockedEnum {
+                values: BTreeMap::from([(0, "UNKNOWN".to_owned())]),
+                reserved_ranges: vec![NumberRange { start: 1, end: 2 }],
+                reserved_names: vec!["LEGACY".to_owned()],
+            },
+        );
+        let mut new = old.clone();
+        let new_enum = new.enums.get_mut("test.State").unwrap();
+        new_enum.reserved_ranges.clear();
+        new_enum.reserved_names.clear();
+        new_enum.values.insert(1, "REUSED".to_owned());
+
+        let errors = compatibility_errors(&old, &new);
+        assert!(errors.iter().any(|error| error.contains("numbers 1..2")));
+        assert!(errors.iter().any(|error| error.contains("name LEGACY")));
     }
 
     fn example_lock() -> SchemaLock {

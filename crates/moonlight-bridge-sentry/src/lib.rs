@@ -46,6 +46,7 @@ pub fn framework_event_filter(metadata: &tracing::Metadata<'_>) -> sentry_tracin
     }
 }
 
+/// Internal request telemetry adapter used only by official MoonLightBridge builds.
 #[derive(Debug, Default)]
 pub struct SentryMoonLightTelemetry;
 

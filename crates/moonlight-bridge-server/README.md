@@ -144,7 +144,9 @@ mutating calls need an idempotency key when the application intends to retry.
 ## Safe retryable mutations
 
 `IdempotencyCache` coalesces concurrent operations with the same key and retains their result for a
-bounded TTL:
+bounded TTL. The operation runs independently from the first waiting request, so a deadline,
+client cancellation or disconnect cannot discard a committed result and cause the same key to run
+again:
 
 ```rust
 use std::time::Duration;

@@ -394,7 +394,7 @@ impl Router {
         }
     }
 
-    async fn dispatch(&self, mut frame: Frame) -> Frame {
+    async fn dispatch(&self, mut frame: Frame, max_response_body_len: u32) -> Frame {
         let ParsedRequest {
             deadline,
             trace_context,
@@ -463,6 +463,26 @@ impl Router {
 
         match result {
             Ok(body) => {
+                if body.len() > max_response_body_len as usize {
+                    tracing::warn!(
+                        method_id = frame.method_id,
+                        request_id = frame.request_id,
+                        response_bytes = body.len(),
+                        max_body_len = max_response_body_len,
+                        "MoonLightBridge handler response exceeds the negotiated body limit"
+                    );
+                    finish_observation(
+                        observation,
+                        RequestOutcome::Error {
+                            code: ErrorCode::ResourceExhausted,
+                        },
+                    );
+                    return error_frame(
+                        &frame,
+                        ErrorCode::ResourceExhausted,
+                        "response exceeds negotiated body limit",
+                    );
+                }
                 tracing::trace!(
                     method_id = frame.method_id,
                     request_id = frame.request_id,
@@ -786,9 +806,24 @@ where
     let (mut reader, mut writer) = tokio::io::split(stream);
     let (responses_tx, mut responses_rx) =
         mpsc::channel::<Frame>(negotiated.max_in_flight as usize);
+    let (frames_tx, mut frames_rx) =
+        mpsc::channel::<io::Result<Frame>>(negotiated.max_in_flight as usize);
     let active: ActiveRequests = Arc::new(Mutex::new(HashMap::new()));
     let permits = Arc::new(Semaphore::new(negotiated.max_in_flight as usize));
     let mut event_rx = events.sender.subscribe();
+
+    // Keep exactly one read future alive for the connection. Selecting directly on
+    // read_frame alongside events is not cancellation-safe: an event can drop a
+    // partially completed read and make the next call start in the middle of a frame.
+    let reader_task = tokio::spawn(async move {
+        loop {
+            let result = read_frame(&mut reader, negotiated.max_body_len).await;
+            let terminal = result.is_err();
+            if frames_tx.send(result).await.is_err() || terminal {
+                break;
+            }
+        }
+    });
 
     let writer_task = tokio::spawn(async move {
         const MAX_BATCH_FRAMES: usize = 64;
@@ -803,6 +838,7 @@ where
                     None => break,
                 },
             };
+            let first = fit_outbound_frame(first, negotiated.max_body_len);
             encoded.clear();
             first
                 .encode_into(&mut encoded)
@@ -812,6 +848,7 @@ where
                 let Ok(frame) = responses_rx.try_recv() else {
                     break;
                 };
+                let frame = fit_outbound_frame(frame, negotiated.max_body_len);
                 let frame_len = HEADER_LEN + frame.body.len();
                 if encoded.len() + frame_len > MAX_BATCH_BYTES {
                     deferred = Some(frame);
@@ -829,10 +866,14 @@ where
 
     let connection_result = loop {
         let frame = tokio::select! {
-            result = read_frame(&mut reader, negotiated.max_body_len) => match result {
-                Ok(frame) => frame,
-                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break Ok(()),
-                Err(error) => break Err(error),
+            result = frames_rx.recv() => match result {
+                Some(Ok(frame)) => frame,
+                Some(Err(error)) if error.kind() == io::ErrorKind::UnexpectedEof => break Ok(()),
+                Some(Err(error)) => break Err(error),
+                None => break Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "request reader stopped unexpectedly",
+                )),
             },
             event = event_rx.recv(), if negotiated.features & moonlight_bridge_protocol::FEATURE_SERVER_EVENTS != 0 => {
                 match event {
@@ -887,6 +928,7 @@ where
                 let active_for_task = active.clone();
                 let request_id = frame.request_id;
                 let runtime_for_task = runtime.clone();
+                let max_body_len = negotiated.max_body_len;
                 let (start_tx, start_rx) = oneshot::channel();
                 let task = tokio::spawn(async move {
                     let _permit = permit;
@@ -897,7 +939,10 @@ where
                     if start_rx.await.is_err() {
                         return;
                     }
-                    let response = router.dispatch(frame).await;
+                    let response = fit_outbound_frame(
+                        router.dispatch(frame, max_body_len).await,
+                        max_body_len,
+                    );
                     active_for_task.lock().await.remove(&request_id);
                     let _ = responses_tx.send(response).await;
                 });
@@ -977,6 +1022,8 @@ where
     for (_, handle) in active.lock().await.drain() {
         handle.abort();
     }
+    reader_task.abort();
+    let _ = reader_task.await;
     drop(responses_tx);
     let writer_result = writer_task.await.map_err(io::Error::other)?;
     connection_result.and(writer_result)
@@ -1031,6 +1078,27 @@ fn error_frame(request: &Frame, code: ErrorCode, message: &str) -> Frame {
         request.request_id,
         code.encode(message),
     )
+}
+
+fn fit_outbound_frame(mut frame: Frame, max_body_len: u32) -> Frame {
+    if frame.body.len() <= max_body_len as usize {
+        return frame;
+    }
+    tracing::warn!(
+        method_id = frame.method_id,
+        request_id = frame.request_id,
+        response_bytes = frame.body.len(),
+        max_body_len,
+        "MoonLightBridge response exceeds the negotiated body limit"
+    );
+    frame.kind = FrameKind::Error;
+    frame.flags = 0;
+    frame.body = if max_body_len >= 2 {
+        ErrorCode::ResourceExhausted.encode("")
+    } else {
+        Vec::new()
+    };
+    frame
 }
 
 fn channel_closed<T>(_: mpsc::error::SendError<T>) -> io::Error {
@@ -1096,6 +1164,7 @@ mod tests {
             .dispatch(
                 Frame::new(FrameKind::Request, 7, 9, body)
                     .with_flags(FLAG_HAS_DEADLINE | FLAG_HAS_TRACE_CONTEXT),
+                DEFAULT_MAX_BODY_LEN,
             )
             .await;
 
@@ -1207,5 +1276,139 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(runtime.active_connections.load(Ordering::Relaxed), 0);
         assert_eq!(runtime.active_requests.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn event_does_not_cancel_a_partially_read_client_frame() {
+        let (mut client, server_stream) = tokio::io::duplex(4_096);
+        let settings = PeerSettings {
+            max_body_len: DEFAULT_MAX_BODY_LEN,
+            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            features: SERVER_FEATURES,
+        };
+        let (events, runtime) = Server::runtime(settings);
+        let publish_events = events.clone();
+        let task = tokio::spawn(serve_connection(
+            server_stream,
+            Router::builder().build(),
+            settings,
+            Duration::from_secs(1),
+            events,
+            runtime,
+        ));
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Hello, 0, 0, settings.encode()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_frame(&mut client, PeerSettings::BODY_LEN as u32)
+                .await
+                .unwrap()
+                .kind,
+            FrameKind::Welcome
+        );
+
+        let ping = Frame::new(FrameKind::Ping, 0, 77, b"partial-ping".to_vec())
+            .encode()
+            .unwrap();
+        client.write_all(&ping[..8]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(publish_events.publish(91, b"event".to_vec()), 1);
+        let event = timeout(
+            Duration::from_secs(1),
+            read_frame(&mut client, DEFAULT_MAX_BODY_LEN),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(event.kind, FrameKind::Event);
+        assert_eq!(event.method_id, 91);
+
+        client.write_all(&ping[8..]).await.unwrap();
+        let pong = timeout(
+            Duration::from_secs(1),
+            read_frame(&mut client, DEFAULT_MAX_BODY_LEN),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(pong.kind, FrameKind::Pong);
+        assert_eq!(pong.request_id, 77);
+        assert_eq!(pong.body, b"partial-ping");
+
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Goodbye, 0, 0, Vec::new()),
+        )
+        .await
+        .unwrap();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_handler_response_is_replaced_before_writing() {
+        let (mut client, server_stream) = tokio::io::duplex(4_096);
+        let client_settings = PeerSettings {
+            max_body_len: 64,
+            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            features: SERVER_FEATURES,
+        };
+        let server_settings = PeerSettings {
+            max_body_len: DEFAULT_MAX_BODY_LEN,
+            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            features: SERVER_FEATURES,
+        };
+        let (events, runtime) = Server::runtime(server_settings);
+        let router = Router::builder()
+            .route(1, |_| async { Ok(vec![7; 128]) })
+            .build();
+        let task = tokio::spawn(serve_connection(
+            server_stream,
+            router,
+            server_settings,
+            Duration::from_secs(1),
+            events,
+            runtime,
+        ));
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Hello, 0, 0, client_settings.encode()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_frame(&mut client, PeerSettings::BODY_LEN as u32)
+                .await
+                .unwrap()
+                .kind,
+            FrameKind::Welcome
+        );
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Request, 1, 88, Vec::new()),
+        )
+        .await
+        .unwrap();
+
+        let response = read_frame(&mut client, client_settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(response.kind, FrameKind::Error);
+        assert_eq!(response.request_id, 88);
+        assert!(response.body.len() <= client_settings.max_body_len as usize);
+        assert_eq!(
+            u16::from_be_bytes(response.body[..2].try_into().unwrap()),
+            ErrorCode::ResourceExhausted as u16
+        );
+
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Goodbye, 0, 0, Vec::new()),
+        )
+        .await
+        .unwrap();
+        task.await.unwrap().unwrap();
     }
 }

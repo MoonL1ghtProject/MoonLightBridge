@@ -33,4 +33,6 @@ A disconnected request fails instead of being replayed automatically. The
 client may reconnect, but retry policy belongs to the generated method contract:
 read-only calls can opt in, while economy and inventory mutations require an
 idempotency key. This prevents an unknown response state from duplicating an
-operation.
+operation. The Rust idempotency helper owns the operation independently from
+the waiting RPC, so cancellation after an external commit cannot discard its
+result and execute the same key again.

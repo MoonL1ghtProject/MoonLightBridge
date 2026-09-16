@@ -1,6 +1,7 @@
 package ru.moonlightproject.bridge;
 
 import java.util.concurrent.CompletionException;
+import java.util.Map;
 
 public final class UniversalLifecycleMain {
     private UniversalLifecycleMain() { }
@@ -23,6 +24,24 @@ public final class UniversalLifecycleMain {
             // Expected: the unavailable endpoint never completed its first handshake.
         }
         bridge.close();
+
+        try (var group = MoonLightBridgeGroup.start(Map.of(
+            "loopback", "tcp://127.0.0.1:1",
+            "secondary", "tcp://127.0.0.1:2"
+        ))) {
+            if (!group.names().equals(java.util.Set.of("loopback", "secondary"))) {
+                throw new AssertionError("group did not preserve all backend names");
+            }
+            if (group.channel("loopback") != group.bridge("loopback")) {
+                throw new AssertionError("named channel is not the configured bridge");
+            }
+            try {
+                group.channel("missing");
+                throw new AssertionError("unknown backend name was accepted");
+            } catch (IllegalArgumentException expected) {
+                // Expected: routing is explicit and never falls back to another backend.
+            }
+        }
         System.out.println("MoonLightBridge universal lifecycle tests passed");
     }
 }

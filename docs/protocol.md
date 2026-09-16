@@ -1,4 +1,4 @@
-# MoonLightBridge wire protocol — draft 0
+# MoonLightBridge wire protocol
 
 Every frame consists of a fixed 24-byte header followed by `body_length` bytes.
 All integers use network byte order (big-endian).
@@ -28,7 +28,8 @@ The client must send `HELLO` as its first frame. The server replies with
 and the intersection of feature bits.
 
 Feature bits negotiate deadlines (`1`), cancellation (`2`), heartbeat (`4`),
-trace propagation (`8`), server events (`16`), and health/readiness (`32`).
+trace propagation (`8`), server events (`16`), health/readiness (`32`), and credit-based
+server streaming (`64`).
 The default timeout for the first HELLO frame is 10 seconds.
 
 ## Frame kinds
@@ -45,6 +46,9 @@ The default timeout for the first HELLO frame is 10 seconds.
 | 21 | GOODBYE | Graceful disconnect |
 | 22/23 | HEALTH/HEALTH_STATUS | Built-in readiness and load snapshot |
 | 24 | EVENT | One-way Rust-to-Java event (`request_id = 0`) |
+| 25 | STREAM_ITEM | One result belonging to a streaming request |
+| 26 | STREAM_END | Successful end of a streaming request |
+| 27 | STREAM_CREDIT | Client grants eight-byte unsigned item credit |
 
 When flag bit 0 is set, a request body starts with a four-byte timeout in
 milliseconds. This prefix is transport metadata and is removed before handler
@@ -64,10 +68,20 @@ An error body begins with a two-byte code followed by a UTF-8 message. Codes are
 Duplicate active request IDs and zero IDs on REQUEST/PING are protocol errors.
 Responses are accepted only when ID, method ID, and frame kind match the pending call.
 
+## Server streaming
+
+A server-streaming method starts with the same `REQUEST` frame as a unary method. The server does
+may keep at most one look-ahead item, but cannot send it until the client grants positive
+`STREAM_CREDIT` for that request ID. Each `STREAM_ITEM` consumes one credit. `STREAM_END` completes
+successfully; `ERROR`, `CANCEL`, a
+deadline, or a disconnect terminates the stream. Credit frames use method ID zero and contain one
+big-endian `u64`. This keeps memory bounded and prevents a slow stream consumer from blocking
+unrelated multiplexed calls.
+
 ## Deliberately not specified
 
 - payload codec;
-- streams;
+- client and bidirectional streams;
 - compression;
 - authentication.
 

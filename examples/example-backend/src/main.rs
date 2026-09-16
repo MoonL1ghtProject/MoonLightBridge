@@ -5,8 +5,8 @@ use moonlight_bridge_example_api::{
 };
 use moonlight_bridge_sentry::SentryMoonLightTelemetry;
 use moonlight_bridge_server::{
-    EventHub, HandlerError, MoonLightMetrics, Router, Server, Telemetry, TelemetryChain,
-    tls::load_mtls_server_config,
+    EventHub, HandlerError, MoonLightMetrics, Router, Server, ServerStream, Telemetry,
+    TelemetryChain, iter_server_stream, tls::load_mtls_server_config,
 };
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -27,6 +27,17 @@ impl EchoService for ExampleEchoService {
         Ok(EchoResponse {
             message: request.message,
         })
+    }
+
+    async fn stream_echo(
+        &self,
+        request: EchoRequest,
+    ) -> Result<ServerStream<EchoResponse>, HandlerError> {
+        Ok(iter_server_stream((0..3).map(move |index| {
+            Ok(EchoResponse {
+                message: format!("{}-{index}", request.message),
+            })
+        })))
     }
 }
 

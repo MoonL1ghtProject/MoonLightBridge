@@ -15,8 +15,10 @@ documentation = "https://docs.rs/moonlight-bridge-server"
 publish = ["crates-io"]
 
 [dependencies]
-moonlight-bridge-protocol = { version = "0.2.2", path = "../moonlight-bridge-protocol" }
+moonlight-bridge-protocol = { version = "0.3.0", path = "../moonlight-bridge-protocol" }
 tokio.workspace = true
 tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
 tracing.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true

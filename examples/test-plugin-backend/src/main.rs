@@ -5,7 +5,8 @@ use moonlight_bridge_example_api::{
 };
 use moonlight_bridge_sentry::SentryMoonLightTelemetry;
 use moonlight_bridge_server::{
-    HandlerError, MoonLightMetrics, Router, Server, Telemetry, TelemetryChain,
+    HandlerError, MoonLightMetrics, Router, Server, ServerStream, Telemetry, TelemetryChain,
+    iter_server_stream,
 };
 use std::sync::{
     Arc,
@@ -24,6 +25,15 @@ impl EchoService for PaperTestService {
         Ok(EchoResponse {
             message: format!("[Rust #{number}] {}", request.message.to_uppercase()),
         })
+    }
+
+    async fn stream_echo(
+        &self,
+        request: EchoRequest,
+    ) -> Result<ServerStream<EchoResponse>, HandlerError> {
+        Ok(iter_server_stream(std::iter::once(Ok(EchoResponse {
+            message: request.message,
+        }))))
     }
 }
 

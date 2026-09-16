@@ -1,5 +1,7 @@
 #![doc = include_str!("../README.md")]
 
+use futures_core::Stream;
+use futures_util::StreamExt;
 pub use moonlight_bridge_protocol::ErrorCode;
 use moonlight_bridge_protocol::{
     DEFAULT_MAX_BODY_LEN, DEFAULT_MAX_IN_FLIGHT, FLAG_HAS_DEADLINE, FLAG_HAS_TRACE_CONTEXT, Frame,
@@ -62,7 +64,37 @@ use tokio::net::UnixListener;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>, HandlerError>> + Send>>;
 type Handler = Arc<dyn Fn(Vec<u8>) -> HandlerFuture + Send + Sync>;
-type ActiveRequests = Arc<Mutex<HashMap<u64, AbortHandle>>>;
+/// Type-erased asynchronous sequence returned by a server-streaming handler.
+pub type ServerStream<T> = Pin<Box<dyn Stream<Item = Result<T, HandlerError>> + Send + 'static>>;
+/// Maps successful stream items while preserving handler failures.
+pub fn map_server_stream<T, U, F>(stream: ServerStream<T>, mut mapper: F) -> ServerStream<U>
+where
+    T: 'static,
+    U: 'static,
+    F: FnMut(T) -> U + Send + 'static,
+{
+    Box::pin(stream.map(move |item| item.map(&mut mapper)))
+}
+/// Creates a server stream from a finite iterator.
+pub fn iter_server_stream<T, I>(items: I) -> ServerStream<T>
+where
+    T: 'static,
+    I: IntoIterator<Item = Result<T, HandlerError>>,
+    I::IntoIter: Send + 'static,
+{
+    Box::pin(futures_util::stream::iter(items))
+}
+type RawServerStream = ServerStream<Vec<u8>>;
+type StreamHandlerFuture =
+    Pin<Box<dyn Future<Output = Result<RawServerStream, HandlerError>> + Send>>;
+type StreamHandler = Arc<dyn Fn(Vec<u8>) -> StreamHandlerFuture + Send + Sync>;
+
+struct ActiveRequest {
+    task: AbortHandle,
+    credits: Option<Arc<Semaphore>>,
+}
+
+type ActiveRequests = Arc<Mutex<HashMap<u64, ActiveRequest>>>;
 
 #[derive(Clone)]
 /// Bounded broadcast channel for one-way events sent to connected clients.
@@ -376,12 +408,14 @@ impl HandlerError {
 /// Immutable method router consumed by a [`Server`].
 pub struct Router {
     handlers: Arc<HashMap<u32, Handler>>,
+    stream_handlers: Arc<HashMap<u32, StreamHandler>>,
     telemetry: Option<Arc<dyn Telemetry>>,
 }
 
 /// Builder that registers handlers and request telemetry.
 pub struct RouterBuilder {
     handlers: HashMap<u32, Handler>,
+    stream_handlers: HashMap<u32, StreamHandler>,
     telemetry: Option<Arc<dyn Telemetry>>,
 }
 
@@ -390,6 +424,7 @@ impl Router {
     pub fn builder() -> RouterBuilder {
         RouterBuilder {
             handlers: HashMap::new(),
+            stream_handlers: HashMap::new(),
             telemetry: None,
         }
     }
@@ -518,6 +553,195 @@ impl Router {
             }
         }
     }
+
+    fn is_streaming(&self, method_id: u32) -> bool {
+        self.stream_handlers.contains_key(&method_id)
+    }
+
+    async fn dispatch_stream(
+        &self,
+        mut frame: Frame,
+        max_response_body_len: u32,
+        credits: Arc<Semaphore>,
+        responses: mpsc::Sender<Frame>,
+    ) {
+        let ParsedRequest {
+            deadline,
+            trace_context,
+            payload,
+        } = match request_payload(&mut frame) {
+            Ok(parts) => parts,
+            Err(message) => {
+                let _ = responses
+                    .send(error_frame(&frame, ErrorCode::InvalidRequest, message))
+                    .await;
+                return;
+            }
+        };
+        let observation = self.telemetry.as_ref().and_then(|telemetry| {
+            telemetry.start_request(RequestInfo {
+                method_id: frame.method_id,
+                request_id: frame.request_id,
+                request_bytes: payload.len(),
+                trace_context,
+            })
+        });
+        let Some(handler) = self.stream_handlers.get(&frame.method_id).cloned() else {
+            finish_observation(
+                observation,
+                RequestOutcome::Error {
+                    code: ErrorCode::UnknownMethod,
+                },
+            );
+            let _ = responses
+                .send(error_frame(
+                    &frame,
+                    ErrorCode::UnknownMethod,
+                    "method is not registered",
+                ))
+                .await;
+            return;
+        };
+        let expires = deadline.map(|duration| tokio::time::Instant::now() + duration);
+        let open = handler(payload);
+        let opened = match expires {
+            Some(at) => match tokio::time::timeout_at(at, open).await {
+                Ok(result) => result,
+                Err(_) => {
+                    finish_observation(
+                        observation,
+                        RequestOutcome::Error {
+                            code: ErrorCode::DeadlineExceeded,
+                        },
+                    );
+                    let _ = responses
+                        .send(error_frame(
+                            &frame,
+                            ErrorCode::DeadlineExceeded,
+                            "request deadline exceeded",
+                        ))
+                        .await;
+                    return;
+                }
+            },
+            None => open.await,
+        };
+        let mut stream = match opened {
+            Ok(stream) => stream,
+            Err(error) => {
+                finish_observation(observation, RequestOutcome::Error { code: error.code });
+                let _ = responses
+                    .send(error_frame(&frame, error.code, &error.message))
+                    .await;
+                return;
+            }
+        };
+        let mut response_bytes = 0usize;
+        loop {
+            let item = match expires {
+                Some(at) => match tokio::time::timeout_at(at, stream.next()).await {
+                    Ok(item) => item,
+                    Err(_) => {
+                        finish_observation(
+                            observation,
+                            RequestOutcome::Error {
+                                code: ErrorCode::DeadlineExceeded,
+                            },
+                        );
+                        let _ = responses
+                            .send(error_frame(
+                                &frame,
+                                ErrorCode::DeadlineExceeded,
+                                "request deadline exceeded",
+                            ))
+                            .await;
+                        return;
+                    }
+                },
+                None => stream.next().await,
+            };
+            match item {
+                Some(Ok(body)) if body.len() <= max_response_body_len as usize => {
+                    let credit = credits.acquire();
+                    let permit = match expires {
+                        Some(at) => match tokio::time::timeout_at(at, credit).await {
+                            Ok(Ok(permit)) => permit,
+                            Ok(Err(_)) => return,
+                            Err(_) => {
+                                finish_observation(
+                                    observation,
+                                    RequestOutcome::Error {
+                                        code: ErrorCode::DeadlineExceeded,
+                                    },
+                                );
+                                let _ = responses
+                                    .send(error_frame(
+                                        &frame,
+                                        ErrorCode::DeadlineExceeded,
+                                        "request deadline exceeded",
+                                    ))
+                                    .await;
+                                return;
+                            }
+                        },
+                        None => match credit.await {
+                            Ok(permit) => permit,
+                            Err(_) => return,
+                        },
+                    };
+                    permit.forget();
+                    response_bytes += body.len();
+                    if responses
+                        .send(Frame::new(
+                            FrameKind::StreamItem,
+                            frame.method_id,
+                            frame.request_id,
+                            body,
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Some(Ok(_)) => {
+                    finish_observation(
+                        observation,
+                        RequestOutcome::Error {
+                            code: ErrorCode::ResourceExhausted,
+                        },
+                    );
+                    let _ = responses
+                        .send(error_frame(
+                            &frame,
+                            ErrorCode::ResourceExhausted,
+                            "stream item exceeds negotiated body limit",
+                        ))
+                        .await;
+                    return;
+                }
+                Some(Err(error)) => {
+                    finish_observation(observation, RequestOutcome::Error { code: error.code });
+                    let _ = responses
+                        .send(error_frame(&frame, error.code, &error.message))
+                        .await;
+                    return;
+                }
+                None => {
+                    finish_observation(observation, RequestOutcome::Success { response_bytes });
+                    let _ = responses
+                        .send(Frame::new(
+                            FrameKind::StreamEnd,
+                            frame.method_id,
+                            frame.request_id,
+                            Vec::new(),
+                        ))
+                        .await;
+                    return;
+                }
+            }
+        }
+    }
 }
 
 impl RouterBuilder {
@@ -538,6 +762,10 @@ impl RouterBuilder {
         F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Vec<u8>, HandlerError>> + Send + 'static,
     {
+        assert!(
+            !self.stream_handlers.contains_key(&method_id),
+            "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
+        );
         let previous = self
             .handlers
             .insert(method_id, Arc::new(move |body| Box::pin(handler(body))));
@@ -548,10 +776,42 @@ impl RouterBuilder {
         self
     }
 
+    /// Registers a credit-controlled server-streaming byte-level handler.
+    ///
+    /// Generated registration functions should normally be preferred. At most one item is polled
+    /// ahead; delivery always waits for client credit.
+    ///
+    /// # Panics
+    /// Panics when the method ID has already been registered as unary or streaming.
+    pub fn route_stream<F, Fut, S>(mut self, method_id: u32, handler: F) -> Self
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<S, HandlerError>> + Send + 'static,
+        S: Stream<Item = Result<Vec<u8>, HandlerError>> + Send + 'static,
+    {
+        assert!(
+            !self.handlers.contains_key(&method_id)
+                && !self.stream_handlers.contains_key(&method_id),
+            "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
+        );
+        self.stream_handlers.insert(
+            method_id,
+            Arc::new(move |body| {
+                let future = handler(body);
+                Box::pin(async move {
+                    let stream = future.await?;
+                    Ok(Box::pin(stream) as RawServerStream)
+                })
+            }),
+        );
+        self
+    }
+
     /// Freezes handler registration into a cloneable router.
     pub fn build(self) -> Router {
         Router {
             handlers: Arc::new(self.handlers),
+            stream_handlers: Arc::new(self.stream_handlers),
             telemetry: self.telemetry,
         }
     }
@@ -929,6 +1189,29 @@ where
                 let request_id = frame.request_id;
                 let runtime_for_task = runtime.clone();
                 let max_body_len = negotiated.max_body_len;
+                let streaming = router.is_streaming(frame.method_id);
+                if streaming
+                    && negotiated.features & moonlight_bridge_protocol::FEATURE_SERVER_STREAMING
+                        == 0
+                {
+                    if responses_tx
+                        .send(error_frame(
+                            &frame,
+                            ErrorCode::InvalidRequest,
+                            "server streaming was not negotiated",
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        break Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "response writer stopped",
+                        ));
+                    }
+                    continue;
+                }
+                let stream_credits = streaming.then(|| Arc::new(Semaphore::new(0)));
+                let task_credits = stream_credits.clone();
                 let (start_tx, start_rx) = oneshot::channel();
                 let task = tokio::spawn(async move {
                     let _permit = permit;
@@ -939,12 +1222,18 @@ where
                     if start_rx.await.is_err() {
                         return;
                     }
-                    let response = fit_outbound_frame(
-                        router.dispatch(frame, max_body_len).await,
-                        max_body_len,
-                    );
+                    if let Some(credits) = task_credits {
+                        router
+                            .dispatch_stream(frame, max_body_len, credits, responses_tx.clone())
+                            .await;
+                    } else {
+                        let response = fit_outbound_frame(
+                            router.dispatch(frame, max_body_len).await,
+                            max_body_len,
+                        );
+                        let _ = responses_tx.send(response).await;
+                    }
                     active_for_task.lock().await.remove(&request_id);
-                    let _ = responses_tx.send(response).await;
                 });
                 let mut active_requests = active.lock().await;
                 if active_requests.contains_key(&request_id) {
@@ -955,14 +1244,48 @@ where
                         format!("duplicate active request_id: {request_id}"),
                     ));
                 }
-                active_requests.insert(request_id, task.abort_handle());
+                active_requests.insert(
+                    request_id,
+                    ActiveRequest {
+                        task: task.abort_handle(),
+                        credits: stream_credits,
+                    },
+                );
                 drop(active_requests);
                 let _ = start_tx.send(());
             }
             FrameKind::Cancel => {
-                if let Some(handle) = active.lock().await.remove(&frame.request_id) {
-                    handle.abort();
+                if let Some(request) = active.lock().await.remove(&frame.request_id) {
+                    request.task.abort();
                 }
+            }
+            FrameKind::StreamCredit => {
+                if frame.method_id != 0 || frame.request_id == 0 || frame.body.len() != 8 {
+                    break Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid STREAM_CREDIT frame",
+                    ));
+                }
+                let count = u64::from_be_bytes(frame.body.as_slice().try_into().unwrap());
+                if count == 0 {
+                    break Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "STREAM_CREDIT must be positive",
+                    ));
+                }
+                let active_requests = active.lock().await;
+                let Some(request) = active_requests.get(&frame.request_id) else {
+                    continue;
+                };
+                let Some(credits) = request.credits.as_ref() else {
+                    break Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "credits target a unary request",
+                    ));
+                };
+                let available = credits.available_permits();
+                let room = Semaphore::MAX_PERMITS.saturating_sub(available);
+                credits.add_permits(usize::try_from(count).unwrap_or(usize::MAX).min(room));
             }
             FrameKind::Ping => {
                 if frame.request_id == 0 {
@@ -1019,8 +1342,8 @@ where
     };
 
     // This epilogue deliberately runs for EOF, protocol errors and I/O errors alike.
-    for (_, handle) in active.lock().await.drain() {
-        handle.abort();
+    for (_, request) in active.lock().await.drain() {
+        request.task.abort();
     }
     reader_task.abort();
     let _ = reader_task.await;

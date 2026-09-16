@@ -12,6 +12,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import ru.moonlightproject.bridge.client.MoonLightChannel;
 import ru.moonlightproject.bridge.client.MoonLightHealth;
+import ru.moonlightproject.bridge.client.MoonLightServerStream;
 import ru.moonlightproject.bridge.client.ReconnectingMoonLightClient;
 
 /**
@@ -130,6 +131,11 @@ public final class MoonLightBridge implements MoonLightChannel {
     @Override
     public CompletableFuture<byte[]> request(int methodId, byte[] body, Duration deadline) {
         return client.request(methodId, body, deadline);
+    }
+
+    @Override
+    public MoonLightServerStream<byte[]> serverStream(int methodId, byte[] body, Duration deadline) {
+        return client.serverStream(methodId, body, deadline);
     }
 
     @Override

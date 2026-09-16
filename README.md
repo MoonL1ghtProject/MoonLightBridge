@@ -43,7 +43,7 @@ flowchart LR
 
 ## Install
 
-MoonLightBridge `0.2.2` is available from Maven Central without repository credentials.
+MoonLightBridge `0.3.0` is available from Maven Central without repository credentials.
 
 For any Java 21+ application:
 
@@ -53,7 +53,7 @@ repositories {
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-java:0.2.2")
+    implementation("ru.moonlightproject:moonlight-bridge-java:0.3.0")
 }
 ```
 
@@ -61,7 +61,7 @@ For Paper or Folia, use the adapter instead; it already includes the universal r
 
 ```kotlin
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-paper:0.2.2")
+    implementation("ru.moonlightproject:moonlight-bridge-paper:0.3.0")
 }
 ```
 
@@ -92,7 +92,7 @@ Add the Rust runtime to the backend:
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.2.2"
+moonlight-bridge-server = "0.3.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -127,11 +127,11 @@ pluginManagement {
 ```kotlin
 // build.gradle.kts
 plugins {
-    id("ru.moonlightproject.bridge") version "0.2.2"
+    id("ru.moonlightproject.bridge") version "0.3.0"
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-client:0.2.2")
+    implementation("ru.moonlightproject:moonlight-bridge-client:0.3.0")
     implementation("com.google.protobuf:protobuf-java:4.36.1")
 }
 ```
@@ -168,6 +168,22 @@ For long-running applications, keep one bridge per backend endpoint for the proc
 not open a connection for every call. `firstConnection()`, `isConnected()`, `lastFailure()`,
 `health()`, `pendingRequests()`, `warmUp(...)` and typed event subscriptions cover lifecycle and
 operations without requiring direct access to the transport implementation.
+
+Independent backends can be grouped without hiding routing:
+
+```java
+try (var backends = MoonLightBridgeGroup.start(Map.of(
+    "profiles", "tcp://127.0.0.1:38191",
+    "machines", "unix:/run/moonlightbridge/machines.sock"
+))) {
+    var profiles = new ProfileServiceClient(backends.channel("profiles"));
+    var machines = new MachineServiceClient(backends.channel("machines"));
+}
+```
+
+Server-streaming methods declared as `returns (stream Response)` generate a `Flow.Publisher` on
+Java and `ServerStream<Response>` on Rust. Subscriber demand becomes protocol credit, keeping the
+entire path bounded instead of buffering an unbounded result sequence.
 
 ## Call Rust from Paper or Folia
 
@@ -255,7 +271,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 
 ## What is included
 
-| Area | Available in 0.2.2 |
+| Area | Available in 0.3.0 |
 |---|---|
 | Transport | Unix socket, TCP, mutual TLS |
 | RPC | Multiplexing, typed unary calls, typed batches, deadlines, cancellation |
@@ -287,7 +303,7 @@ The repository contains a working [Paper plugin](examples/paper-test-plugin), it
 
 ## Project status
 
-Version `0.2.2` is a stable public API release. The transport and
+Version `0.3.0` is a stable public API release. The transport and
 lifecycle are fully tested, but the project is still young: benchmark your own workload
 and pin exact versions in production. Backward-incompatible changes follow semantic
 versioning.

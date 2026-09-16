@@ -11,7 +11,7 @@ only adds scheduler-safe Minecraft callbacks.
 repositories { mavenCentral() }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-java:0.2.2")
+    implementation("ru.moonlightproject:moonlight-bridge-java:0.3.0")
 }
 ```
 
@@ -51,6 +51,21 @@ public final class BackendGateway implements AutoCloseable {
 
 Use `MoonLightBridge.connect(endpoint)` when startup must wait for the first connection. Both
 factories supervise later disconnects. Create one bridge per endpoint and close it at shutdown.
+
+For multiple independent backends, use explicit names instead of hiding routing behind method IDs:
+
+```java
+try (var backends = MoonLightBridgeGroup.start(Map.of(
+    "profiles", "tcp://127.0.0.1:38191",
+    "machines", "unix:/run/moonlightbridge/machines.sock"
+))) {
+    var profiles = new ProfileServiceClient(backends.channel("profiles"));
+    var machines = new MachineServiceClient(backends.channel("machines"));
+}
+```
+
+Each member has its own physical connection, bounded queues, health, reconnect state, and failure
+domain. A disconnected backend does not reroute or replay work through another member.
 
 ## Endpoint forms
 
@@ -106,6 +121,25 @@ subscription.close();
 
 Subscriptions survive reconnects, but events are best-effort and not persisted. Resynchronize
 important state after reconnect rather than treating events as a durable queue.
+
+## Server-streaming RPC
+
+Declare `returns (stream Result)` in Protobuf. The generated Java method returns a standard
+`Flow.Publisher<Result>`. Demand is sent to Rust as wire-level credit, so Rust produces only what
+the subscriber has requested:
+
+```java
+client.scanChunks(request).subscribe(new Flow.Subscriber<>() {
+    private Flow.Subscription subscription;
+    public void onSubscribe(Flow.Subscription value) { subscription = value; value.request(1); }
+    public void onNext(ChunkResult value) { process(value); subscription.request(1); }
+    public void onError(Throwable error) { report(error); }
+    public void onComplete() { finished(); }
+});
+```
+
+Cancellation, the configured deadline, connection loss, and remote errors terminate the publisher.
+Streams interrupted by reconnect are never replayed automatically.
 
 ## Low-level module
 

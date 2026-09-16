@@ -15,6 +15,7 @@ out of order. The optional Paper/Folia adapter keeps Minecraft world access on t
 
 - TCP, Unix-domain sockets and mutual TLS;
 - multiplexed concurrent request/response RPC;
+- credit-controlled server-streaming RPC with bounded backpressure;
 - bounded per-connection work and response queues;
 - deadlines, cancellation and a timeout for silent pre-HELLO clients;
 - heartbeat, health/readiness and reconnect-safe server events;
@@ -27,7 +28,7 @@ out of order. The optional Paper/Folia adapter keeps Minecraft world access on t
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.2.2"
+moonlight-bridge-server = "0.3.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -88,6 +89,9 @@ async fn main() -> std::io::Result<()> {
 
 The generator owns method IDs and fails on collisions. `RouterBuilder::route` also rejects duplicate
 IDs during registration instead of silently replacing a handler.
+
+Generated server-streaming methods return `ServerStream<Response>`. The runtime keeps at most one
+look-ahead item and delivers only with Java subscriber credit; cancellation or a deadline drops it.
 
 ## Choosing a transport
 

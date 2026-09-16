@@ -300,6 +300,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
 
 [[package]]
+name = "futures-macro"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
+]
+
+[[package]]
 name = "futures-sink"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -319,6 +330,7 @@ checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
  "futures-core",
  "futures-io",
+ "futures-macro",
  "futures-sink",
  "futures-task",
  "memchr",
@@ -766,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-codegen"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -777,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-example-api"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "moonlight-bridge-codegen",
  "moonlight-bridge-protocol",
@@ -788,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-example-backend"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "moonlight-bridge-example-api",
  "moonlight-bridge-sentry",
@@ -800,11 +812,11 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-protocol"
-version = "0.2.2"
+version = "0.3.0"
 
 [[package]]
 name = "moonlight-bridge-sentry"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "moonlight-bridge-server",
  "sentry",
@@ -814,8 +826,10 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-server"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
+ "futures-core",
+ "futures-util",
  "moonlight-bridge-protocol",
  "rustls-pemfile",
  "tokio",
@@ -825,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-test-plugin-backend"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "moonlight-bridge-example-api",
  "moonlight-bridge-sentry",

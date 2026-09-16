@@ -26,6 +26,8 @@ RPC per machine or Minecraft event.
 - RPC bindings are generated from a standard Protobuf descriptor set rather
   than parsing `.proto` source independently in each language.
 - JNI and shared memory are out of scope until profiling justifies them.
+- Multiple backends are explicit named channels; service clients never silently choose a route.
+- Server streams use demand credits on the wire so backpressure remains bounded end to end.
 
 ## Reconnect safety
 

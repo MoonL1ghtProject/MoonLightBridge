@@ -27,7 +27,7 @@ generated messages; it does not introduce a second schema language.
 - `prost-build` for Rust messages.
 
 ```bash
-cargo install moonlight-bridge-codegen --version 0.2.2 --locked
+cargo install moonlight-bridge-codegen --version 0.3.0 --locked
 ```
 
 ## Contract example
@@ -54,11 +54,11 @@ message BalanceChangedEvent { string player_id = 1; int64 balance = 2; }
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.2.2"
+moonlight-bridge-server = "0.3.0"
 prost = "0.14"
 
 [build-dependencies]
-moonlight-bridge-codegen = "0.2.2"
+moonlight-bridge-codegen = "0.3.0"
 prost-build = "0.14"
 ```
 
@@ -149,7 +149,7 @@ validation into `check`:
 ```kotlin
 plugins {
     `java-library`
-    id("ru.moonlightproject.bridge") version "0.2.2"
+    id("ru.moonlightproject.bridge") version "0.3.0"
 }
 
 moonlightBridge {
@@ -165,10 +165,10 @@ Java artifacts are published to Maven Central. Ordinary Java applications use
 
 ## Current limitations
 
-- unary request/response methods only;
+- unary and server-streaming response methods;
 - top-level Protobuf request, response and event messages;
 - events use the explicit `*Event` suffix;
 - Java generation invokes a local `protoc`;
-- streaming schemas are rejected rather than partially generated.
+- client and bidirectional streaming schemas are rejected rather than partially generated.
 
 Licensed under MIT OR Apache-2.0.

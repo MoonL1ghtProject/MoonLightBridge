@@ -16,6 +16,18 @@ public interface MoonLightChannel extends AutoCloseable {
      * @return future containing the encoded response payload
      */
     CompletableFuture<byte[]> request(int methodId, byte[] body, Duration deadline);
+
+    /**
+     * Opens a credit-controlled server-streaming RPC.
+     *
+     * @param methodId stable generated method identifier
+     * @param body encoded request payload
+     * @param deadline maximum lifetime of the entire stream
+     * @return single-subscriber stream whose demand controls wire delivery credit
+     */
+    default MoonLightServerStream<byte[]> serverStream(int methodId, byte[] body, Duration deadline) {
+        throw new UnsupportedOperationException("server streaming is not supported");
+    }
     /**
      * Performs a transport liveness check within {@code timeout}.
      *

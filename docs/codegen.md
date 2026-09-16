@@ -4,7 +4,7 @@ MoonLightBridge uses standard Protocol Buffers schemas. `protoc` generates messa
 for Java, while `prost-build` generates Rust message types. `moonlight-bridge-codegen` reads
 the same descriptor set and generates the RPC-specific layer:
 
-- Java typed clients returning `CompletableFuture<Response>`;
+- Java typed clients returning `CompletableFuture<Response>` or `Flow.Publisher<Response>`;
 - Rust service traits and router registration functions;
 - typed Rust publishers and Java listeners for messages whose names end in `Event`;
 - identical numeric method IDs in both languages.
@@ -14,8 +14,12 @@ Example schema:
 ```proto
 service EchoService {
   rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc WatchEcho(EchoRequest) returns (stream EchoResponse);
 }
 ```
+
+Server-streaming methods use protocol-level delivery credit and generate a Rust
+`ServerStream<Response>`. Client and bidirectional streaming remain rejected during generation.
 
 Generated Java usage:
 
@@ -78,7 +82,7 @@ previously recorded message and enum reservations.
 Install the generator CLI used by both build systems:
 
 ```bash
-cargo install moonlight-bridge-codegen --version 0.2.2 --locked
+cargo install moonlight-bridge-codegen --version 0.3.0 --locked
 ```
 
 Java projects can apply the published Gradle plugin:
@@ -97,7 +101,7 @@ pluginManagement {
 // build.gradle.kts
 plugins {
     java
-    id("ru.moonlightproject.bridge") version "0.2.2"
+    id("ru.moonlightproject.bridge") version "0.3.0"
 }
 
 moonlightBridge {
@@ -118,7 +122,7 @@ service layer in one call.
 
 ```toml
 [build-dependencies]
-moonlight-bridge-codegen = "0.2.2"
+moonlight-bridge-codegen = "0.3.0"
 prost-build = "0.14"
 ```
 

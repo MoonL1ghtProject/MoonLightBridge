@@ -26,7 +26,7 @@ tests and tools that need to encode or inspect frames.
 
 ```toml
 [dependencies]
-moonlight-bridge-protocol = "0.2.2"
+moonlight-bridge-protocol = "0.3.0"
 ```
 
 Rust 1.88 or newer is required.
@@ -89,7 +89,8 @@ The client sends `Hello` first and the server returns `Welcome`. `PeerSettings` 
 - `max_in_flight: u32`;
 - `features: u64`.
 
-Feature bits negotiate deadlines, cancellation, heartbeat, trace context, server events and health.
+Feature bits negotiate deadlines, cancellation, heartbeat, trace context, server events, health,
+and credit-controlled server streaming.
 Sending a feature's frame or flag without negotiation is invalid.
 
 ## Request metadata

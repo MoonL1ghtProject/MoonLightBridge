@@ -56,6 +56,12 @@
           "output": ".moonlight.bridge.example.v1.EchoResponse",
           "client_streaming": false,
           "server_streaming": false
+        },
+        "StreamEcho": {
+          "input": ".moonlight.bridge.example.v1.EchoRequest",
+          "output": ".moonlight.bridge.example.v1.EchoResponse",
+          "client_streaming": false,
+          "server_streaming": true
         }
       }
     }

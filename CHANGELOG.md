@@ -5,6 +5,10 @@ user-visible framework changes; low-level refactors stay in the Git history.
 
 ## Unreleased
 
+## 0.3.0 — Streaming and multi-backend channels
+
+- Added negotiated, credit-based server-streaming RPCs with generated Rust and Java APIs.
+- Added `MoonLightBridgeGroup` for explicitly named independent backend connections.
 - Made connection reads cancellation-safe when server events are published concurrently.
 - Made idempotent operations survive cancellation of the request that started them.
 - Enforced the negotiated body limit for every outbound server response.

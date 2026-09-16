@@ -34,13 +34,16 @@ pub const FEATURE_TRACE_CONTEXT: u64 = 1 << 3;
 pub const FEATURE_SERVER_EVENTS: u64 = 1 << 4;
 /// Peer supports the built-in health request.
 pub const FEATURE_HEALTH: u64 = 1 << 5;
+/// Peer supports credit-based server-streaming RPCs.
+pub const FEATURE_SERVER_STREAMING: u64 = 1 << 6;
 /// Complete feature set implemented by the bundled server runtime.
 pub const SERVER_FEATURES: u64 = FEATURE_DEADLINES
     | FEATURE_CANCELLATION
     | FEATURE_HEARTBEAT
     | FEATURE_TRACE_CONTEXT
     | FEATURE_SERVER_EVENTS
-    | FEATURE_HEALTH;
+    | FEATURE_HEALTH
+    | FEATURE_SERVER_STREAMING;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Vendor-neutral trace identifiers propagated with an RPC request.
@@ -107,6 +110,12 @@ pub enum FrameKind {
     HealthStatus = 23,
     /// One-way server-to-client application event.
     Event = 24,
+    /// One item produced by a server-streaming RPC.
+    StreamItem = 25,
+    /// Successful end of a server-streaming RPC.
+    StreamEnd = 26,
+    /// Client-to-server delivery-credit update for a stream.
+    StreamCredit = 27,
 }
 
 impl TryFrom<u8> for FrameKind {
@@ -126,6 +135,9 @@ impl TryFrom<u8> for FrameKind {
             22 => Ok(Self::Health),
             23 => Ok(Self::HealthStatus),
             24 => Ok(Self::Event),
+            25 => Ok(Self::StreamItem),
+            26 => Ok(Self::StreamEnd),
+            27 => Ok(Self::StreamCredit),
             other => Err(ProtocolError::UnknownKind(other)),
         }
     }

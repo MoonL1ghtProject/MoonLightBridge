@@ -17,6 +17,21 @@ stop_backend() {
     fi
 }
 
+wait_backend() {
+    local transport="$1" target="$2"
+    for _ in {1..300}; do
+        kill -0 "$backend_pid" 2>/dev/null || { echo "Backend exited before readiness" >&2; return 1; }
+        if [[ "$transport" == unix ]]; then
+            [[ -S "$target" ]] && return 0
+        elif (echo > /dev/tcp/127.0.0.1/"$target") 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    echo "Backend did not become ready: $transport $target" >&2
+    return 1
+}
+
 cleanup() {
     local status=$?
     if [[ "$status" -ne 0 && -f "$backend_log" ]]; then
@@ -34,26 +49,21 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$project_dir"
-cargo test --workspace
+cargo test --workspace --locked
+cargo build --locked --package moonlight-bridge-example-backend
 RUSTDOCFLAGS="-D missing-docs" cargo doc \
     -p moonlight-bridge-protocol -p moonlight-bridge-server -p moonlight-bridge-codegen --no-deps
 
-cargo run --quiet --package moonlight-bridge-example-backend >"$backend_log" 2>&1 &
+"$project_dir/target/debug/moonlight-bridge-example-backend" >"$backend_log" 2>&1 &
 backend_pid=$!
-for _ in {1..50}; do
-    if (echo > /dev/tcp/127.0.0.1/38191) 2>/dev/null; then break; fi
-    sleep 0.1
-done
+wait_backend tcp 38191
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-client:integrationTest -PmoonlightBridgeTransport=tcp
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-example-api:typedIntegrationTest
 stop_backend
 
-MOONLIGHT_BRIDGE_UNIX_PATH="$socket_path" cargo run --quiet --package moonlight-bridge-example-backend >>"$backend_log" 2>&1 &
+MOONLIGHT_BRIDGE_UNIX_PATH="$socket_path" "$project_dir/target/debug/moonlight-bridge-example-backend" >>"$backend_log" 2>&1 &
 backend_pid=$!
-for _ in {1..50}; do
-    if [[ -S "$socket_path" ]]; then break; fi
-    sleep 0.1
-done
+wait_backend unix "$socket_path"
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-client:integrationTest \
     -PmoonlightBridgeTransport=unix -PmoonlightBridgeSocketPath="$socket_path"
 stop_backend
@@ -61,7 +71,7 @@ stop_backend
 openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
     -subj "/CN=MoonLightBridge Test CA" -keyout "$cert_dir/ca.key" -out "$cert_dir/ca.crt" >/dev/null 2>&1
 openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" \
-    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -addext "extendedKeyUsage=serverAuth" \
+    -addext "subjectAltName=DNS:localhost" -addext "extendedKeyUsage=serverAuth" \
     -keyout "$cert_dir/server.key" -out "$cert_dir/server.csr" >/dev/null 2>&1
 openssl x509 -req -sha256 -days 1 -copy_extensions copy -in "$cert_dir/server.csr" \
     -CA "$cert_dir/ca.crt" -CAkey "$cert_dir/ca.key" -CAcreateserial \
@@ -80,38 +90,36 @@ keytool -importcert -noprompt -alias moonlight-bridge-ca -storepass changeit \
 
 MOONLIGHT_BRIDGE_ADDRESS="127.0.0.1:38192" MOONLIGHT_BRIDGE_TLS_CERT="$cert_dir/server.crt" \
 MOONLIGHT_BRIDGE_TLS_KEY="$cert_dir/server.key" MOONLIGHT_BRIDGE_TLS_CLIENT_CA="$cert_dir/ca.crt" \
-    cargo run --quiet --package moonlight-bridge-example-backend >>"$backend_log" 2>&1 &
+    "$project_dir/target/debug/moonlight-bridge-example-backend" >>"$backend_log" 2>&1 &
 backend_pid=$!
-for _ in {1..50}; do
-    if (echo > /dev/tcp/127.0.0.1/38192) 2>/dev/null; then break; fi
-    sleep 0.1
-done
+wait_backend tcp 38192
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-client:integrationTest \
     -PmoonlightBridgeTransport=tls -PmoonlightBridgeKeyStore="$cert_dir/client.p12" \
     -PmoonlightBridgeTrustStore="$cert_dir/truststore.p12"
+"$project_dir/gradlew" --no-daemon :java:moonlight-bridge-client:tlsSecurityTest \
+    -PmoonlightBridgeKeyStore="$cert_dir/client.p12" \
+    -PmoonlightBridgeTrustStore="$cert_dir/truststore.p12"
 stop_backend
 
-cargo run --quiet --package moonlight-bridge-example-backend >>"$backend_log" 2>&1 &
+"$project_dir/target/debug/moonlight-bridge-example-backend" >>"$backend_log" 2>&1 &
 backend_pid=$!
-for _ in {1..50}; do
-    if (echo > /dev/tcp/127.0.0.1/38191) 2>/dev/null; then break; fi
-    sleep 0.1
-done
+wait_backend tcp 38191
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-client:reconnectIntegrationTest \
     -PmoonlightBridgeMarkerDirectory="$cert_dir" &
 test_pid=$!
-for _ in {1..200}; do
+for _ in {1..1200}; do
     if [[ -f "$cert_dir/ready" ]]; then break; fi
     sleep 0.05
 done
 [[ -f "$cert_dir/ready" ]]
 stop_backend
-for _ in {1..200}; do
+for _ in {1..1200}; do
     if [[ -f "$cert_dir/disconnected" ]]; then break; fi
     sleep 0.05
 done
 [[ -f "$cert_dir/disconnected" ]]
-cargo run --quiet --package moonlight-bridge-example-backend >>"$backend_log" 2>&1 &
+"$project_dir/target/debug/moonlight-bridge-example-backend" >>"$backend_log" 2>&1 &
 backend_pid=$!
+wait_backend tcp 38191
 wait "$test_pid"
 test_pid=""

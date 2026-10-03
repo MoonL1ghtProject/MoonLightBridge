@@ -1,7 +1,8 @@
 //! Primitives for safe retryable mutations and optimistic concurrency control.
 
+use futures_util::FutureExt;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     future::Future,
     hash::Hash,
     sync::Arc,
@@ -10,30 +11,59 @@ use std::{
 use tokio::sync::{Mutex, Notify, OnceCell, RwLock};
 
 struct Entry<V, E> {
-    created: Instant,
-    result: OnceCell<Result<V, E>>,
+    result: OnceCell<(Instant, Result<V, IdempotencyError<E>>)>,
     ready: Notify,
 }
 
-/// A bounded TTL cache that coalesces concurrent calls carrying the same operation ID.
+struct CacheState<K, V, E> {
+    entries: HashMap<K, Arc<Entry<V, E>>>,
+    completed: VecDeque<K>,
+}
+
+/// A strictly bounded process-local cache that coalesces calls with the same operation ID.
+/// Completed operations expire relative to completion and may be evicted under capacity pressure.
+/// Indeterminate operations remain pinned for the cache lifetime: reconcile them externally before
+/// replacing the cache. This is not a durable exactly-once guarantee.
 pub struct IdempotencyCache<K, V, E> {
-    entries: Mutex<HashMap<K, Arc<Entry<V, E>>>>,
+    state: Arc<Mutex<CacheState<K, V, E>>>,
     capacity: usize,
     ttl: Duration,
 }
+
+/// Failure of cache admission or of the shared operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdempotencyError<E> {
+    /// The operation returned an application error.
+    Operation(E),
+    /// All cache slots are occupied by pending or indeterminate operations.
+    Overloaded,
+    /// The worker panicked; an external side effect may already have committed.
+    Indeterminate,
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for IdempotencyError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Operation(error) => write!(f, "operation failed: {error}"),
+            Self::Overloaded => f.write_str("idempotency cache is full"),
+            Self::Indeterminate => f.write_str("operation outcome is indeterminate"),
+        }
+    }
+}
+impl<E: std::error::Error + 'static> std::error::Error for IdempotencyError<E> {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Cached operation result and whether it was reused by this caller.
 pub struct Idempotent<V> {
     /// Shared operation result.
     pub value: V,
-    /// True when this caller reused an existing in-flight or completed operation.
+    /// True when this caller reused an in-flight or completed operation.
     pub replayed: bool,
 }
 
 impl<K, V, E> IdempotencyCache<K, V, E>
 where
-    K: Clone + Eq + Hash,
+    K: Clone + Eq + Hash + Send + 'static,
     V: Clone + Send + Sync + 'static,
     E: Clone + Send + Sync + 'static,
 {
@@ -42,68 +72,102 @@ where
         assert!(capacity > 0, "idempotency cache capacity must be positive");
         assert!(!ttl.is_zero(), "idempotency cache TTL must be positive");
         Self {
-            entries: Mutex::new(HashMap::new()),
+            state: Arc::new(Mutex::new(CacheState {
+                entries: HashMap::new(),
+                completed: VecDeque::new(),
+            })),
             capacity,
             ttl,
         }
     }
 
-    /// Executes `operation` once per live key and shares it with concurrent callers.
-    ///
-    /// The operation runs in an independent Tokio task, so cancelling the caller does not cancel a
-    /// mutation that may already have committed an external side effect. Later callers with the
-    /// same key continue waiting for and reuse that operation's result.
-    pub async fn execute<F, Fut>(&self, key: K, operation: F) -> Result<Idempotent<V>, E>
+    /// Shares one independent operation with all callers using its key.
+    /// Cancelling a waiter does not cancel its operation. Panics yield a pinned indeterminate
+    /// outcome and never automatically replay a potentially committed mutation.
+    pub async fn execute<F, Fut>(
+        &self,
+        key: K,
+        operation: F,
+    ) -> Result<Idempotent<V>, IdempotencyError<E>>
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<V, E>> + Send + 'static,
     {
-        let now = Instant::now();
         let (entry, replayed) = {
-            let mut entries = self.entries.lock().await;
-            // Never evict an in-flight operation: doing so could execute the same mutation twice.
-            entries.retain(|_, entry| {
-                entry.result.get().is_none() || now.duration_since(entry.created) < self.ttl
-            });
-            if let Some(entry) = entries.get(&key) {
-                (entry.clone(), true)
+            let mut state = self.state.lock().await;
+            // Fast hits do not scan the cache. Expiry and eviction use completion order.
+            if let Some(entry) = state.entries.get(&key) {
+                let live = entry.result.get().is_none_or(|(completed, result)| {
+                    matches!(result, Err(IdempotencyError::Indeterminate))
+                        || completed.elapsed() < self.ttl
+                });
+                if live {
+                    (entry.clone(), true)
+                } else {
+                    // Remove completed entries up to this expired key in completion order.
+                    while let Some(oldest) = state.completed.pop_front() {
+                        state.entries.remove(&oldest);
+                        if oldest == key {
+                            break;
+                        }
+                    }
+                    let entry = Arc::new(Entry {
+                        result: OnceCell::new(),
+                        ready: Notify::new(),
+                    });
+                    state.entries.insert(key.clone(), entry.clone());
+                    (entry, false)
+                }
             } else {
-                if entries.len() >= self.capacity
-                    && let Some(oldest) = entries
-                        .iter()
-                        .filter(|(_, entry)| entry.result.get().is_some())
-                        .min_by_key(|(_, entry)| entry.created)
-                        .map(|(key, _)| key.clone())
-                {
-                    entries.remove(&oldest);
+                if state.entries.len() >= self.capacity {
+                    let mut evicted = false;
+                    while let Some(oldest) = state.completed.pop_front() {
+                        if state.entries.remove(&oldest).is_some() {
+                            evicted = true;
+                            break;
+                        }
+                    }
+                    if !evicted {
+                        return Err(IdempotencyError::Overloaded);
+                    }
                 }
                 let entry = Arc::new(Entry {
-                    created: now,
                     result: OnceCell::new(),
                     ready: Notify::new(),
                 });
-                entries.insert(key, entry.clone());
+                state.entries.insert(key.clone(), entry.clone());
                 (entry, false)
             }
         };
         if !replayed {
             let worker_entry = entry.clone();
+            let state = self.state.clone();
             tokio::spawn(async move {
-                let result = operation().await;
-                if worker_entry.result.set(result).is_ok() {
-                    worker_entry.ready.notify_waiters();
+                // Include closure invocation in the unwind boundary, not only future polling.
+                let result = std::panic::AssertUnwindSafe(async move { operation().await })
+                    .catch_unwind()
+                    .await
+                    .map_or(Err(IdempotencyError::Indeterminate), |result| {
+                        result.map_err(IdempotencyError::Operation)
+                    });
+                let mut state = state.lock().await;
+                let determinate = !matches!(result, Err(IdempotencyError::Indeterminate));
+                let _ = worker_entry.result.set((Instant::now(), result));
+                if determinate {
+                    state.completed.push_back(key);
                 }
+                worker_entry.ready.notify_waiters();
             });
         }
-
         loop {
-            if let Some(result) = entry.result.get() {
+            // Register before inspecting state to avoid losing a completion notification.
+            let notified = entry.ready.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some((_, result)) = entry.result.get() {
                 return result.clone().map(|value| Idempotent { value, replayed });
             }
-            let notified = entry.ready.notified();
-            if entry.result.get().is_none() {
-                notified.await;
-            }
+            notified.await;
         }
     }
 }
@@ -170,6 +234,60 @@ impl<T> Revisioned<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn pending_capacity_is_strict() {
+        let cache = Arc::new(IdempotencyCache::new(1, Duration::from_secs(1)));
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let other = cache.clone();
+        let first = tokio::spawn(async move {
+            other
+                .execute(1, || async move {
+                    let _ = started.send(());
+                    std::future::pending::<Result<(), ()>>().await
+                })
+                .await
+        });
+        ready.await.unwrap();
+        assert_eq!(
+            cache.execute(2, || async { Ok(()) }).await,
+            Err(IdempotencyError::Overloaded)
+        );
+        first.abort();
+    }
+
+    #[tokio::test]
+    async fn retention_starts_at_completion() {
+        let cache = IdempotencyCache::new(1, Duration::from_millis(30));
+        cache
+            .execute(1, || async {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                Ok::<_, ()>(42)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            cache.execute(1, || async { Ok(99) }).await.unwrap().value,
+            42
+        );
+    }
+
+    #[tokio::test]
+    async fn panic_is_terminal_and_never_reexecuted() {
+        let cache = IdempotencyCache::<_, (), ()>::new(1, Duration::from_millis(10));
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(100),
+            cache.execute(1, || async { panic!("possible committed side effect") }),
+        )
+        .await;
+        assert!(outcome.is_ok(), "panicking worker must wake waiters");
+        assert_eq!(outcome.unwrap(), Err(IdempotencyError::Indeterminate));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            cache.execute(1, || async { Ok(()) }).await,
+            Err(IdempotencyError::Indeterminate)
+        );
+    }
 
     #[tokio::test]
     async fn replays_an_operation_only_once() {

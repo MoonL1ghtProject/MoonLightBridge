@@ -23,7 +23,7 @@ public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
         TimeUnit.MILLISECONDS,
         new ArrayBlockingQueue<>(4_096),
         Thread.ofPlatform().daemon().name("moonlight-bridge-sentry-finish").factory(),
-        new ThreadPoolExecutor.CallerRunsPolicy());
+        new ThreadPoolExecutor.DiscardPolicy());
     private final double traceSampleRate;
     private final boolean logsEnabled;
 
@@ -63,7 +63,7 @@ public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
             }
         }
         if (!expected) {
-            Sentry.captureException(cause);
+            Sentry.captureMessage("MoonLightBridge connection failed", io.sentry.SentryLevel.ERROR);
         }
     }
 
@@ -124,7 +124,6 @@ public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
             @Override public void close() {
                 if (failure == null) span.finish(SpanStatus.OK);
                 else {
-                    span.setThrowable(failure);
                     span.finish(SpanStatus.INTERNAL_ERROR);
                 }
             }
@@ -170,7 +169,6 @@ public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
             }
         } else {
             if (span != null) {
-                span.setThrowable(error);
                 span.finish(error instanceof java.util.concurrent.TimeoutException
                     ? SpanStatus.DEADLINE_EXCEEDED : SpanStatus.INTERNAL_ERROR, completedAt);
             }
@@ -187,13 +185,23 @@ public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
     }
 
     private static void captureError(Throwable error, RequestInfo request, long durationMicros) {
-        Sentry.captureException(error, scope -> {
+        Sentry.captureMessage("MoonLightBridge RPC request failed", io.sentry.SentryLevel.ERROR, scope -> {
+            scope.setTag("moonlight_bridge.error_code", safeErrorCode(error));
             scope.setTag("rpc.system", "moonlight-bridge");
             scope.setTag("rpc.method_id", Integer.toUnsignedString(request.methodId()));
             scope.setExtra("moonlight_bridge.request_id", Long.toUnsignedString(request.requestId()));
             scope.setExtra("moonlight_bridge.request_bytes", Integer.toString(request.requestBytes()));
             scope.setExtra("moonlight_bridge.duration_us", Long.toString(durationMicros));
         });
+    }
+
+    private static String safeErrorCode(Throwable error) {
+        if (error instanceof ru.moonlightproject.bridge.client.MoonLightClient.MoonLightRemoteException remote) {
+            return remote.code().name();
+        }
+        if (error instanceof java.util.concurrent.TimeoutException) return "DEADLINE_EXCEEDED";
+        if (error instanceof java.util.concurrent.CancellationException) return "CANCELLED";
+        return "INTERNAL";
     }
 
     private record ErrorOnlyObservation(RequestInfo request, long startedNanos)

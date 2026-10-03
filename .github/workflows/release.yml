@@ -50,6 +50,9 @@ jobs:
             --no-deps
           ./gradlew check
 
+      - name: Verify transport integration and TLS rejection
+        run: ./scripts/integration-test.sh
+
       - name: Prepare registry packages
         env:
           RELEASE_VERSION: ${{ github.ref_name }}

@@ -22,7 +22,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpListener,
-    sync::{Mutex, Semaphore, broadcast, mpsc, oneshot},
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot},
     task::AbortHandle,
     time::timeout,
 };
@@ -39,6 +39,9 @@ tokio::task_local! {
 
 /// Traces a synchronous backend function as a child stage when tracing is enabled.
 pub fn trace_function<T>(name: &'static str, function: impl FnOnce() -> T) -> T {
+    if FUNCTION_STAGES.try_with(|_| ()).is_err() {
+        return function();
+    }
     let started = Instant::now();
     let span = tracing::info_span!(target: "moonlight_bridge::function", "backend.function", function = name);
     let _entered = span.enter();
@@ -49,6 +52,9 @@ pub fn trace_function<T>(name: &'static str, function: impl FnOnce() -> T) -> T 
 
 /// Traces an asynchronous backend function as a child stage when tracing is enabled.
 pub async fn trace_async_function<T>(name: &'static str, future: impl Future<Output = T>) -> T {
+    if FUNCTION_STAGES.try_with(|_| ()).is_err() {
+        return future.await;
+    }
     let started = Instant::now();
     let output = future
         .instrument(tracing::info_span!(target: "moonlight_bridge::function", "backend.function", function = name))
@@ -92,6 +98,12 @@ type StreamHandler = Arc<dyn Fn(Vec<u8>) -> StreamHandlerFuture + Send + Sync>;
 struct ActiveRequest {
     task: AbortHandle,
     credits: Option<Arc<Semaphore>>,
+}
+
+struct ConnectionResources {
+    limits: ServerLimits,
+    request_bytes: Arc<Semaphore>,
+    _admission: OwnedSemaphorePermit,
 }
 
 type ActiveRequests = Arc<Mutex<HashMap<u64, ActiveRequest>>>;
@@ -461,11 +473,21 @@ impl Router {
             return error_frame(&frame, ErrorCode::UnknownMethod, "method is not registered");
         };
         let handler = handler.clone();
-        let instrumented = FUNCTION_STAGES.scope(RefCell::new(Vec::new()), async move {
-            let result = handler(payload).await;
-            let stages = FUNCTION_STAGES.with(|stages| std::mem::take(&mut *stages.borrow_mut()));
-            (result, stages)
-        });
+        let collect_stages = observation.is_some();
+        let instrumented = async move {
+            if collect_stages {
+                FUNCTION_STAGES
+                    .scope(RefCell::new(Vec::new()), async move {
+                        let result = handler(payload).await;
+                        let stages = FUNCTION_STAGES
+                            .with(|stages| std::mem::take(&mut *stages.borrow_mut()));
+                        (result, stages)
+                    })
+                    .await
+            } else {
+                (handler(payload).await, Vec::new())
+            }
+        };
         let (result, stages) = match deadline {
             Some(duration) => match timeout(duration, instrumented).await {
                 Ok(result) => result,
@@ -831,6 +853,31 @@ pub struct Server {
     hello_timeout: Duration,
     events: EventHub,
     runtime: Arc<RuntimeState>,
+    limits: ServerLimits,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Process-wide admission and I/O limits applied by a [`Server`].
+pub struct ServerLimits {
+    /// Maximum number of accepted connections, including TLS handshakes.
+    pub max_connections: usize,
+    /// Maximum bytes retained by decoded request frames across all connections.
+    pub max_buffered_request_bytes: usize,
+    /// Maximum time allowed to receive one complete frame.
+    pub frame_read_timeout: Duration,
+    /// Maximum time spent draining the response writer during connection shutdown.
+    pub writer_shutdown_timeout: Duration,
+}
+
+impl Default for ServerLimits {
+    fn default() -> Self {
+        Self {
+            max_connections: 1_024,
+            max_buffered_request_bytes: 64 * 1024 * 1024,
+            frame_read_timeout: Duration::from_secs(30),
+            writer_shutdown_timeout: Duration::from_millis(500),
+        }
+    }
 }
 
 enum Listener {
@@ -874,6 +921,7 @@ impl Server {
             hello_timeout: Duration::from_secs(10),
             events,
             runtime,
+            limits: ServerLimits::default(),
         })
     }
 
@@ -896,6 +944,7 @@ impl Server {
             hello_timeout: Duration::from_secs(10),
             events,
             runtime,
+            limits: ServerLimits::default(),
         })
     }
 
@@ -915,6 +964,7 @@ impl Server {
             hello_timeout: Duration::from_secs(10),
             events,
             runtime,
+            limits: ServerLimits::default(),
         })
     }
 
@@ -925,6 +975,32 @@ impl Server {
             "HELLO timeout must be greater than zero"
         );
         self.hello_timeout = hello_timeout;
+        self
+    }
+
+    /// Replaces the process-wide connection, buffering, and I/O limits.
+    ///
+    /// # Panics
+    /// Panics when a count is zero, the request budget cannot hold one maximum-size frame,
+    /// or an I/O timeout is zero.
+    pub fn with_limits(mut self, limits: ServerLimits) -> Self {
+        assert!(
+            limits.max_connections > 0 && limits.max_connections <= Semaphore::MAX_PERMITS,
+            "maximum connections must fit the Tokio semaphore"
+        );
+        assert!(
+            limits.max_buffered_request_bytes >= self.settings.max_body_len as usize,
+            "request byte budget must hold one maximum-size frame"
+        );
+        assert!(
+            limits.max_buffered_request_bytes <= Semaphore::MAX_PERMITS,
+            "request byte budget must fit the Tokio semaphore"
+        );
+        assert!(
+            !limits.frame_read_timeout.is_zero() && !limits.writer_shutdown_timeout.is_zero(),
+            "server I/O timeouts must be positive"
+        );
+        self.limits = limits;
         self
     }
 
@@ -947,6 +1023,8 @@ impl Server {
     /// Runs the accept loop until an unrecoverable listener error occurs.
     pub async fn run(self) -> io::Result<()> {
         self.runtime.ready.store(true, Ordering::Relaxed);
+        let connection_permits = Arc::new(Semaphore::new(self.limits.max_connections));
+        let request_bytes = Arc::new(Semaphore::new(self.limits.max_buffered_request_bytes));
         match self.listener {
             Listener::Tcp(listener) => loop {
                 let (stream, _) = listener.accept().await?;
@@ -956,10 +1034,27 @@ impl Server {
                 let hello_timeout = self.hello_timeout;
                 let events = self.events.clone();
                 let runtime = self.runtime.clone();
+                let limits = self.limits;
+                let Ok(connection_permit) = connection_permits.clone().try_acquire_owned() else {
+                    tracing::warn!("MoonLightBridge connection limit reached");
+                    continue;
+                };
+                let request_bytes = request_bytes.clone();
                 tokio::spawn(async move {
-                    if let Err(error) =
-                        serve_connection(stream, router, settings, hello_timeout, events, runtime)
-                            .await
+                    if let Err(error) = serve_connection(
+                        stream,
+                        router,
+                        settings,
+                        hello_timeout,
+                        events,
+                        runtime,
+                        ConnectionResources {
+                            limits,
+                            request_bytes,
+                            _admission: connection_permit,
+                        },
+                    )
+                    .await
                     {
                         tracing::debug!(%error, "MoonLightBridge TCP connection closed");
                     }
@@ -974,6 +1069,12 @@ impl Server {
                 let hello_timeout = self.hello_timeout;
                 let events = self.events.clone();
                 let runtime = self.runtime.clone();
+                let limits = self.limits;
+                let Ok(connection_permit) = connection_permits.clone().try_acquire_owned() else {
+                    tracing::warn!("MoonLightBridge connection limit reached");
+                    continue;
+                };
+                let request_bytes = request_bytes.clone();
                 tokio::spawn(async move {
                     let handshake = timeout(Duration::from_secs(10), acceptor.accept(stream)).await;
                     match handshake {
@@ -985,6 +1086,11 @@ impl Server {
                                 hello_timeout,
                                 events,
                                 runtime,
+                                ConnectionResources {
+                                    limits,
+                                    request_bytes,
+                                    _admission: connection_permit,
+                                },
                             )
                             .await
                             {
@@ -1006,10 +1112,27 @@ impl Server {
                 let hello_timeout = self.hello_timeout;
                 let events = self.events.clone();
                 let runtime = self.runtime.clone();
+                let limits = self.limits;
+                let Ok(connection_permit) = connection_permits.clone().try_acquire_owned() else {
+                    tracing::warn!("MoonLightBridge connection limit reached");
+                    continue;
+                };
+                let request_bytes = request_bytes.clone();
                 tokio::spawn(async move {
-                    if let Err(error) =
-                        serve_connection(stream, router, settings, hello_timeout, events, runtime)
-                            .await
+                    if let Err(error) = serve_connection(
+                        stream,
+                        router,
+                        settings,
+                        hello_timeout,
+                        events,
+                        runtime,
+                        ConnectionResources {
+                            limits,
+                            request_bytes,
+                            _admission: connection_permit,
+                        },
+                    )
+                    .await
                     {
                         tracing::debug!(%error, "MoonLightBridge Unix connection closed");
                     }
@@ -1026,10 +1149,16 @@ async fn serve_connection<S>(
     hello_timeout: Duration,
     events: EventHub,
     runtime: Arc<RuntimeState>,
+    resources: ConnectionResources,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let ConnectionResources {
+        limits,
+        request_bytes,
+        _admission,
+    } = resources;
     runtime.active_connections.fetch_add(1, Ordering::Relaxed);
     let _connection_guard = ConnectionGuard(runtime.clone());
     let hello = timeout(
@@ -1067,7 +1196,7 @@ where
     let (responses_tx, mut responses_rx) =
         mpsc::channel::<Frame>(negotiated.max_in_flight as usize);
     let (frames_tx, mut frames_rx) =
-        mpsc::channel::<io::Result<Frame>>(negotiated.max_in_flight as usize);
+        mpsc::channel::<io::Result<BufferedFrame>>(negotiated.max_in_flight as usize);
     let active: ActiveRequests = Arc::new(Mutex::new(HashMap::new()));
     let permits = Arc::new(Semaphore::new(negotiated.max_in_flight as usize));
     let mut event_rx = events.sender.subscribe();
@@ -1077,7 +1206,13 @@ where
     // partially completed read and make the next call start in the middle of a frame.
     let reader_task = tokio::spawn(async move {
         loop {
-            let result = read_frame(&mut reader, negotiated.max_body_len).await;
+            let result = read_frame_buffered(
+                &mut reader,
+                negotiated.max_body_len,
+                limits.frame_read_timeout,
+                request_bytes.clone(),
+            )
+            .await;
             let terminal = result.is_err();
             if frames_tx.send(result).await.is_err() || terminal {
                 break;
@@ -1085,7 +1220,7 @@ where
         }
     });
 
-    let writer_task = tokio::spawn(async move {
+    let mut writer_task = tokio::spawn(async move {
         const MAX_BATCH_FRAMES: usize = 64;
         const MAX_BATCH_BYTES: usize = 512 * 1024;
         let mut encoded = Vec::with_capacity(MAX_BATCH_BYTES);
@@ -1125,7 +1260,7 @@ where
     });
 
     let connection_result = loop {
-        let frame = tokio::select! {
+        let buffered = tokio::select! {
             result = frames_rx.recv() => match result {
                 Some(Ok(frame)) => frame,
                 Some(Err(error)) if error.kind() == io::ErrorKind::UnexpectedEof => break Ok(()),
@@ -1159,6 +1294,10 @@ where
                 }
             }
         };
+        let BufferedFrame {
+            frame,
+            permit: body_permit,
+        } = buffered;
         match frame.kind {
             FrameKind::Request => {
                 if frame.request_id == 0 {
@@ -1215,6 +1354,7 @@ where
                 let (start_tx, start_rx) = oneshot::channel();
                 let task = tokio::spawn(async move {
                     let _permit = permit;
+                    let _body_permit = body_permit;
                     runtime_for_task
                         .active_requests
                         .fetch_add(1, Ordering::Relaxed);
@@ -1348,7 +1488,17 @@ where
     reader_task.abort();
     let _ = reader_task.await;
     drop(responses_tx);
-    let writer_result = writer_task.await.map_err(io::Error::other)?;
+    let writer_result = match timeout(limits.writer_shutdown_timeout, &mut writer_task).await {
+        Ok(result) => result.map_err(io::Error::other)?,
+        Err(_) => {
+            writer_task.abort();
+            let _ = writer_task.await;
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "response writer shutdown timed out",
+            ))
+        }
+    };
     connection_result.and(writer_result)
 }
 
@@ -1441,6 +1591,51 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R, max_body_len: u32) -> 
     )
 }
 
+struct BufferedFrame {
+    frame: Frame,
+    permit: Option<OwnedSemaphorePermit>,
+}
+
+async fn read_frame_buffered<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    max_body_len: u32,
+    read_timeout: Duration,
+    budget: Arc<Semaphore>,
+) -> io::Result<BufferedFrame> {
+    timeout(read_timeout, async {
+        let mut header = [0u8; HEADER_LEN];
+        reader.read_exact(&mut header).await?;
+        let decoded = Frame::decode_header(&header, max_body_len)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let permit = if decoded.body_len == 0 {
+            None
+        } else {
+            Some(
+                budget
+                    .acquire_many_owned(decoded.body_len)
+                    .await
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "request byte budget closed")
+                    })?,
+            )
+        };
+        let mut body = vec![0; decoded.body_len as usize];
+        reader.read_exact(&mut body).await?;
+        Ok(BufferedFrame {
+            frame: Frame::new(decoded.kind, decoded.method_id, decoded.request_id, body)
+                .with_flags(decoded.flags),
+            permit,
+        })
+    })
+    .await
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "MoonLightBridge frame read timed out",
+        )
+    })?
+}
+
 async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, frame: &Frame) -> io::Result<()> {
     let encoded = frame
         .encode()
@@ -1453,6 +1648,37 @@ mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    async fn serve_test_connection<S>(
+        stream: S,
+        router: Router,
+        settings: PeerSettings,
+        hello_timeout: Duration,
+        events: EventHub,
+        runtime: Arc<RuntimeState>,
+    ) -> io::Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let limits = ServerLimits::default();
+        let request_bytes = Arc::new(Semaphore::new(limits.max_buffered_request_bytes));
+        let connection_permits = Arc::new(Semaphore::new(1));
+        let connection_permit = connection_permits.acquire_owned().await.unwrap();
+        serve_connection(
+            stream,
+            router,
+            settings,
+            hello_timeout,
+            events,
+            runtime,
+            ConnectionResources {
+                limits,
+                request_bytes,
+                _admission: connection_permit,
+            },
+        )
+        .await
+    }
+
     #[derive(Default)]
     struct TraceCapture(StdMutex<Option<TraceContext>>);
 
@@ -1461,6 +1687,63 @@ mod tests {
             *self.0.lock().unwrap() = info.trace_context;
             None
         }
+    }
+
+    #[tokio::test]
+    async fn no_observation_does_not_collect_function_stages() {
+        let router = Router::builder()
+            .route(1, |_| async {
+                assert!(FUNCTION_STAGES.try_with(|_| ()).is_err());
+                Ok(trace_function("test", Vec::new))
+            })
+            .build();
+        assert_eq!(
+            router
+                .dispatch(Frame::new(FrameKind::Request, 1, 1, vec![]), 1024)
+                .await
+                .kind,
+            FrameKind::Response
+        );
+    }
+
+    #[tokio::test]
+    async fn goodbye_bounds_blocked_writer_shutdown() {
+        let (mut client, stream) = tokio::io::duplex(256);
+        let settings = PeerSettings {
+            max_body_len: DEFAULT_MAX_BODY_LEN,
+            max_in_flight: 1,
+            features: SERVER_FEATURES,
+        };
+        let (events, runtime) = Server::runtime(settings);
+        let router = Router::builder()
+            .route(1, |_| async { Ok(vec![0; 1024 * 1024]) })
+            .build();
+        let task = tokio::spawn(serve_test_connection(
+            stream,
+            router,
+            settings,
+            Duration::from_secs(1),
+            events,
+            runtime,
+        ));
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Hello, 0, 0, settings.encode()),
+        )
+        .await
+        .unwrap();
+        read_frame(&mut client, DEFAULT_MAX_BODY_LEN).await.unwrap();
+        write_frame(&mut client, &Frame::new(FrameKind::Request, 1, 1, vec![]))
+            .await
+            .unwrap();
+        client.read_u8().await.unwrap();
+        write_frame(&mut client, &Frame::new(FrameKind::Goodbye, 0, 0, vec![]))
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_secs(1), task).await.is_ok(),
+            "GOODBYE must bound writer drain"
+        );
     }
 
     #[tokio::test]
@@ -1530,7 +1813,7 @@ mod tests {
             features: SERVER_FEATURES,
         };
         let (events, runtime) = Server::runtime(settings);
-        let error = serve_connection(
+        let error = serve_test_connection(
             server_stream,
             Router::builder().build(),
             settings,
@@ -1558,7 +1841,7 @@ mod tests {
                 Ok(Vec::new())
             })
             .build();
-        let task = tokio::spawn(serve_connection(
+        let task = tokio::spawn(serve_test_connection(
             server_stream,
             router,
             settings,
@@ -1611,7 +1894,7 @@ mod tests {
         };
         let (events, runtime) = Server::runtime(settings);
         let publish_events = events.clone();
-        let task = tokio::spawn(serve_connection(
+        let task = tokio::spawn(serve_test_connection(
             server_stream,
             Router::builder().build(),
             settings,
@@ -1687,7 +1970,7 @@ mod tests {
         let router = Router::builder()
             .route(1, |_| async { Ok(vec![7; 128]) })
             .build();
-        let task = tokio::spawn(serve_connection(
+        let task = tokio::spawn(serve_test_connection(
             server_stream,
             router,
             server_settings,

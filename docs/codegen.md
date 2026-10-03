@@ -82,7 +82,7 @@ previously recorded message and enum reservations.
 Install the generator CLI used by both build systems:
 
 ```bash
-cargo install moonlight-bridge-codegen --version 0.3.0 --locked
+cargo install moonlight-bridge-codegen --version 0.4.0 --locked
 ```
 
 Java projects can apply the published Gradle plugin:
@@ -101,7 +101,7 @@ pluginManagement {
 // build.gradle.kts
 plugins {
     java
-    id("ru.moonlightproject.bridge") version "0.3.0"
+    id("ru.moonlightproject.bridge") version "0.4.0"
 }
 
 moonlightBridge {
@@ -122,7 +122,7 @@ service layer in one call.
 
 ```toml
 [build-dependencies]
-moonlight-bridge-codegen = "0.3.0"
+moonlight-bridge-codegen = "0.4.0"
 prost-build = "0.14"
 ```
 

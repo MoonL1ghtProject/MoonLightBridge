@@ -329,7 +329,7 @@ fn generate_java_method(
     writeln!(code, "    byte[] payload = MoonLightTelemetry.traceFunction(\"protobuf.encode.{service}.{name}\", request::toByteArray);").unwrap();
     writeln!(
         code,
-        "    return channel.request({}_METHOD_ID, payload, deadline).thenApply(body -> {{",
+        "    return MoonLightChannel.mapFuture(channel.request({}_METHOD_ID, payload, deadline), body -> {{",
         upper_snake(name)
     )
     .unwrap();
@@ -345,7 +345,7 @@ fn generate_java_method(
     writeln!(code, "    List<MoonLightRequest> calls = requests.stream().map(request -> new MoonLightRequest({}_METHOD_ID, request.toByteArray(), deadline)).toList();", upper_snake(name)).unwrap();
     writeln!(
         code,
-        "    return channel.requestBatch(calls).thenApply(payloads -> {{"
+        "    return MoonLightChannel.mapFuture(channel.requestBatch(calls), payloads -> {{"
     )
     .unwrap();
     writeln!(

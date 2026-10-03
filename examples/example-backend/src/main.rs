@@ -77,11 +77,12 @@ async fn main() -> std::io::Result<()> {
 
     let address =
         std::env::var("MOONLIGHT_BRIDGE_ADDRESS").unwrap_or_else(|_| "127.0.0.1:38191".to_owned());
-    if let (Ok(certificate), Ok(key), Ok(client_ca)) = (
-        std::env::var("MOONLIGHT_BRIDGE_TLS_CERT"),
-        std::env::var("MOONLIGHT_BRIDGE_TLS_KEY"),
-        std::env::var("MOONLIGHT_BRIDGE_TLS_CLIENT_CA"),
-    ) {
+    let tls = tls_paths([
+        std::env::var_os("MOONLIGHT_BRIDGE_TLS_CERT"),
+        std::env::var_os("MOONLIGHT_BRIDGE_TLS_KEY"),
+        std::env::var_os("MOONLIGHT_BRIDGE_TLS_CLIENT_CA"),
+    ])?;
+    if let Some([certificate, key, client_ca]) = tls {
         println!("MoonLightBridge example backend listening with mTLS on tls:{address}");
         let config = load_mtls_server_config(certificate, key, client_ca)?;
         return Server::bind_tls(&address, router, config)
@@ -96,4 +97,43 @@ async fn main() -> std::io::Result<()> {
         .with_event_hub(events)
         .run()
         .await
+}
+
+fn tls_paths(
+    paths: [Option<std::ffi::OsString>; 3],
+) -> std::io::Result<Option<[std::ffi::OsString; 3]>> {
+    match paths {
+        [None, None, None] => Ok(None),
+        [Some(certificate), Some(key), Some(ca)]
+            if !certificate.is_empty() && !key.is_empty() && !ca.is_empty() =>
+        {
+            Ok(Some([certificate, key, ca]))
+        }
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "TLS requires nonempty MOONLIGHT_BRIDGE_TLS_CERT, MOONLIGHT_BRIDGE_TLS_KEY and MOONLIGHT_BRIDGE_TLS_CLIENT_CA together",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::tls_paths;
+
+    #[test]
+    fn partial_or_empty_tls_configuration_cannot_fall_back_to_plaintext() {
+        for mask in 1..7 {
+            let paths = std::array::from_fn(|index| {
+                (mask & (1 << index) != 0).then(|| "configured.pem".into())
+            });
+            assert!(tls_paths(paths).is_err());
+        }
+        assert!(tls_paths([Some("".into()), Some("key".into()), Some("ca".into())]).is_err());
+        assert!(tls_paths([None, None, None]).unwrap().is_none());
+        assert!(
+            tls_paths([Some("cert".into()), Some("key".into()), Some("ca".into())])
+                .unwrap()
+                .is_some()
+        );
+    }
 }

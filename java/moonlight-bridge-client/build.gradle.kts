@@ -58,8 +58,16 @@ val protocolValidationTest = tasks.register<JavaExec>("protocolValidationTest") 
     mainClass = "ru.moonlightproject.bridge.client.ProtocolValidationMain"
 }
 
+val hardeningTest = tasks.register<JavaExec>("hardeningTest") {
+    group = "verification"
+    description = "Verifies callback isolation, negotiation limits, and cancellation propagation"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "ru.moonlightproject.bridge.client.HardeningMain"
+}
+
 tasks.check {
-    dependsOn(nonBlockingStartTest, protocolValidationTest)
+    dependsOn(nonBlockingStartTest, protocolValidationTest, hardeningTest)
 }
 
 tasks.register<JavaExec>("performanceBenchmark") {

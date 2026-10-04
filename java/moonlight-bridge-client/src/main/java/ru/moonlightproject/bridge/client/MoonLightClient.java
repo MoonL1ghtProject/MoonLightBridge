@@ -27,7 +27,7 @@ import javax.net.ssl.SSLSocket;
 public final class MoonLightClient implements MoonLightChannel {
     private static final System.Logger LOGGER = System.getLogger("ru.moonlightproject.bridge.client");
     private static final int MAGIC = 0x4D4C4252;
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int REQUEST = 1;
     private static final int RESPONSE = 2;
     private static final int ERROR = 3;
@@ -43,10 +43,13 @@ public final class MoonLightClient implements MoonLightChannel {
     private static final int STREAM_ITEM = 25;
     private static final int STREAM_END = 26;
     private static final int STREAM_CREDIT = 27;
-    private static final int FLAG_HAS_DEADLINE = 1;
-    private static final int FLAG_HAS_TRACE_CONTEXT = 1 << 1;
+    private static final int FLAG_HAS_METADATA = 1;
     private static final int DEFAULT_MAX_BODY_LENGTH = 8 * 1024 * 1024;
+    private static final int DEFAULT_MAX_DECODED_BODY_LENGTH = 16 * 1024 * 1024;
+    private static final int DEFAULT_MAX_METADATA_LENGTH = 16 * 1024;
     private static final int DEFAULT_MAX_IN_FLIGHT = 256;
+    private static final int DEFAULT_MAX_CONCURRENT_STREAMS = 64;
+    private static final int DEFAULT_INITIAL_STREAM_CREDIT = 32;
     private static final long FEATURE_TRACE_CONTEXT = 1L << 3;
     private static final long FEATURE_SERVER_EVENTS = 1L << 4;
     private static final long FEATURE_HEALTH = 1L << 5;
@@ -62,6 +65,7 @@ public final class MoonLightClient implements MoonLightChannel {
     private final ConcurrentMap<Long, StreamRequest> streams = new ConcurrentHashMap<>();
     private final Semaphore inFlight;
     private final int maxBodyLength;
+    private final int maxMetadataLength;
     private final long negotiatedFeatures;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final CompletableFuture<Throwable> termination = new CompletableFuture<>();
@@ -305,23 +309,42 @@ public final class MoonLightClient implements MoonLightChannel {
         output = new DataOutputStream(new BufferedOutputStream(transport.output));
 
         try {
-            byte[] hello = ByteBuffer.allocate(16)
+            byte[] hello = ByteBuffer.allocate(44)
                 .putInt(DEFAULT_MAX_BODY_LENGTH)
+                .putInt(DEFAULT_MAX_DECODED_BODY_LENGTH)
+                .putInt(DEFAULT_MAX_METADATA_LENGTH)
                 .putInt(DEFAULT_MAX_IN_FLIGHT)
+                .putInt(DEFAULT_MAX_CONCURRENT_STREAMS)
+                .putInt(DEFAULT_INITIAL_STREAM_CREDIT)
+                .putInt(1)
                 .putLong(FEATURES)
+                .putLong(0)
                 .array();
             writeFrameDirect(HELLO, 0, 0, 0, hello);
-            Frame welcome = readFrame(16);
-            if (welcome.kind != WELCOME || welcome.requestId != 0 || welcome.methodId != 0 || welcome.flags != 0 || welcome.body.length != 16) {
+            Frame welcome = readFrame(44);
+            if (welcome.kind != WELCOME || welcome.requestId != 0 || welcome.methodId != 0 || welcome.flags != 0 || welcome.body.length != 44) {
                 throw new IOException("server did not complete the MoonLightBridge handshake");
             }
             ByteBuffer settings = ByteBuffer.wrap(welcome.body);
             maxBodyLength = settings.getInt();
+            int maxDecodedBodyLength = settings.getInt();
+            maxMetadataLength = settings.getInt();
             int maxInFlight = settings.getInt();
+            int maxConcurrentStreams = settings.getInt();
+            int initialStreamCredit = settings.getInt();
+            int compressionCodecs = settings.getInt();
             negotiatedFeatures = settings.getLong();
+            long diagnosticFeatures = settings.getLong();
             if (maxBodyLength <= 0 || maxBodyLength > DEFAULT_MAX_BODY_LENGTH
+                || maxDecodedBodyLength <= 0 || maxDecodedBodyLength > DEFAULT_MAX_DECODED_BODY_LENGTH
+                || maxMetadataLength <= 0 || maxMetadataLength > DEFAULT_MAX_METADATA_LENGTH
                 || maxInFlight <= 0 || maxInFlight > DEFAULT_MAX_IN_FLIGHT
-                || (negotiatedFeatures & ~FEATURES) != 0) throw new IOException("server returned invalid MoonLightBridge settings");
+                || maxConcurrentStreams <= 0 || maxConcurrentStreams > DEFAULT_MAX_CONCURRENT_STREAMS
+                || initialStreamCredit <= 0 || initialStreamCredit > DEFAULT_INITIAL_STREAM_CREDIT
+                || (compressionCodecs & 1) == 0 || (compressionCodecs & ~1) != 0
+                || (negotiatedFeatures & ~FEATURES) != 0 || diagnosticFeatures != 0) {
+                throw new IOException("server returned invalid MoonLightBridge settings");
+            }
             inFlight = new Semaphore(maxInFlight);
             transport.handshakeCompletion.complete();
         } catch (IOException | RuntimeException | Error error) {
@@ -687,7 +710,7 @@ public final class MoonLightClient implements MoonLightChannel {
         int methodId = input.readInt();
         long requestId = input.readLong();
         if (magic != MAGIC || version != VERSION
-            || (flags & ~(FLAG_HAS_DEADLINE | FLAG_HAS_TRACE_CONTEXT)) != 0
+            || (flags & ~FLAG_HAS_METADATA) != 0
             || bodyLength < 0 || bodyLength > bodyLimit) {
             throw new IOException("invalid MoonLightBridge frame header");
         }
@@ -718,13 +741,20 @@ public final class MoonLightClient implements MoonLightChannel {
         int methodId, long requestId, int timeoutMillis, MoonLightTraceContext traceContext, byte[] body
     )
         throws IOException {
-        int flags = FLAG_HAS_DEADLINE;
-        int metadataLength = Integer.BYTES;
+        MoonLightMetadata.Builder metadata = MoonLightMetadata.builder()
+            .putReserved(MoonLightMetadata.ReservedKey.DEADLINE_MILLIS,
+                ByteBuffer.allocate(Integer.BYTES).putInt(timeoutMillis).array());
         if (traceContext != null) {
-            flags |= FLAG_HAS_TRACE_CONTEXT;
-            metadataLength += MoonLightTraceContext.WIRE_LENGTH;
+            ByteBuffer trace = ByteBuffer.allocate(MoonLightTraceContext.WIRE_LENGTH);
+            traceContext.writeTo(trace);
+            metadata.putReserved(MoonLightMetadata.ReservedKey.TRACE_CONTEXT, trace.array());
         }
-        int bodyLength = body.length + metadataLength;
+        byte[] metadataPrefix = metadata.build().encodePrefix();
+        if (metadataPrefix.length - Integer.BYTES > maxMetadataLength) {
+            throw new IOException("request metadata exceeds negotiated limit");
+        }
+        int bodyLength = Math.addExact(body.length, metadataPrefix.length);
+        if (bodyLength > maxBodyLength) throw new IOException("request body exceeds negotiated limit");
         int length = 24 + bodyLength;
         if (!outgoingRequestBytes.tryAcquire(length)) {
             throw new OutgoingQueueFullException(performance.outgoingQueueCapacity());
@@ -732,9 +762,8 @@ public final class MoonLightClient implements MoonLightChannel {
         byte[] encoded = bufferPool.acquire(length);
         ByteBuffer target = ByteBuffer.wrap(encoded);
         target.putInt(MAGIC).put((byte) VERSION).put((byte) REQUEST)
-            .putShort((short) flags).putInt(bodyLength).putInt(methodId)
-            .putLong(requestId).putInt(timeoutMillis);
-        if (traceContext != null) traceContext.writeTo(target);
+            .putShort((short) FLAG_HAS_METADATA).putInt(bodyLength).putInt(methodId)
+            .putLong(requestId).put(metadataPrefix);
         target.put(body);
         long expiresAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         if (!outgoing.offer(new OutboundFrame(
@@ -957,6 +986,20 @@ public final class MoonLightClient implements MoonLightChannel {
         RESOURCE_EXHAUSTED(5),
         /** Backend handler failed unexpectedly. */
         INTERNAL(6),
+        /** Authentication credentials are absent or invalid. */
+        UNAUTHENTICATED(7),
+        /** Authenticated caller lacks a required permission. */
+        PERMISSION_DENIED(8),
+        /** Backend is unavailable or draining. */
+        UNAVAILABLE(9),
+        /** Compression validation failed. */
+        COMPRESSION_FAILURE(10),
+        /** Requested event history is no longer available. */
+        REPLAY_GAP(11),
+        /** Operation cannot run in the current state. */
+        FAILED_PRECONDITION(12),
+        /** Peer protocol version or capability is unsupported. */
+        UNSUPPORTED_PROTOCOL(13),
         /** Received an error code newer than this client understands. */
         UNKNOWN(-1);
 

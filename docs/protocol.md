@@ -6,9 +6,9 @@ All integers use network byte order (big-endian).
 | Offset | Size | Field | Meaning |
 |---:|---:|---|---|
 | 0 | 4 | magic | ASCII `MLBR` (`0x4D4C4252`) |
-| 4 | 1 | version | Protocol version, currently `1` |
+| 4 | 1 | version | Protocol version, currently `2` |
 | 5 | 1 | kind | Message kind; see below |
-| 6 | 2 | flags | Bit 0: deadline; bit 1: distributed trace context |
+| 6 | 2 | flags | Bit 0: bounded metadata prefix |
 | 8 | 4 | body length | Unsigned payload size |
 | 12 | 4 | method ID | Stable ID assigned by the schema compiler |
 | 16 | 8 | request ID | Connection-local correlation ID |
@@ -23,9 +23,11 @@ Request IDs allow responses to arrive in a different order from requests.
 ## Handshake
 
 The client must send `HELLO` as its first frame. The server replies with
-`WELCOME`. Both contain three big-endian settings: `max_body_length: u32`,
-`max_in_flight: u32`, and `features: u64`. The server selects the minimum limits
-and the intersection of feature bits.
+`WELCOME`. Both contain a fixed 44-byte `PeerSettingsV2` body: maximum encoded body,
+decoded body, metadata bytes, in-flight calls, concurrent streams, initial stream credit,
+compression-codec bits, transport features, and diagnostic features. The first seven fields are
+`u32`; the two feature masks are `u64`. The server selects minimum limits and intersects masks.
+`none` compression (codec bit zero) is mandatory. There is no v1 fallback.
 
 Feature bits negotiate deadlines (`1`), cancellation (`2`), heartbeat (`4`),
 trace propagation (`8`), server events (`16`), health/readiness (`32`), and credit-based
@@ -50,20 +52,23 @@ The default timeout for the first HELLO frame is 10 seconds.
 | 26 | STREAM_END | Successful end of a streaming request |
 | 27 | STREAM_CREDIT | Client grants eight-byte unsigned item credit |
 
-When flag bit 0 is set, a request body starts with a four-byte timeout in
-milliseconds. This prefix is transport metadata and is removed before handler
-dispatch. A timeout results in error code `DEADLINE_EXCEEDED`; a client-side
-timeout also emits `CANCEL` so work can be aborted promptly.
+When flag bit 0 is set, the body begins with a `u32` metadata-block length. Each canonical entry is
+`tagged_key: u16`, `name_length: u8`, `value_length: u32`, then name and value bytes. The high key
+bit marks a critical entry. Runtime keys use numeric IDs; user entries use ID `0x7fff` and a
+lowercase ASCII name. Runtime decoders remove this prefix before handler dispatch and enforce the
+negotiated metadata byte limit plus local entry/value limits before copying values. Duplicate
+singletons, non-canonical order, unknown critical keys, invalid user names, and overflowing lengths
+are rejected.
 
-When flag bit 1 is set, the deadline (when present) is followed by a 25-byte
-trace context: 16 bytes of trace ID, 8 bytes of parent span ID, and one sampling
-byte (`0` or `1`). It is sent only when the feature was negotiated. This compact
-layout is compatible with common distributed trace IDs but does not make the core protocol
-depend on a particular observability vendor.
+Reserved keys carry deadlines, trace context, idempotency and authorization data, compression
+state, retry identity, event cursors, content type, and anonymous diagnostic correlation. Payloads
+and authorization values are never telemetry fields.
 
 An error body begins with a two-byte code followed by a UTF-8 message. Codes are
 `UNKNOWN_METHOD=1`, `INVALID_REQUEST=2`, `DEADLINE_EXCEEDED=3`, `CANCELLED=4`,
-`RESOURCE_EXHAUSTED=5`, and `INTERNAL=6`.
+`RESOURCE_EXHAUSTED=5`, `INTERNAL=6`, `UNAUTHENTICATED=7`, `PERMISSION_DENIED=8`,
+`UNAVAILABLE=9`, `COMPRESSION_FAILURE=10`, `REPLAY_GAP=11`, `FAILED_PRECONDITION=12`, and
+`UNSUPPORTED_PROTOCOL=13`.
 
 Duplicate active request IDs and zero IDs on REQUEST/PING are protocol errors.
 Responses are accepted only when ID, method ID, and frame kind match the pending call.
@@ -81,8 +86,8 @@ unrelated multiplexed calls.
 ## Deliberately not specified
 
 - payload codec;
-- client and bidirectional streams;
-- compression;
-- authentication.
+- concrete payload codec;
+- automatic endpoint discovery;
+- application authorization policy.
 
 These features must extend the header semantics without changing its size.

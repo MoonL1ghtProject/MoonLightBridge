@@ -3,12 +3,21 @@ package ru.moonlightproject.bridge.client;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.net.ServerSocket;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.concurrent.CompletionException;
 
 /** Regression test for response-kind/method validation in the typed pending table. */
 public final class ProtocolValidationMain {
     public static void main(String[] args) throws Exception {
+        verifyProtocolV2MetadataGoldenVector();
+        verifyUserMetadataValidation();
+        verifyMalformedMetadataIsRejected();
+        verifyV2ErrorCodes();
         try (ServerSocket listener = new ServerSocket(0)) {
             Thread server = Thread.ofPlatform().start(() -> serveInvalidResponse(listener));
             try (MoonLightClient client = MoonLightClient.tcp("127.0.0.1", listener.getLocalPort())) {
@@ -27,6 +36,116 @@ public final class ProtocolValidationMain {
         System.out.println("MoonLightBridge typed pending response validation passed");
     }
 
+    private static void verifyProtocolV2MetadataGoldenVector() throws Exception {
+        MoonLightMetadata metadata = MoonLightMetadata.builder()
+            .put("x-region", "eu".getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+            .putReserved(MoonLightMetadata.ReservedKey.DEADLINE_MILLIS,
+                ByteBuffer.allocate(4).putInt(100).array())
+            .build();
+        byte[] expected = HexFormat.of().parseHex(Files.readString(
+            sharedVectorPath()).trim());
+        if (!Arrays.equals(metadata.encodePrefix(), expected)) {
+            throw new AssertionError("Java metadata encoding differs from the shared v2 vector");
+        }
+        byte[] framed = Arrays.copyOf(expected, expected.length + 3);
+        framed[expected.length] = 1;
+        framed[expected.length + 1] = 2;
+        framed[expected.length + 2] = 3;
+        MoonLightMetadata.Decoded decoded = MoonLightMetadata.decode(
+            framed, MoonLightMetadata.Limits.defaults());
+        if (!Arrays.equals(decoded.payload(), new byte[] {1, 2, 3})
+            || !Arrays.equals(decoded.metadata().get("x-region"), new byte[] {'e', 'u'})) {
+            throw new AssertionError("Java metadata decoder did not preserve metadata/payload");
+        }
+    }
+
+    private static void verifyUserMetadataValidation() {
+        expectIllegalArgument(() -> MoonLightMetadata.builder().put("Uppercase", new byte[0]));
+        expectIllegalArgument(() -> MoonLightMetadata.builder().put("moonlight-deadline", new byte[0]));
+        MoonLightMetadata.Builder builder = MoonLightMetadata.builder()
+            .putReserved(MoonLightMetadata.ReservedKey.DEADLINE_MILLIS, new byte[4]);
+        expectIllegalArgument(() -> builder.putReserved(
+            MoonLightMetadata.ReservedKey.DEADLINE_MILLIS, new byte[4]));
+    }
+
+    private static void verifyMalformedMetadataIsRejected() {
+        byte[] duplicateDeadline = {
+            0, 0, 0, 18,
+            (byte) 0x80, 1, 0, 0, 0, 0, 2, 0, 1,
+            (byte) 0x80, 1, 0, 0, 0, 0, 2, 0, 2
+        };
+        expectIOException(() -> MoonLightMetadata.decode(
+            duplicateDeadline, MoonLightMetadata.Limits.defaults()));
+        byte[] unknownCritical = {0, 0, 0, 7, (byte) 0x80, 64, 0, 0, 0, 0, 0};
+        expectIOException(() -> MoonLightMetadata.decode(
+            unknownCritical, MoonLightMetadata.Limits.defaults()));
+        byte[] ignoredKeyOutOfOrder = {
+            0, 0, 0, 14,
+            0, 64, 0, 0, 0, 0, 0,
+            (byte) 0x80, 1, 0, 0, 0, 0, 0
+        };
+        expectIOException(() -> MoonLightMetadata.decode(
+            ignoredKeyOutOfOrder, MoonLightMetadata.Limits.defaults()));
+        byte[] invalidUserKey = {
+            0, 0, 0, 16, 0x7f, (byte) 0xff, 9, 0, 0, 0, 0,
+            'U', 'p', 'p', 'e', 'r', 'c', 'a', 's', 'e'
+        };
+        expectIOException(() -> MoonLightMetadata.decode(
+            invalidUserKey, MoonLightMetadata.Limits.defaults()));
+    }
+
+    private static void verifyV2ErrorCodes() {
+        MoonLightClient.ErrorCode[] expected = {
+            MoonLightClient.ErrorCode.UNAUTHENTICATED,
+            MoonLightClient.ErrorCode.PERMISSION_DENIED,
+            MoonLightClient.ErrorCode.UNAVAILABLE,
+            MoonLightClient.ErrorCode.COMPRESSION_FAILURE,
+            MoonLightClient.ErrorCode.REPLAY_GAP,
+            MoonLightClient.ErrorCode.FAILED_PRECONDITION,
+            MoonLightClient.ErrorCode.UNSUPPORTED_PROTOCOL
+        };
+        for (int index = 0; index < expected.length; index++) {
+            if (MoonLightClient.ErrorCode.fromWire(index + 7) != expected[index]) {
+                throw new AssertionError("unstable v2 error code " + (index + 7));
+            }
+        }
+    }
+
+    private static void expectIllegalArgument(Runnable operation) {
+        try {
+            operation.run();
+            throw new AssertionError("invalid metadata unexpectedly accepted");
+        } catch (IllegalArgumentException expected) {
+            // Expected.
+        }
+    }
+
+    private static Path sharedVectorPath() throws java.io.IOException {
+        Path directory = Path.of(System.getProperty("user.dir")).toAbsolutePath();
+        while (directory != null) {
+            Path candidate = directory.resolve("testdata/protocol-v2/metadata-deadline-region.hex");
+            if (Files.isRegularFile(candidate)) return candidate;
+            directory = directory.getParent();
+        }
+        throw new java.io.IOException("shared protocol-v2 vector is unavailable");
+    }
+
+    private static void expectIOException(IoOperation operation) {
+        try {
+            operation.run();
+            throw new AssertionError("malformed metadata unexpectedly accepted");
+        } catch (java.io.IOException expected) {
+            // Expected.
+        } catch (Exception unexpected) {
+            throw new AssertionError("metadata decoder used the wrong failure type", unexpected);
+        }
+    }
+
+    @FunctionalInterface
+    private interface IoOperation {
+        void run() throws Exception;
+    }
+
     private static void serveInvalidResponse(ServerSocket listener) {
         try (var socket = listener.accept()) {
             DataInputStream input = new DataInputStream(socket.getInputStream());
@@ -41,8 +160,17 @@ public final class ProtocolValidationMain {
     }
 
     private static byte[] settings() {
-        return java.nio.ByteBuffer.allocate(16)
-            .putInt(8 * 1024 * 1024).putInt(256).putLong(63).array();
+        return ByteBuffer.allocate(44)
+            .putInt(8 * 1024 * 1024)
+            .putInt(16 * 1024 * 1024)
+            .putInt(16 * 1024)
+            .putInt(256)
+            .putInt(64)
+            .putInt(32)
+            .putInt(1)
+            .putLong(63)
+            .putLong(0)
+            .array();
     }
 
     private static Frame readFrame(DataInputStream input) throws Exception {
@@ -61,7 +189,7 @@ public final class ProtocolValidationMain {
         DataOutputStream output, int kind, int methodId, long requestId, byte[] body
     ) throws Exception {
         output.writeInt(0x4D4C4252);
-        output.writeByte(1);
+        output.writeByte(2);
         output.writeByte(kind);
         output.writeShort(0);
         output.writeInt(body.length);

@@ -26,7 +26,7 @@ tests and tools that need to encode or inspect frames.
 
 ```toml
 [dependencies]
-moonlight-bridge-protocol = "0.4.0"
+moonlight-bridge-protocol = "0.5.0"
 ```
 
 Rust 1.88 or newer is required.
@@ -36,9 +36,9 @@ Rust 1.88 or newer is required.
 | Offset | Size | Field | Meaning |
 |---:|---:|---|---|
 | 0 | 4 | magic | ASCII `MLBR` (`0x4D4C4252`) |
-| 4 | 1 | version | Wire version, currently `1` |
+| 4 | 1 | version | Wire version, currently `2` |
 | 5 | 1 | kind | `FrameKind` discriminant |
-| 6 | 2 | flags | Deadline and trace-context bits |
+| 6 | 2 | flags | Bit 0 indicates a metadata prefix |
 | 8 | 4 | body length | Unsigned payload length |
 | 12 | 4 | method ID | Generated RPC/event ID |
 | 16 | 8 | request ID | Connection-local correlation ID |
@@ -83,29 +83,33 @@ allocate/read exactly `decoded.body_len`. Never allocate based on unchecked netw
 
 ## Handshake and features
 
-The client sends `Hello` first and the server returns `Welcome`. `PeerSettings` carries:
+The client sends `Hello` first and the server returns `Welcome`. `PeerSettingsV2` carries:
 
-- `max_body_len: u32`;
-- `max_in_flight: u32`;
-- `features: u64`.
+- encoded/decoded body and metadata byte limits;
+- in-flight call, concurrent stream, and initial-credit limits;
+- supported compression codecs;
+- transport and diagnostic feature masks.
 
-Feature bits negotiate deadlines, cancellation, heartbeat, trace context, server events, health,
-and credit-controlled server streaming.
-Sending a feature's frame or flag without negotiation is invalid.
+Every non-zero limit is intersected with local policy. Codec and feature masks are intersected;
+codec bit zero (`none`) is mandatory. A v1 frame is rejected rather than downgraded.
 
 ## Request metadata
 
-`FLAG_HAS_DEADLINE` prefixes a request body with a four-byte timeout in milliseconds.
-`FLAG_HAS_TRACE_CONTEXT` adds 16 trace-ID bytes, 8 parent-span-ID bytes and one sampled byte.
-Transport runtimes remove these prefixes before handler dispatch.
+`FLAG_HAS_METADATA` prefixes a body with a four-byte metadata length followed by canonical entries.
+Each entry contains a critical numeric key, optional lowercase ASCII user-key name, value length,
+and opaque value. Runtime keys include deadline, trace context, idempotency, authorization,
+compression, retry, event, content-type, and diagnostic fields. Decoders reject duplicate singleton
+keys, non-canonical order, unknown critical keys, malformed lengths, and configured count/byte-limit
+violations before copying values. Transport runtimes remove the metadata prefix before dispatch.
 
 Trace context is vendor-neutral wire data. This crate does not initialize or depend on an
 observability SDK.
 
 ## Errors and validation
 
-`ErrorCode` includes `UnknownMethod`, `InvalidRequest`, `DeadlineExceeded`, `Cancelled`,
-`ResourceExhausted` and `Internal`. An error body begins with a two-byte code followed by a UTF-8
+`ErrorCode` includes the original six classifications plus `Unauthenticated`, `PermissionDenied`,
+`Unavailable`, `CompressionFailure`, `ReplayGap`, `FailedPrecondition`, and
+`UnsupportedProtocol`. An error body begins with a two-byte code followed by a bounded UTF-8
 diagnostic message. Typed domain failures belong in Protobuf responses, not transport error strings.
 
 Decoding rejects invalid magic, unsupported versions, unknown kinds, reserved flags, oversized

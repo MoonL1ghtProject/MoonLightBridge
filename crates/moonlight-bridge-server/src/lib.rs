@@ -3,9 +3,11 @@
 use futures_core::Stream;
 use futures_util::StreamExt;
 pub use moonlight_bridge_protocol::ErrorCode;
+#[cfg(test)]
+use moonlight_bridge_protocol::{DEFAULT_MAX_BODY_LEN, DEFAULT_MAX_IN_FLIGHT, SERVER_FEATURES};
 use moonlight_bridge_protocol::{
-    DEFAULT_MAX_BODY_LEN, DEFAULT_MAX_IN_FLIGHT, FLAG_HAS_DEADLINE, FLAG_HAS_TRACE_CONTEXT, Frame,
-    FrameKind, HEADER_LEN, PeerSettings, SERVER_FEATURES, TRACE_CONTEXT_LEN, TraceContext,
+    FLAG_HAS_METADATA, Frame, FrameKind, HEADER_LEN, Metadata, MetadataKey, MetadataLimits,
+    PeerSettingsV2 as PeerSettings, ReservedMetadataKey, TRACE_CONTEXT_LEN, TraceContext,
 };
 use std::{
     cell::RefCell,
@@ -441,12 +443,17 @@ impl Router {
         }
     }
 
-    async fn dispatch(&self, mut frame: Frame, max_response_body_len: u32) -> Frame {
+    async fn dispatch(
+        &self,
+        mut frame: Frame,
+        max_response_body_len: u32,
+        max_metadata_len: u32,
+    ) -> Frame {
         let ParsedRequest {
             deadline,
             trace_context,
             payload,
-        } = match request_payload(&mut frame) {
+        } = match request_payload(&mut frame, max_metadata_len) {
             Ok(parts) => parts,
             Err(message) => return error_frame(&frame, ErrorCode::InvalidRequest, message),
         };
@@ -584,6 +591,7 @@ impl Router {
         &self,
         mut frame: Frame,
         max_response_body_len: u32,
+        max_metadata_len: u32,
         credits: Arc<Semaphore>,
         responses: mpsc::Sender<Frame>,
     ) {
@@ -591,7 +599,7 @@ impl Router {
             deadline,
             trace_context,
             payload,
-        } = match request_payload(&mut frame) {
+        } = match request_payload(&mut frame, max_metadata_len) {
             Ok(parts) => parts,
             Err(message) => {
                 let _ = responses
@@ -908,11 +916,7 @@ impl Server {
 
     /// Binds a plaintext TCP listener without starting the accept loop.
     pub async fn bind_tcp(address: &str, router: Router) -> io::Result<Self> {
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Self::runtime(settings);
         Ok(Self {
             listener: Listener::Tcp(TcpListener::bind(address).await?),
@@ -931,11 +935,7 @@ impl Server {
         router: Router,
         config: Arc<ServerConfig>,
     ) -> io::Result<Self> {
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Self::runtime(settings);
         Ok(Self {
             listener: Listener::Tls(TcpListener::bind(address).await?, TlsAcceptor::from(config)),
@@ -951,11 +951,7 @@ impl Server {
     #[cfg(unix)]
     /// Binds a Unix-domain socket without starting the accept loop.
     pub fn bind_unix(path: impl AsRef<Path>, router: Router) -> io::Result<Self> {
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Self::runtime(settings);
         Ok(Self {
             listener: Listener::Unix(UnixListener::bind(path)?),
@@ -1177,8 +1173,18 @@ where
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let negotiated = PeerSettings {
         max_body_len: client.max_body_len.min(server.max_body_len),
+        max_decoded_body_len: client.max_decoded_body_len.min(server.max_decoded_body_len),
+        max_metadata_len: client.max_metadata_len.min(server.max_metadata_len),
         max_in_flight: client.max_in_flight.min(server.max_in_flight),
+        max_concurrent_streams: client
+            .max_concurrent_streams
+            .min(server.max_concurrent_streams),
+        initial_stream_credit: client
+            .initial_stream_credit
+            .min(server.initial_stream_credit),
+        compression_codecs: client.compression_codecs & server.compression_codecs,
         features: client.features & server.features,
+        diagnostic_features: client.diagnostic_features & server.diagnostic_features,
     };
     write_frame(
         &mut stream,
@@ -1187,7 +1193,12 @@ where
     .await?;
     tracing::debug!(
         max_body_len = negotiated.max_body_len,
+        max_decoded_body_len = negotiated.max_decoded_body_len,
+        max_metadata_len = negotiated.max_metadata_len,
         max_in_flight = negotiated.max_in_flight,
+        max_concurrent_streams = negotiated.max_concurrent_streams,
+        initial_stream_credit = negotiated.initial_stream_credit,
+        compression_codecs = negotiated.compression_codecs,
         features = negotiated.features,
         "MoonLightBridge handshake completed"
     );
@@ -1364,11 +1375,19 @@ where
                     }
                     if let Some(credits) = task_credits {
                         router
-                            .dispatch_stream(frame, max_body_len, credits, responses_tx.clone())
+                            .dispatch_stream(
+                                frame,
+                                max_body_len,
+                                negotiated.max_metadata_len,
+                                credits,
+                                responses_tx.clone(),
+                            )
                             .await;
                     } else {
                         let response = fit_outbound_frame(
-                            router.dispatch(frame, max_body_len).await,
+                            router
+                                .dispatch(frame, max_body_len, negotiated.max_metadata_len)
+                                .await,
                             max_body_len,
                         );
                         let _ = responses_tx.send(response).await;
@@ -1508,34 +1527,48 @@ struct ParsedRequest {
     payload: Vec<u8>,
 }
 
-fn request_payload(frame: &mut Frame) -> Result<ParsedRequest, &'static str> {
-    let mut offset = 0;
-    let deadline = if frame.flags & FLAG_HAS_DEADLINE != 0 {
-        if frame.body.len() < offset + 4 {
-            return Err("deadline flag requires a four-byte timeout");
-        }
-        let millis = u32::from_be_bytes(frame.body[offset..offset + 4].try_into().unwrap());
+fn request_payload(
+    frame: &mut Frame,
+    max_metadata_len: u32,
+) -> Result<ParsedRequest, &'static str> {
+    let (metadata, payload_offset) = if frame.flags & FLAG_HAS_METADATA != 0 {
+        let limits = MetadataLimits {
+            max_bytes: max_metadata_len,
+            ..MetadataLimits::default()
+        };
+        let (metadata, payload) =
+            Metadata::decode(&frame.body, limits).map_err(|_| "invalid request metadata")?;
+        (metadata, frame.body.len() - payload.len())
+    } else {
+        (Metadata::new(), 0)
+    };
+    let deadline = if let Some(value) =
+        metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::DeadlineMillis))
+    {
+        let bytes: [u8; 4] = value
+            .try_into()
+            .map_err(|_| "deadline metadata must contain four bytes")?;
+        let millis = u32::from_be_bytes(bytes);
         if millis == 0 {
             return Err("deadline must be greater than zero");
         }
-        offset += 4;
         Some(Duration::from_millis(millis as u64))
     } else {
         None
     };
-    let trace_context = if frame.flags & FLAG_HAS_TRACE_CONTEXT != 0 {
-        if frame.body.len() < offset + TRACE_CONTEXT_LEN {
-            return Err("trace-context flag requires a 25-byte context");
+    let trace_context = if let Some(value) =
+        metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::TraceContext))
+    {
+        if value.len() != TRACE_CONTEXT_LEN {
+            return Err("trace-context metadata must contain 25 bytes");
         }
-        let context = TraceContext::decode(&frame.body[offset..offset + TRACE_CONTEXT_LEN])
-            .map_err(|_| "invalid trace context")?;
-        offset += TRACE_CONTEXT_LEN;
+        let context = TraceContext::decode(value).map_err(|_| "invalid trace context")?;
         Some(context)
     } else {
         None
     };
-    let payload_length = frame.body.len() - offset;
-    frame.body.copy_within(offset.., 0);
+    let payload_length = frame.body.len() - payload_offset;
+    frame.body.copy_within(payload_offset.., 0);
     frame.body.truncate(payload_length);
     Ok(ParsedRequest {
         deadline,
@@ -1699,7 +1732,11 @@ mod tests {
             .build();
         assert_eq!(
             router
-                .dispatch(Frame::new(FrameKind::Request, 1, 1, vec![]), 1024)
+                .dispatch(
+                    Frame::new(FrameKind::Request, 1, 1, vec![]),
+                    1024,
+                    MetadataLimits::default().max_bytes,
+                )
                 .await
                 .kind,
             FrameKind::Response
@@ -1713,6 +1750,7 @@ mod tests {
             max_body_len: DEFAULT_MAX_BODY_LEN,
             max_in_flight: 1,
             features: SERVER_FEATURES,
+            ..PeerSettings::default()
         };
         let (events, runtime) = Server::runtime(settings);
         let router = Router::builder()
@@ -1763,14 +1801,30 @@ mod tests {
             parent_span_id: [4; 8],
             sampled: true,
         };
-        let mut body = 1_000u32.to_be_bytes().to_vec();
-        expected_trace.encode_into(&mut body);
+        let mut metadata = moonlight_bridge_protocol::Metadata::new();
+        metadata
+            .insert_reserved(
+                moonlight_bridge_protocol::ReservedMetadataKey::DeadlineMillis,
+                1_000u32.to_be_bytes().to_vec(),
+            )
+            .unwrap();
+        let mut encoded_trace = Vec::new();
+        expected_trace.encode_into(&mut encoded_trace);
+        metadata
+            .insert_reserved(
+                moonlight_bridge_protocol::ReservedMetadataKey::TraceContext,
+                encoded_trace,
+            )
+            .unwrap();
+        let mut body = Vec::new();
+        metadata.encode_prefix(&mut body).unwrap();
         body.extend_from_slice(b"payload");
         let response = router
             .dispatch(
                 Frame::new(FrameKind::Request, 7, 9, body)
-                    .with_flags(FLAG_HAS_DEADLINE | FLAG_HAS_TRACE_CONTEXT),
+                    .with_flags(moonlight_bridge_protocol::FLAG_HAS_METADATA),
                 DEFAULT_MAX_BODY_LEN,
+                MetadataLimits::default().max_bytes,
             )
             .await;
 
@@ -1807,11 +1861,7 @@ mod tests {
     #[tokio::test]
     async fn silent_client_is_rejected_by_hello_timeout() {
         let (_client, server_stream) = tokio::io::duplex(256);
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Server::runtime(settings);
         let error = serve_test_connection(
             server_stream,
@@ -1829,11 +1879,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_active_request_id_terminates_connection_and_cleans_up() {
         let (mut client, server_stream) = tokio::io::duplex(4_096);
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Server::runtime(settings);
         let router = Router::builder()
             .route(1, |_| async {
@@ -1887,11 +1933,7 @@ mod tests {
     #[tokio::test]
     async fn event_does_not_cancel_a_partially_read_client_frame() {
         let (mut client, server_stream) = tokio::io::duplex(4_096);
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Server::runtime(settings);
         let publish_events = events.clone();
         let task = tokio::spawn(serve_test_connection(
@@ -1956,16 +1998,18 @@ mod tests {
     #[tokio::test]
     async fn oversized_handler_response_is_replaced_before_writing() {
         let (mut client, server_stream) = tokio::io::duplex(4_096);
-        let client_settings = PeerSettings {
+        let client_settings = moonlight_bridge_protocol::PeerSettingsV2 {
             max_body_len: 64,
+            max_decoded_body_len: 128,
+            max_metadata_len: 1_024,
             max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            max_concurrent_streams: 8,
+            initial_stream_credit: 4,
+            compression_codecs: 1,
             features: SERVER_FEATURES,
+            diagnostic_features: 0,
         };
-        let server_settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let server_settings = PeerSettings::default();
         let (events, runtime) = Server::runtime(server_settings);
         let router = Router::builder()
             .route(1, |_| async { Ok(vec![7; 128]) })
@@ -1985,10 +2029,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            read_frame(&mut client, PeerSettings::BODY_LEN as u32)
-                .await
-                .unwrap()
-                .kind,
+            read_frame(
+                &mut client,
+                moonlight_bridge_protocol::PeerSettingsV2::BODY_LEN as u32,
+            )
+            .await
+            .unwrap()
+            .kind,
             FrameKind::Welcome
         );
         write_frame(

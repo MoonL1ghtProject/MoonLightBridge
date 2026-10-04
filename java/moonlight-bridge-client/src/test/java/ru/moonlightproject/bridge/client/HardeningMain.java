@@ -18,7 +18,7 @@ public final class HardeningMain {
         return new Frame(kind,method,id,in.readNBytes(n));
     }
     static void write(DataOutputStream out,int kind,int method,long id,byte[] body) throws Exception {
-        out.writeInt(0x4D4C4252); out.writeByte(1); out.writeByte(kind); out.writeShort(0);
+        out.writeInt(0x4D4C4252); out.writeByte(2); out.writeByte(kind); out.writeShort(0);
         out.writeInt(body.length); out.writeInt(method); out.writeLong(id); out.write(body); out.flush();
     }
     static Thread serve(ServerSocket ss,int maxBody,Action action) {
@@ -26,7 +26,9 @@ public final class HardeningMain {
             try (var s=ss.accept()) {
                 s.setSoTimeout(3000);
                 var in=new DataInputStream(s.getInputStream()); var out=new DataOutputStream(s.getOutputStream());
-                read(in); write(out,17,0,0,ByteBuffer.allocate(16).putInt(maxBody).putInt(256).putLong(127).array());
+                read(in); write(out,17,0,0,ByteBuffer.allocate(44)
+                    .putInt(maxBody).putInt(16*1024*1024).putInt(16*1024).putInt(256)
+                    .putInt(64).putInt(32).putInt(1).putLong(127).putLong(0).array());
                 action.run(in,out);
             } catch (EOFException | SocketException expected) { }
             catch (Exception e) { throw new RuntimeException(e); }

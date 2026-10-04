@@ -48,8 +48,6 @@ jobs:
           pr-mode: false
           upload-result: true
           artifact-name: qodana-jvm-report
-        env:
-          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN }}
 
   rust-quality:
     runs-on: ubuntu-latest

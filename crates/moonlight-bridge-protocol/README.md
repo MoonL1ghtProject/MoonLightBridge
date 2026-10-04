@@ -105,6 +105,18 @@ violations before copying values. Transport runtimes remove the metadata prefix 
 Trace context is vendor-neutral wire data. This crate does not initialize or depend on an
 observability SDK.
 
+## Bounded compression
+
+`CompressionPolicy` provides negotiated `none`/Zstandard encoding with a minimum payload threshold
+and minimum required savings. Decoding checks the announced decoded length and expansion ratio
+before invoking Zstandard. `DecodedByteBudget` supplies a process-shared admission limit; retain the
+permit returned by `decode_with_reservation` for as long as the decoded request occupies runtime
+memory. The defaults are a 1 KiB threshold, 64-byte minimum saving, 16 MiB decoded limit, ratio 64,
+and Zstandard level 1.
+
+Compression metadata is part of protocol v2 and must be used only after codec negotiation. See the
+wire protocol document for the applicable frame kinds and required metadata pair.
+
 ## Errors and validation
 
 `ErrorCode` includes the original six classifications plus `Unauthenticated`, `PermissionDenied`,

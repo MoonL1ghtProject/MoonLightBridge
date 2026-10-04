@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.Flow;
 
 public final class IntegrationMain {
     public static void main(String[] args) throws Exception {
@@ -39,9 +40,45 @@ public final class IntegrationMain {
                     }));
             }
             CompletableFuture.allOf(checks.toArray(CompletableFuture[]::new)).join();
+            byte[] largePayload = new byte[64 * 1024];
+            for (int index = 0; index < largePayload.length; index++) {
+                largePayload[index] = (byte) (index % 31);
+            }
+            byte[] largeResponse = client.request(
+                1, largePayload, Duration.ofSeconds(2)).join();
+            if (!java.util.Arrays.equals(largePayload, largeResponse)) {
+                throw new AssertionError("mixed compressed unary round trip changed payload");
+            }
+            CompletableFuture<Void> streamCompleted = new CompletableFuture<>();
+            client.serverStream(3, largePayload, Duration.ofSeconds(2)).subscribe(
+                new Flow.Subscriber<>() {
+                    private int items;
+                    @Override public void onSubscribe(Flow.Subscription subscription) {
+                        subscription.request(1);
+                    }
+                    @Override public void onNext(byte[] item) {
+                        items++;
+                        if (!java.util.Arrays.equals(largePayload, item)) {
+                            streamCompleted.completeExceptionally(
+                                new AssertionError("compressed stream item changed payload"));
+                        }
+                    }
+                    @Override public void onError(Throwable error) {
+                        streamCompleted.completeExceptionally(error);
+                    }
+                    @Override public void onComplete() {
+                        if (items != 1) {
+                            streamCompleted.completeExceptionally(
+                                new AssertionError("expected one stream item, got " + items));
+                        } else {
+                            streamCompleted.complete(null);
+                        }
+                    }
+                });
+            streamCompleted.orTimeout(2, java.util.concurrent.TimeUnit.SECONDS).join();
             client.ping(Duration.ofSeconds(1)).join();
             MoonLightHealth health = client.health(Duration.ofSeconds(1)).join();
-            if (!health.ready() || health.protocolVersion() != 1 || health.activeConnections() < 1) {
+            if (!health.ready() || health.protocolVersion() != 2 || health.activeConnections() < 1) {
                 throw new AssertionError("unexpected health status: " + health);
             }
 
@@ -63,11 +100,11 @@ public final class IntegrationMain {
             }
 
             MoonLightClientMetrics.Snapshot snapshot = metrics.snapshot();
-            if (snapshot.started() != 102 || snapshot.succeeded() != 100 || snapshot.failed() != 2) {
+            if (snapshot.started() != 104 || snapshot.succeeded() != 102 || snapshot.failed() != 2) {
                 throw new AssertionError("unexpected metrics: " + snapshot);
             }
 
-            System.out.println("MoonLightBridge " + transport + " integration passed: handshake, health, trace context, metrics, 100 multiplexed requests, ping, typed error, timeout/cancel");
+            System.out.println("MoonLightBridge " + transport + " integration passed: handshake, health, trace context, metrics, mixed compressed unary/stream frames, 100 multiplexed requests, ping, typed error, timeout/cancel");
         }
     }
 }

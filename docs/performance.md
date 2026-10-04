@@ -45,6 +45,34 @@ Setting `maxBatchFrames` to `1` disables write batching but retains the dedicate
 writer and bounded queue. Buffer pooling can be disabled independently. The
 bounded queue cannot be disabled because an unbounded producer is an OOM path.
 
+## Compression
+
+Protocol v2 negotiates `none` and Zstandard per connection. The default policy considers payloads
+of at least 1 KiB, requires at least 64 bytes of savings, and uses Zstandard level 1. Small payloads
+and peers that negotiate only `none` bypass the codec. An attempted compression that does not save
+enough bytes retains the original allocation.
+
+The protocol crate includes an ignored release-mode matrix benchmark:
+
+```shell
+cargo test -p moonlight-bridge-protocol --test compression_v2 --release -- --ignored --nocapture
+```
+
+On the development machine, 2,000 encode/decode iterations gave the following local costs. The
+64 KiB compressible fixture contains repeated 4 KiB pseudorandom blocks; the incompressible fixture
+uses distinct pseudorandom bytes. These figures guide thresholds and are not portable guarantees.
+
+| Case | Input | Wire payload | Selected codec | Encode/decode round trip |
+|---|---:|---:|---|---:|
+| Codec disabled | 64 KiB | 64 KiB | none | 53.7 µs |
+| Below threshold | 1,023 B | 1,023 B | none | 0.16 µs |
+| Compressible | 64 KiB | 4,119 B | zstd | 71.9 µs |
+| Incompressible | 64 KiB | 64 KiB | none | 59.5 µs |
+
+The client and server enforce decoded size, expansion ratio, and a shared in-flight decoded-byte
+budget before allocating codec output. This keeps hostile compressed inputs from turning bandwidth
+savings into unbounded memory pressure.
+
 ## Batch RPC
 
 Generated unary clients include a typed batch method:

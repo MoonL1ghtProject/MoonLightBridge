@@ -65,7 +65,11 @@ public final class MoonLightClient implements MoonLightChannel {
     private final ConcurrentMap<Long, StreamRequest> streams = new ConcurrentHashMap<>();
     private final Semaphore inFlight;
     private final int maxBodyLength;
+    private final int maxDecodedBodyLength;
     private final int maxMetadataLength;
+    private final int negotiatedCompressionCodecs;
+    private final MoonLightCompression.Options compressionOptions;
+    private final MoonLightCompression.DecodedByteBudget decodedByteBudget;
     private final long negotiatedFeatures;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final CompletableFuture<Throwable> termination = new CompletableFuture<>();
@@ -303,6 +307,7 @@ public final class MoonLightClient implements MoonLightChannel {
         connection = transport.endpoint;
         this.performance = performance;
         this.telemetry = java.util.Objects.requireNonNull(telemetry, "telemetry");
+        decodedByteBudget = new MoonLightCompression.DecodedByteBudget(64 * 1024 * 1024);
         outgoing = new ArrayBlockingQueue<>(performance.outgoingQueueCapacity());
         bufferPool = new ByteArrayPool(performance.bufferPooling());
         input = new DataInputStream(new BufferedInputStream(transport.input));
@@ -316,7 +321,7 @@ public final class MoonLightClient implements MoonLightChannel {
                 .putInt(DEFAULT_MAX_IN_FLIGHT)
                 .putInt(DEFAULT_MAX_CONCURRENT_STREAMS)
                 .putInt(DEFAULT_INITIAL_STREAM_CREDIT)
-                .putInt(1)
+                .putInt(3)
                 .putLong(FEATURES)
                 .putLong(0)
                 .array();
@@ -327,12 +332,13 @@ public final class MoonLightClient implements MoonLightChannel {
             }
             ByteBuffer settings = ByteBuffer.wrap(welcome.body);
             maxBodyLength = settings.getInt();
-            int maxDecodedBodyLength = settings.getInt();
+            maxDecodedBodyLength = settings.getInt();
             maxMetadataLength = settings.getInt();
             int maxInFlight = settings.getInt();
             int maxConcurrentStreams = settings.getInt();
             int initialStreamCredit = settings.getInt();
             int compressionCodecs = settings.getInt();
+            negotiatedCompressionCodecs = compressionCodecs;
             negotiatedFeatures = settings.getLong();
             long diagnosticFeatures = settings.getLong();
             if (maxBodyLength <= 0 || maxBodyLength > DEFAULT_MAX_BODY_LENGTH
@@ -341,10 +347,14 @@ public final class MoonLightClient implements MoonLightChannel {
                 || maxInFlight <= 0 || maxInFlight > DEFAULT_MAX_IN_FLIGHT
                 || maxConcurrentStreams <= 0 || maxConcurrentStreams > DEFAULT_MAX_CONCURRENT_STREAMS
                 || initialStreamCredit <= 0 || initialStreamCredit > DEFAULT_INITIAL_STREAM_CREDIT
-                || (compressionCodecs & 1) == 0 || (compressionCodecs & ~1) != 0
+                || (compressionCodecs & 1) == 0 || (compressionCodecs & ~3) != 0
                 || (negotiatedFeatures & ~FEATURES) != 0 || diagnosticFeatures != 0) {
                 throw new IOException("server returned invalid MoonLightBridge settings");
             }
+            MoonLightCompression.Options defaults = MoonLightCompression.Options.defaults();
+            compressionOptions = new MoonLightCompression.Options(
+                defaults.minPayloadBytes(), defaults.minSavingsBytes(), maxDecodedBodyLength,
+                defaults.maxExpansionRatio(), defaults.compressionLevel());
             inFlight = new Semaphore(maxInFlight);
             transport.handshakeCompletion.complete();
         } catch (IOException | RuntimeException | Error error) {
@@ -409,7 +419,7 @@ public final class MoonLightClient implements MoonLightChannel {
         if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("deadline must be between 1ms and 2147483647ms"));
         }
-        if (body.length > maxBodyLength - Integer.BYTES) {
+        if (body.length > maxDecodedBodyLength) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("body is too large"));
         }
         if (!inFlight.tryAcquire()) {
@@ -428,13 +438,6 @@ public final class MoonLightClient implements MoonLightChannel {
         if ((negotiatedFeatures & FEATURE_TRACE_CONTEXT) != 0) {
             try { traceContext = observation.traceContext(); }
             catch (RuntimeException ignored) { }
-        }
-        if (body.length > maxBodyLength - Integer.BYTES
-            - (traceContext == null ? 0 : MoonLightTraceContext.WIRE_LENGTH)) {
-            IllegalArgumentException error = new IllegalArgumentException("body is too large with trace metadata");
-            try { observation.finish(0, error); } catch (RuntimeException ignored) { }
-            inFlight.release();
-            return CompletableFuture.failedFuture(error);
         }
         CompletableFuture<byte[]> future = new CompletableFuture<>();
         PendingRequest pendingRequest = new PendingRequest(RESPONSE, methodId, true, future);
@@ -472,7 +475,7 @@ public final class MoonLightClient implements MoonLightChannel {
         if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("deadline must be between 1ms and 2147483647ms");
         }
-        if (body.length > maxBodyLength - Integer.BYTES) throw new IllegalArgumentException("body is too large");
+        if (body.length > maxDecodedBodyLength) throw new IllegalArgumentException("body is too large");
         if (!inFlight.tryAcquire()) {
             throw new RejectedExecutionException("MoonLightBridge in-flight request limit reached");
         }
@@ -488,13 +491,6 @@ public final class MoonLightClient implements MoonLightChannel {
         if ((negotiatedFeatures & FEATURE_TRACE_CONTEXT) != 0) {
             try { traceContext = observation.traceContext(); }
             catch (RuntimeException ignored) { }
-        }
-        if (body.length > maxBodyLength - Integer.BYTES
-            - (traceContext == null ? 0 : MoonLightTraceContext.WIRE_LENGTH)) {
-            IllegalArgumentException error = new IllegalArgumentException("body is too large with trace metadata");
-            try { observation.finish(0, error); } catch (RuntimeException ignored) { }
-            inFlight.release();
-            throw error;
         }
         MoonLightTelemetry.RequestObservation completedObservation = observation;
         AtomicLong responseBytes = new AtomicLong();
@@ -623,7 +619,9 @@ public final class MoonLightClient implements MoonLightChannel {
     private void readResponses() {
         try {
             while (!closed.get()) {
-                Frame frame = readFrame(maxBodyLength);
+                Frame received = readFrame(maxBodyLength);
+                Frame frame = received.kind == RESPONSE || received.kind == EVENT
+                    || received.kind == STREAM_ITEM ? decodeApplicationFrame(received) : received;
                 if (frame.kind == EVENT) {
                     if (frame.requestId != 0 || frame.methodId == 0) {
                         throw new IOException("invalid MoonLightBridge EVENT frame");
@@ -701,6 +699,35 @@ public final class MoonLightClient implements MoonLightChannel {
         return expectedSuccess;
     }
 
+    private Frame decodeApplicationFrame(Frame frame) throws IOException {
+        if ((frame.flags & FLAG_HAS_METADATA) == 0) return frame;
+        MoonLightMetadata.Decoded decoded = MoonLightMetadata.decode(
+            frame.body, new MoonLightMetadata.Limits(maxMetadataLength, 64, 8 * 1024));
+        byte[] codecBytes = decoded.metadata().get(MoonLightMetadata.ReservedKey.COMPRESSION_CODEC);
+        byte[] lengthBytes = decoded.metadata().get(MoonLightMetadata.ReservedKey.ORIGINAL_LENGTH);
+        byte[] payload = decoded.payload();
+        if (codecBytes == null && lengthBytes == null) {
+            return new Frame(frame.kind, 0, frame.methodId, frame.requestId, payload);
+        }
+        if (codecBytes == null || codecBytes.length != 1
+            || lengthBytes == null || lengthBytes.length != Integer.BYTES) {
+            throw new IOException("incomplete compression metadata");
+        }
+        MoonLightCompression.Codec codec = MoonLightCompression.Codec.fromWire(
+            Byte.toUnsignedInt(codecBytes[0]));
+        if (codec != MoonLightCompression.Codec.ZSTD
+            || (negotiatedCompressionCodecs & 2) == 0) {
+            throw new IOException("compression codec was not negotiated");
+        }
+        int originalLength = ByteBuffer.wrap(lengthBytes).getInt();
+        if (originalLength < 0) throw new IOException("negative original payload length");
+        byte[] body = MoonLightCompression.decode(
+            MoonLightCompression.transportEncoded(codec, originalLength, payload),
+            compressionOptions,
+            decodedByteBudget);
+        return new Frame(frame.kind, 0, frame.methodId, frame.requestId, body);
+    }
+
     private Frame readFrame(int bodyLimit) throws IOException {
         int magic = input.readInt();
         int version = input.readUnsignedByte();
@@ -749,11 +776,23 @@ public final class MoonLightClient implements MoonLightChannel {
             traceContext.writeTo(trace);
             metadata.putReserved(MoonLightMetadata.ReservedKey.TRACE_CONTEXT, trace.array());
         }
+        MoonLightCompression.Encoded compressed = (negotiatedCompressionCodecs & 2) != 0
+            ? MoonLightCompression.encode(body, MoonLightCompression.Codec.ZSTD, compressionOptions)
+            : null;
+        byte[] encodedBody = compressed == null ? body : compressed.internalBytes();
+        if (compressed != null && compressed.codec() == MoonLightCompression.Codec.ZSTD) {
+            metadata.putReserved(
+                MoonLightMetadata.ReservedKey.COMPRESSION_CODEC,
+                new byte[] {(byte) compressed.codec().wireValue()});
+            metadata.putReserved(
+                MoonLightMetadata.ReservedKey.ORIGINAL_LENGTH,
+                ByteBuffer.allocate(Integer.BYTES).putInt(compressed.originalLength()).array());
+        }
         byte[] metadataPrefix = metadata.build().encodePrefix();
         if (metadataPrefix.length - Integer.BYTES > maxMetadataLength) {
             throw new IOException("request metadata exceeds negotiated limit");
         }
-        int bodyLength = Math.addExact(body.length, metadataPrefix.length);
+        int bodyLength = Math.addExact(encodedBody.length, metadataPrefix.length);
         if (bodyLength > maxBodyLength) throw new IOException("request body exceeds negotiated limit");
         int length = 24 + bodyLength;
         if (!outgoingRequestBytes.tryAcquire(length)) {
@@ -764,7 +803,7 @@ public final class MoonLightClient implements MoonLightChannel {
         target.putInt(MAGIC).put((byte) VERSION).put((byte) REQUEST)
             .putShort((short) FLAG_HAS_METADATA).putInt(bodyLength).putInt(methodId)
             .putLong(requestId).put(metadataPrefix);
-        target.put(body);
+        target.put(encodedBody);
         long expiresAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         if (!outgoing.offer(new OutboundFrame(
             encoded, length, null, length, true, requestId, expiresAt))) {

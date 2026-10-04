@@ -64,6 +64,25 @@ Reserved keys carry deadlines, trace context, idempotency and authorization data
 state, retry identity, event cursors, content type, and anonymous diagnostic correlation. Payloads
 and authorization values are never telemetry fields.
 
+## Compression
+
+Codec bit `0` represents `none`; codec bit `1` represents Zstandard. An application frame may use
+Zstandard only when bit `1` is present in the negotiated codec mask. Compression is limited to
+`REQUEST`, `RESPONSE`, `EVENT`, and `STREAM_ITEM`; handshake, health, flow-control, terminal, and
+error frames stay uncompressed so that connection recovery never depends on a codec.
+
+A compressed body has the normal metadata prefix followed by the compressed payload. It must carry
+both singleton metadata entries `compression-codec` (`u8`, value `1` for Zstandard) and
+`original-length` (`u32`, big-endian). Supplying only one entry, using an unnegotiated codec, or
+announcing a length above the negotiated decoded-body limit is a `COMPRESSION_FAILURE`.
+
+The default runtimes consider payloads of at least 1 KiB, require a saving of at least 64 bytes,
+use Zstandard level 1, and reject a decoded-to-encoded ratio above 64. They also share a bounded
+decoded-byte admission budget across concurrent requests. Implementations must validate metadata,
+the decoded limit, the ratio, and budget availability before decompression. Encoders keep the
+original payload when compressed output would violate those same bounds, preventing frames that a
+conforming peer would reject.
+
 An error body begins with a two-byte code followed by a UTF-8 message. Codes are
 `UNKNOWN_METHOD=1`, `INVALID_REQUEST=2`, `DEADLINE_EXCEEDED=3`, `CANCELLED=4`,
 `RESOURCE_EXHAUSTED=5`, `INTERNAL=6`, `UNAUTHENTICATED=7`, `PERMISSION_DENIED=8`,
@@ -75,7 +94,7 @@ Responses are accepted only when ID, method ID, and frame kind match the pending
 
 ## Server streaming
 
-A server-streaming method starts with the same `REQUEST` frame as a unary method. The server does
+A server-streaming method starts with the same `REQUEST` frame as a unary method. The server
 may keep at most one look-ahead item, but cannot send it until the client grants positive
 `STREAM_CREDIT` for that request ID. Each `STREAM_ITEM` consumes one credit. `STREAM_END` completes
 successfully; `ERROR`, `CANCEL`, a

@@ -15,3 +15,4 @@ documentation = "https://docs.rs/moonlight-bridge-protocol"
 publish = ["crates-io"]
 
 [dependencies]
+zstd = { version = "0.14.0", default-features = false }

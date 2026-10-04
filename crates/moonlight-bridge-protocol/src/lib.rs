@@ -2,8 +2,13 @@
 
 use std::fmt;
 
+mod compression;
 mod metadata;
 
+pub use compression::{
+    CompressedPayload, CompressionCodec, CompressionError, CompressionPolicy, DecodedByteBudget,
+    DecodedBytePermit,
+};
 pub use metadata::{Metadata, MetadataKey, MetadataLimits, ReservedMetadataKey};
 
 /// ASCII `MLBR`, the MoonLightBridge wire signature.
@@ -16,6 +21,10 @@ pub const HEADER_LEN: usize = 24;
 pub const DEFAULT_MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 /// Default number of concurrent requests permitted per connection.
 pub const DEFAULT_MAX_IN_FLIGHT: u32 = 256;
+/// Mandatory identity codec bit used during handshake.
+pub const COMPRESSION_CODEC_NONE: u32 = 1;
+/// Zstandard codec bit used during handshake.
+pub const COMPRESSION_CODEC_ZSTD: u32 = 1 << 1;
 
 /// Indicates that a frame body starts with a bounded metadata block.
 pub const FLAG_HAS_METADATA: u16 = 1;
@@ -330,7 +339,7 @@ impl Default for PeerSettingsV2 {
             max_in_flight: DEFAULT_MAX_IN_FLIGHT,
             max_concurrent_streams: 64,
             initial_stream_credit: 32,
-            compression_codecs: 1,
+            compression_codecs: COMPRESSION_CODEC_NONE | COMPRESSION_CODEC_ZSTD,
             features: SERVER_FEATURES,
             diagnostic_features: 0,
         }

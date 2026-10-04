@@ -9,26 +9,29 @@ import java.util.concurrent.atomic.*;
 
 // Local-only probes. Assertions describe the observed bugs, not desired behavior.
 public final class HardeningMain {
-    record Frame(int kind, int method, long id, byte[] body) {}
+    record Frame(int kind, int flags, int method, long id, byte[] body) {}
     interface Action { void run(DataInputStream in, DataOutputStream out) throws Exception; }
     static Frame read(DataInputStream in) throws Exception {
         if (in.readInt() != 0x4D4C4252) throw new AssertionError();
-        in.readByte(); int kind=in.readUnsignedByte(); in.readShort();
+        in.readByte(); int kind=in.readUnsignedByte(); int flags=in.readUnsignedShort();
         int n=in.readInt(), method=in.readInt(); long id=in.readLong();
-        return new Frame(kind,method,id,in.readNBytes(n));
+        return new Frame(kind,flags,method,id,in.readNBytes(n));
     }
     static void write(DataOutputStream out,int kind,int method,long id,byte[] body) throws Exception {
         out.writeInt(0x4D4C4252); out.writeByte(2); out.writeByte(kind); out.writeShort(0);
         out.writeInt(body.length); out.writeInt(method); out.writeLong(id); out.write(body); out.flush();
     }
     static Thread serve(ServerSocket ss,int maxBody,Action action) {
+        return serve(ss, maxBody, 16*1024*1024, 1, action);
+    }
+    static Thread serve(ServerSocket ss,int maxBody,int maxDecoded,int codecs,Action action) {
         return Thread.ofPlatform().daemon().start(() -> {
             try (var s=ss.accept()) {
                 s.setSoTimeout(3000);
                 var in=new DataInputStream(s.getInputStream()); var out=new DataOutputStream(s.getOutputStream());
                 read(in); write(out,17,0,0,ByteBuffer.allocate(44)
-                    .putInt(maxBody).putInt(16*1024*1024).putInt(16*1024).putInt(256)
-                    .putInt(64).putInt(32).putInt(1).putLong(127).putLong(0).array());
+                    .putInt(maxBody).putInt(maxDecoded).putInt(16*1024).putInt(256)
+                    .putInt(64).putInt(32).putInt(codecs).putLong(127).putLong(0).array());
                 action.run(in,out);
             } catch (EOFException | SocketException expected) { }
             catch (Exception e) { throw new RuntimeException(e); }
@@ -44,7 +47,7 @@ public final class HardeningMain {
     }
     public static void main(String[] args) throws Exception {
         var failures = new java.util.ArrayList<Throwable>();
-        for (String test : new String[]{"welcome", "terminal", "callback", "event", "batch"}) {
+        for (String test : new String[]{"welcome", "terminal", "callback", "event", "batch", "compression", "compression-limit", "compression-wire-limit"}) {
             try { run(test); } catch(Throwable e) { failures.add(e); e.printStackTrace(); }
         }
         if (!failures.isEmpty()) throw new AssertionError("hardening failures: " + failures.size());
@@ -95,5 +98,92 @@ public final class HardeningMain {
             channel.requestBatch(java.util.List.of(new MoonLightRequest(1,new byte[0],Duration.ofSeconds(1)))).cancel(true);
             check(source.isCancelled(),"batch cancellation reaches children");
         }
+        if(test.equals("compression")) {
+            var options = new MoonLightCompression.Options(32, 8, 1024 * 1024, 64, 1);
+            var budget = new MoonLightCompression.DecodedByteBudget(1024 * 1024);
+            byte[] payload = new byte[4096];
+            int state = 0x13579bdf;
+            for (int index = 0; index < payload.length / 2; index++) {
+                state = state * 1664525 + 1013904223;
+                payload[index] = (byte) (state >>> 24);
+                payload[index + payload.length / 2] = payload[index];
+            }
+            var encoded = MoonLightCompression.encode(
+                payload, MoonLightCompression.Codec.ZSTD, options);
+            check(encoded.codec() == MoonLightCompression.Codec.ZSTD,
+                "compression retains useful bounded output");
+            check(java.util.Arrays.equals(
+                MoonLightCompression.decode(encoded, options, budget), payload),
+                "bounded zstd round trip");
+            var below = MoonLightCompression.encode(
+                new byte[31], MoonLightCompression.Codec.ZSTD, options);
+            check(below.codec() == MoonLightCompression.Codec.NONE,
+                "compression threshold avoids small payload overhead");
+            expectIOException(() -> MoonLightCompression.decode(
+                new MoonLightCompression.Encoded(MoonLightCompression.Codec.ZSTD, 128,
+                    "not-zstd".getBytes(java.nio.charset.StandardCharsets.US_ASCII)),
+                options, budget));
+            expectIOException(() -> MoonLightCompression.decode(
+                new MoonLightCompression.Encoded(MoonLightCompression.Codec.ZSTD,
+                    options.maxDecodedBodyLength() + 1, new byte[] {1}), options, budget));
+            expectIOException(() -> MoonLightCompression.decode(
+                new MoonLightCompression.Encoded(MoonLightCompression.Codec.ZSTD,
+                    129, new byte[] {1, 2}), options, budget));
+            try (var ignored = budget.reserve(options.maxDecodedBodyLength())) {
+                expectIOException(() -> MoonLightCompression.decode(encoded, options, budget));
+            }
+            check(true, "compression rejects corrupt, oversized, and over-budget payloads");
+        }
+        if(test.equals("compression-limit")) {
+            try(var ss=new ServerSocket(0)) {
+                serve(ss, 8*1024*1024, 1024, 3, (in,out)->{
+                    while(read(in).kind()!=21) { }
+                });
+                try(var c=client(ss)) {
+                    try {
+                        c.request(1, new byte[4096], Duration.ofSeconds(1)).get();
+                        throw new AssertionError("negotiated decoded limit was not enforced");
+                    } catch (ExecutionException expected) {
+                        check(expected.getCause() instanceof IllegalArgumentException,
+                            "compression honors negotiated decoded limit");
+                    }
+                }
+            }
+        }
+        if(test.equals("compression-wire-limit")) {
+            var decoded = new AtomicBoolean();
+            try(var ss=new ServerSocket(0)) {
+                serve(ss, 512, 4096, 3, (in,out)->{
+                    Frame request=read(in);
+                    var metadata=MoonLightMetadata.decode(
+                        request.body(), new MoonLightMetadata.Limits(16*1024,64,8*1024));
+                    byte[] codec=metadata.metadata().get(MoonLightMetadata.ReservedKey.COMPRESSION_CODEC);
+                    byte[] original=metadata.metadata().get(MoonLightMetadata.ReservedKey.ORIGINAL_LENGTH);
+                    byte[] restored=MoonLightCompression.decode(
+                        MoonLightCompression.transportEncoded(
+                            MoonLightCompression.Codec.fromWire(Byte.toUnsignedInt(codec[0])),
+                            ByteBuffer.wrap(original).getInt(), metadata.payload()),
+                        new MoonLightCompression.Options(32,8,4096,64,1),
+                        new MoonLightCompression.DecodedByteBudget(8192));
+                    decoded.set(request.flags() == 1 && restored.length == 4096);
+                    write(out,2,request.method(),request.id(),new byte[0]);
+                    while(read(in).kind()!=21) { }
+                });
+                try(var c=client(ss)) {
+                    byte[] payload=new byte[4096];
+                    for(int index=0;index<payload.length;index++) payload[index]=(byte)(index%128);
+                    c.request(1,payload,Duration.ofSeconds(1)).get();
+                    check(decoded.get(),"compression permits decoded payload above wire limit");
+                }
+            }
+        }
+    }
+
+    interface IoAction { void run() throws Exception; }
+    static void expectIOException(IoAction action) throws Exception {
+        try {
+            action.run();
+            throw new AssertionError("compression failure was not rejected");
+        } catch (IOException expected) { }
     }
 }

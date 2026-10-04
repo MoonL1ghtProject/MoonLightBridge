@@ -104,6 +104,11 @@ impl Metadata {
         Self::default()
     }
 
+    /// Returns whether the block contains no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Adds one runtime-owned singleton value.
     pub fn insert_reserved(
         &mut self,

@@ -3,12 +3,14 @@
 use futures_core::Stream;
 use futures_util::StreamExt;
 pub use moonlight_bridge_protocol::ErrorCode;
+use moonlight_bridge_protocol::{
+    COMPRESSION_CODEC_ZSTD, CompressionCodec, CompressionPolicy, DecodedByteBudget,
+    DecodedBytePermit, FLAG_HAS_METADATA, Frame, FrameKind, HEADER_LEN, Metadata, MetadataKey,
+    MetadataLimits, PeerSettingsV2 as PeerSettings, ReservedMetadataKey, TRACE_CONTEXT_LEN,
+    TraceContext,
+};
 #[cfg(test)]
 use moonlight_bridge_protocol::{DEFAULT_MAX_BODY_LEN, DEFAULT_MAX_IN_FLIGHT, SERVER_FEATURES};
-use moonlight_bridge_protocol::{
-    FLAG_HAS_METADATA, Frame, FrameKind, HEADER_LEN, Metadata, MetadataKey, MetadataLimits,
-    PeerSettingsV2 as PeerSettings, ReservedMetadataKey, TRACE_CONTEXT_LEN, TraceContext,
-};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -179,6 +181,8 @@ struct RuntimeState {
     active_connections: AtomicU64,
     active_requests: AtomicU64,
     max_in_flight: u32,
+    compression_policy: CompressionPolicy,
+    decoded_byte_budget: DecodedByteBudget,
     started: Instant,
 }
 
@@ -433,6 +437,13 @@ pub struct RouterBuilder {
     telemetry: Option<Arc<dyn Telemetry>>,
 }
 
+#[derive(Clone, Copy)]
+struct RequestCompression<'a> {
+    codecs: u32,
+    policy: CompressionPolicy,
+    budget: &'a DecodedByteBudget,
+}
+
 impl Router {
     /// Starts an empty router builder.
     pub fn builder() -> RouterBuilder {
@@ -448,14 +459,16 @@ impl Router {
         mut frame: Frame,
         max_response_body_len: u32,
         max_metadata_len: u32,
+        compression: RequestCompression<'_>,
     ) -> Frame {
         let ParsedRequest {
             deadline,
             trace_context,
             payload,
-        } = match request_payload(&mut frame, max_metadata_len) {
+            _decoded_permit,
+        } = match request_payload(&mut frame, max_metadata_len, compression) {
             Ok(parts) => parts,
-            Err(message) => return error_frame(&frame, ErrorCode::InvalidRequest, message),
+            Err((code, message)) => return error_frame(&frame, code, message),
         };
         let mut observation = self.telemetry.as_ref().and_then(|telemetry| {
             telemetry.start_request(RequestInfo {
@@ -592,6 +605,7 @@ impl Router {
         mut frame: Frame,
         max_response_body_len: u32,
         max_metadata_len: u32,
+        compression: RequestCompression<'_>,
         credits: Arc<Semaphore>,
         responses: mpsc::Sender<Frame>,
     ) {
@@ -599,12 +613,11 @@ impl Router {
             deadline,
             trace_context,
             payload,
-        } = match request_payload(&mut frame, max_metadata_len) {
+            _decoded_permit,
+        } = match request_payload(&mut frame, max_metadata_len, compression) {
             Ok(parts) => parts,
-            Err(message) => {
-                let _ = responses
-                    .send(error_frame(&frame, ErrorCode::InvalidRequest, message))
-                    .await;
+            Err((code, message)) => {
+                let _ = responses.send(error_frame(&frame, code, message)).await;
                 return;
             }
         };
@@ -904,6 +917,12 @@ impl Server {
                 active_connections: AtomicU64::new(0),
                 active_requests: AtomicU64::new(0),
                 max_in_flight: settings.max_in_flight,
+                compression_policy: CompressionPolicy {
+                    max_decoded_body_len: settings.max_decoded_body_len,
+                    ..CompressionPolicy::default()
+                },
+                decoded_byte_budget: DecodedByteBudget::new(64 * 1024 * 1024)
+                    .expect("non-zero decoded byte budget"),
                 started: Instant::now(),
             }),
         )
@@ -1211,6 +1230,10 @@ where
     let active: ActiveRequests = Arc::new(Mutex::new(HashMap::new()));
     let permits = Arc::new(Semaphore::new(negotiated.max_in_flight as usize));
     let mut event_rx = events.sender.subscribe();
+    let connection_compression_policy = CompressionPolicy {
+        max_decoded_body_len: negotiated.max_decoded_body_len,
+        ..runtime.compression_policy
+    };
 
     // Keep exactly one read future alive for the connection. Selecting directly on
     // read_frame alongside events is not cancellation-safe: an event can drop a
@@ -1244,6 +1267,13 @@ where
                     None => break,
                 },
             };
+            let first = fit_outbound_frame(first, negotiated.max_decoded_body_len);
+            let first = compress_outbound_frame(
+                first,
+                negotiated.compression_codecs,
+                connection_compression_policy,
+                negotiated.max_metadata_len,
+            );
             let first = fit_outbound_frame(first, negotiated.max_body_len);
             encoded.clear();
             first
@@ -1254,6 +1284,13 @@ where
                 let Ok(frame) = responses_rx.try_recv() else {
                     break;
                 };
+                let frame = fit_outbound_frame(frame, negotiated.max_decoded_body_len);
+                let frame = compress_outbound_frame(
+                    frame,
+                    negotiated.compression_codecs,
+                    connection_compression_policy,
+                    negotiated.max_metadata_len,
+                );
                 let frame = fit_outbound_frame(frame, negotiated.max_body_len);
                 let frame_len = HEADER_LEN + frame.body.len();
                 if encoded.len() + frame_len > MAX_BATCH_BYTES {
@@ -1284,7 +1321,7 @@ where
             event = event_rx.recv(), if negotiated.features & moonlight_bridge_protocol::FEATURE_SERVER_EVENTS != 0 => {
                 match event {
                     Ok(frame) => {
-                        if frame.body.len() > negotiated.max_body_len as usize {
+                        if frame.body.len() > negotiated.max_decoded_body_len as usize {
                             tracing::warn!(
                                 event_id = frame.method_id,
                                 event_bytes = frame.body.len(),
@@ -1338,7 +1375,7 @@ where
                 let active_for_task = active.clone();
                 let request_id = frame.request_id;
                 let runtime_for_task = runtime.clone();
-                let max_body_len = negotiated.max_body_len;
+                let max_decoded_body_len = negotiated.max_decoded_body_len;
                 let streaming = router.is_streaming(frame.method_id);
                 if streaming
                     && negotiated.features & moonlight_bridge_protocol::FEATURE_SERVER_STREAMING
@@ -1369,7 +1406,7 @@ where
                     runtime_for_task
                         .active_requests
                         .fetch_add(1, Ordering::Relaxed);
-                    let _request_guard = RequestGuard(runtime_for_task);
+                    let _request_guard = RequestGuard(runtime_for_task.clone());
                     if start_rx.await.is_err() {
                         return;
                     }
@@ -1377,8 +1414,13 @@ where
                         router
                             .dispatch_stream(
                                 frame,
-                                max_body_len,
+                                max_decoded_body_len,
                                 negotiated.max_metadata_len,
+                                RequestCompression {
+                                    codecs: negotiated.compression_codecs,
+                                    policy: connection_compression_policy,
+                                    budget: &runtime_for_task.decoded_byte_budget,
+                                },
                                 credits,
                                 responses_tx.clone(),
                             )
@@ -1386,9 +1428,18 @@ where
                     } else {
                         let response = fit_outbound_frame(
                             router
-                                .dispatch(frame, max_body_len, negotiated.max_metadata_len)
+                                .dispatch(
+                                    frame,
+                                    max_decoded_body_len,
+                                    negotiated.max_metadata_len,
+                                    RequestCompression {
+                                        codecs: negotiated.compression_codecs,
+                                        policy: connection_compression_policy,
+                                        budget: &runtime_for_task.decoded_byte_budget,
+                                    },
+                                )
                                 .await,
-                            max_body_len,
+                            max_decoded_body_len,
                         );
                         let _ = responses_tx.send(response).await;
                     }
@@ -1525,19 +1576,21 @@ struct ParsedRequest {
     deadline: Option<Duration>,
     trace_context: Option<TraceContext>,
     payload: Vec<u8>,
+    _decoded_permit: Option<DecodedBytePermit>,
 }
 
 fn request_payload(
     frame: &mut Frame,
     max_metadata_len: u32,
-) -> Result<ParsedRequest, &'static str> {
+    compression: RequestCompression<'_>,
+) -> Result<ParsedRequest, (ErrorCode, &'static str)> {
     let (metadata, payload_offset) = if frame.flags & FLAG_HAS_METADATA != 0 {
         let limits = MetadataLimits {
             max_bytes: max_metadata_len,
             ..MetadataLimits::default()
         };
-        let (metadata, payload) =
-            Metadata::decode(&frame.body, limits).map_err(|_| "invalid request metadata")?;
+        let (metadata, payload) = Metadata::decode(&frame.body, limits)
+            .map_err(|_| (ErrorCode::InvalidRequest, "invalid request metadata"))?;
         (metadata, frame.body.len() - payload.len())
     } else {
         (Metadata::new(), 0)
@@ -1545,12 +1598,18 @@ fn request_payload(
     let deadline = if let Some(value) =
         metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::DeadlineMillis))
     {
-        let bytes: [u8; 4] = value
-            .try_into()
-            .map_err(|_| "deadline metadata must contain four bytes")?;
+        let bytes: [u8; 4] = value.try_into().map_err(|_| {
+            (
+                ErrorCode::InvalidRequest,
+                "deadline metadata must contain four bytes",
+            )
+        })?;
         let millis = u32::from_be_bytes(bytes);
         if millis == 0 {
-            return Err("deadline must be greater than zero");
+            return Err((
+                ErrorCode::InvalidRequest,
+                "deadline must be greater than zero",
+            ));
         }
         Some(Duration::from_millis(millis as u64))
     } else {
@@ -1560,9 +1619,13 @@ fn request_payload(
         metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::TraceContext))
     {
         if value.len() != TRACE_CONTEXT_LEN {
-            return Err("trace-context metadata must contain 25 bytes");
+            return Err((
+                ErrorCode::InvalidRequest,
+                "trace-context metadata must contain 25 bytes",
+            ));
         }
-        let context = TraceContext::decode(value).map_err(|_| "invalid trace context")?;
+        let context = TraceContext::decode(value)
+            .map_err(|_| (ErrorCode::InvalidRequest, "invalid trace context"))?;
         Some(context)
     } else {
         None
@@ -1570,10 +1633,54 @@ fn request_payload(
     let payload_length = frame.body.len() - payload_offset;
     frame.body.copy_within(payload_offset.., 0);
     frame.body.truncate(payload_length);
+    let encoded_payload = std::mem::take(&mut frame.body);
+    let codec_value = metadata.get(&MetadataKey::Reserved(
+        ReservedMetadataKey::CompressionCodec,
+    ));
+    let original_value = metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::OriginalLength));
+    let (payload, decoded_permit) = match (codec_value, original_value) {
+        (None, None) => (encoded_payload, None),
+        (Some(&[codec]), Some(original)) => {
+            let codec = CompressionCodec::try_from(codec).map_err(|_| {
+                (
+                    ErrorCode::CompressionFailure,
+                    "unsupported compression codec",
+                )
+            })?;
+            if codec != CompressionCodec::Zstd || compression.codecs & COMPRESSION_CODEC_ZSTD == 0 {
+                return Err((
+                    ErrorCode::CompressionFailure,
+                    "compression codec was not negotiated",
+                ));
+            }
+            let original: [u8; 4] = original.try_into().map_err(|_| {
+                (
+                    ErrorCode::CompressionFailure,
+                    "invalid original payload length",
+                )
+            })?;
+            compression
+                .policy
+                .decode_with_reservation(
+                    codec,
+                    &encoded_payload,
+                    u32::from_be_bytes(original),
+                    compression.budget,
+                )
+                .map_err(|_| (ErrorCode::CompressionFailure, "compressed payload rejected"))?
+        }
+        _ => {
+            return Err((
+                ErrorCode::CompressionFailure,
+                "incomplete compression metadata",
+            ));
+        }
+    };
     Ok(ParsedRequest {
         deadline,
         trace_context,
-        payload: std::mem::take(&mut frame.body),
+        payload,
+        _decoded_permit: decoded_permit,
     })
 }
 
@@ -1604,6 +1711,80 @@ fn fit_outbound_frame(mut frame: Frame, max_body_len: u32) -> Frame {
     } else {
         Vec::new()
     };
+    frame
+}
+
+fn compress_outbound_frame(
+    mut frame: Frame,
+    compression_codecs: u32,
+    policy: CompressionPolicy,
+    max_metadata_len: u32,
+) -> Frame {
+    if compression_codecs & COMPRESSION_CODEC_ZSTD == 0
+        || !matches!(
+            frame.kind,
+            FrameKind::Response | FrameKind::Event | FrameKind::StreamItem
+        )
+    {
+        return frame;
+    }
+    let (mut metadata, payload_offset) = if frame.flags & FLAG_HAS_METADATA != 0 {
+        let limits = MetadataLimits {
+            max_bytes: max_metadata_len,
+            ..MetadataLimits::default()
+        };
+        match Metadata::decode(&frame.body, limits) {
+            Ok((metadata, payload)) => (metadata, frame.body.len() - payload.len()),
+            Err(_) => return frame,
+        }
+    } else {
+        (Metadata::new(), 0)
+    };
+    let payload = frame.body.split_off(payload_offset);
+    let compressed = match policy.encode(payload, CompressionCodec::Zstd) {
+        Ok(compressed) => compressed,
+        Err(_) => {
+            frame.kind = FrameKind::Error;
+            frame.flags = 0;
+            frame.body = ErrorCode::CompressionFailure.encode("response compression failed");
+            return frame;
+        }
+    };
+    if compressed.codec == CompressionCodec::Zstd
+        && metadata
+            .insert_reserved(
+                ReservedMetadataKey::CompressionCodec,
+                vec![compressed.codec as u8],
+            )
+            .and_then(|()| {
+                metadata.insert_reserved(
+                    ReservedMetadataKey::OriginalLength,
+                    compressed.original_len.to_be_bytes().to_vec(),
+                )
+            })
+            .is_err()
+    {
+        frame.kind = FrameKind::Error;
+        frame.flags = 0;
+        frame.body = ErrorCode::CompressionFailure.encode("response metadata conflict");
+        return frame;
+    }
+    let mut body = Vec::new();
+    if !metadata.is_empty() {
+        if metadata.encode_prefix(&mut body).is_err()
+            || body.len().saturating_sub(4) > max_metadata_len as usize
+        {
+            frame.kind = FrameKind::Error;
+            frame.flags = 0;
+            frame.body = ErrorCode::CompressionFailure.encode("response metadata too large");
+            return frame;
+        }
+        frame.flags |= FLAG_HAS_METADATA;
+    } else {
+        frame.flags &= !FLAG_HAS_METADATA;
+    }
+    body.extend_from_slice(&compressed.bytes);
+    frame.body = body;
     frame
 }
 
@@ -1736,6 +1917,12 @@ mod tests {
                     Frame::new(FrameKind::Request, 1, 1, vec![]),
                     1024,
                     MetadataLimits::default().max_bytes,
+                    RequestCompression {
+                        codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                            | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+                        policy: CompressionPolicy::default(),
+                        budget: &DecodedByteBudget::new(1024 * 1024).unwrap(),
+                    },
                 )
                 .await
                 .kind,
@@ -1825,6 +2012,12 @@ mod tests {
                     .with_flags(moonlight_bridge_protocol::FLAG_HAS_METADATA),
                 DEFAULT_MAX_BODY_LEN,
                 MetadataLimits::default().max_bytes,
+                RequestCompression {
+                    codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                        | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+                    policy: CompressionPolicy::default(),
+                    budget: &DecodedByteBudget::new(1024 * 1024).unwrap(),
+                },
             )
             .await;
 
@@ -1834,6 +2027,60 @@ mod tests {
         assert_eq!(metrics.snapshot().succeeded, 1);
         assert_eq!(metrics.snapshot().request_bytes, 7);
         assert_eq!(metrics.snapshot().response_bytes, 7);
+    }
+
+    #[test]
+    fn request_payload_decompresses_zstd_after_bounded_metadata_validation() {
+        let policy = moonlight_bridge_protocol::CompressionPolicy {
+            min_payload_bytes: 1,
+            min_savings_bytes: 0,
+            max_decoded_body_len: 1024 * 1024,
+            max_expansion_ratio: 256,
+            compression_level: 1,
+        };
+        let original = vec![b'x'; 4096];
+        let compressed = policy
+            .encode(
+                original.clone(),
+                moonlight_bridge_protocol::CompressionCodec::Zstd,
+            )
+            .unwrap();
+        assert_eq!(
+            compressed.codec,
+            moonlight_bridge_protocol::CompressionCodec::Zstd
+        );
+        let mut metadata = moonlight_bridge_protocol::Metadata::new();
+        metadata
+            .insert_reserved(
+                moonlight_bridge_protocol::ReservedMetadataKey::CompressionCodec,
+                vec![compressed.codec as u8],
+            )
+            .unwrap();
+        metadata
+            .insert_reserved(
+                moonlight_bridge_protocol::ReservedMetadataKey::OriginalLength,
+                compressed.original_len.to_be_bytes().to_vec(),
+            )
+            .unwrap();
+        let mut body = Vec::new();
+        metadata.encode_prefix(&mut body).unwrap();
+        body.extend_from_slice(&compressed.bytes);
+        let mut frame = Frame::new(FrameKind::Request, 1, 1, body)
+            .with_flags(moonlight_bridge_protocol::FLAG_HAS_METADATA);
+        let budget = moonlight_bridge_protocol::DecodedByteBudget::new(8192).unwrap();
+
+        let parsed = request_payload(
+            &mut frame,
+            MetadataLimits::default().max_bytes,
+            RequestCompression {
+                codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                    | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+                policy,
+                budget: &budget,
+            },
+        )
+        .unwrap();
+        assert_eq!(parsed.payload, original);
     }
 
     #[test]
@@ -2055,6 +2302,99 @@ mod tests {
             u16::from_be_bytes(response.body[..2].try_into().unwrap()),
             ErrorCode::ResourceExhausted as u16
         );
+
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Goodbye, 0, 0, Vec::new()),
+        )
+        .await
+        .unwrap();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn compressible_response_may_exceed_encoded_but_not_decoded_limit() {
+        let (mut client, server_stream) = tokio::io::duplex(8_192);
+        let client_settings = moonlight_bridge_protocol::PeerSettingsV2 {
+            max_body_len: 256,
+            max_decoded_body_len: 4_096,
+            max_metadata_len: 1_024,
+            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            max_concurrent_streams: 8,
+            initial_stream_credit: 4,
+            compression_codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+            features: SERVER_FEATURES,
+            diagnostic_features: 0,
+        };
+        let block: Vec<u8> = (0..128)
+            .map(|index| ((index * 73 + 19) % 251) as u8)
+            .collect();
+        let expected: Vec<u8> = block.iter().copied().cycle().take(4_096).collect();
+        let response_body = expected.clone();
+        let server_settings = PeerSettings::default();
+        let (events, runtime) = Server::runtime(server_settings);
+        let router = Router::builder()
+            .route(1, move |_| {
+                let response_body = response_body.clone();
+                async move { Ok(response_body) }
+            })
+            .build();
+        let task = tokio::spawn(serve_test_connection(
+            server_stream,
+            router,
+            server_settings,
+            Duration::from_secs(1),
+            events,
+            runtime,
+        ));
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Hello, 0, 0, client_settings.encode()),
+        )
+        .await
+        .unwrap();
+        read_frame(
+            &mut client,
+            moonlight_bridge_protocol::PeerSettingsV2::BODY_LEN as u32,
+        )
+        .await
+        .unwrap();
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Request, 1, 89, Vec::new()),
+        )
+        .await
+        .unwrap();
+
+        let response = read_frame(&mut client, client_settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(response.kind, FrameKind::Response);
+        assert_ne!(response.flags & FLAG_HAS_METADATA, 0);
+        let (metadata, compressed) = Metadata::decode(
+            &response.body,
+            MetadataLimits {
+                max_bytes: client_settings.max_metadata_len,
+                ..MetadataLimits::default()
+            },
+        )
+        .unwrap();
+        let original_len = metadata
+            .get(&MetadataKey::Reserved(ReservedMetadataKey::OriginalLength))
+            .unwrap();
+        let decoded = CompressionPolicy {
+            max_decoded_body_len: client_settings.max_decoded_body_len,
+            ..CompressionPolicy::default()
+        }
+        .decode(
+            CompressionCodec::Zstd,
+            compressed,
+            u32::from_be_bytes(original_len.try_into().unwrap()),
+            &DecodedByteBudget::new(8_192).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded, expected);
 
         write_frame(
             &mut client,

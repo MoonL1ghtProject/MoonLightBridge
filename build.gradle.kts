@@ -16,6 +16,15 @@ allprojects {
         mavenCentral()
     }
 
+    configurations.configureEach {
+        // Keep transitive build and Paper API dependencies above their patched versions.
+        resolutionStrategy.force(
+            "org.apache.commons:commons-lang3:3.18.0",
+            "org.codehaus.plexus:plexus-utils:3.6.1",
+            "org.apache.logging.log4j:log4j-api:2.25.5",
+        )
+    }
+
     tasks.withType<Test>().configureEach {
         failOnNoDiscoveredTests = false
     }

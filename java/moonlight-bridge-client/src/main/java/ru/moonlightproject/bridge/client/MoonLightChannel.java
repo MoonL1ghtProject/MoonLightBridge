@@ -67,7 +67,34 @@ public interface MoonLightChannel extends AutoCloseable {
         List<CompletableFuture<byte[]>> futures = requests.stream()
             .map(request -> request(request.methodId(), request.body(), request.deadline()))
             .toList();
-        return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
-            .thenApply(ignored -> futures.stream().map(CompletableFuture::join).toList());
+        CompletableFuture<List<byte[]>> result = mapFuture(
+            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)),
+            ignored -> futures.stream().map(CompletableFuture::join).toList());
+        result.whenComplete((ignored, error) -> {
+            if (result.isCancelled()) futures.forEach(future -> future.cancel(true));
+        });
+        return result;
+    }
+    /**
+     * Maps a response while propagating cancellation to its transport future.
+     * @param source transport or aggregate future
+     * @param mapper response decoder
+     * @param <S> source value type
+     * @param <T> mapped value type
+     * @return cancellable mapped future
+     */
+    static <S, T> CompletableFuture<T> mapFuture(
+        CompletableFuture<S> source, java.util.function.Function<? super S, ? extends T> mapper
+    ) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        result.whenComplete((value, error) -> { if (result.isCancelled()) source.cancel(true); });
+        source.whenComplete((value, error) -> {
+            if (error != null) result.completeExceptionally(error);
+            else if (!result.isDone()) {
+                try { result.complete(mapper.apply(value)); }
+                catch (Throwable failure) { result.completeExceptionally(failure); }
+            }
+        });
+        return result;
     }
 }

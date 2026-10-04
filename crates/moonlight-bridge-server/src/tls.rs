@@ -1,10 +1,9 @@
-use std::{
-    fs::File,
-    io::{self, BufReader},
-    path::Path,
-    sync::Arc,
+use rustls::{
+    RootCertStore, ServerConfig,
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+    server::WebPkiClientVerifier,
 };
-use tokio_rustls::rustls::{RootCertStore, ServerConfig, server::WebPkiClientVerifier};
+use std::{io, path::Path, sync::Arc};
 
 /// Loads a PEM certificate chain, private key, and client CA into an mTLS configuration.
 pub fn load_mtls_server_config(
@@ -12,8 +11,10 @@ pub fn load_mtls_server_config(
     private_key: impl AsRef<Path>,
     client_ca: impl AsRef<Path>,
 ) -> io::Result<Arc<ServerConfig>> {
-    let certificates = rustls_pemfile::certs(&mut BufReader::new(File::open(certificate_chain)?))
-        .collect::<Result<Vec<_>, _>>()?;
+    let certificates = CertificateDer::pem_file_iter(certificate_chain)
+        .map_err(pem_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(pem_error)?;
     if certificates.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -21,15 +22,12 @@ pub fn load_mtls_server_config(
         ));
     }
 
-    let key = rustls_pemfile::private_key(&mut BufReader::new(File::open(private_key)?))?
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "server private key is missing")
-        })?;
+    let key = PrivateKeyDer::from_pem_file(private_key).map_err(pem_error)?;
 
     let mut roots = RootCertStore::empty();
-    for certificate in rustls_pemfile::certs(&mut BufReader::new(File::open(client_ca)?)) {
+    for certificate in CertificateDer::pem_file_iter(client_ca).map_err(pem_error)? {
         roots
-            .add(certificate?)
+            .add(certificate.map_err(pem_error)?)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     }
     if roots.is_empty() {
@@ -47,4 +45,11 @@ pub fn load_mtls_server_config(
         .with_single_cert(certificates, key)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     Ok(Arc::new(config))
+}
+
+fn pem_error(error: rustls::pki_types::pem::Error) -> io::Error {
+    match error {
+        rustls::pki_types::pem::Error::Io(error) => error,
+        error => io::Error::new(io::ErrorKind::InvalidInput, error),
+    }
 }

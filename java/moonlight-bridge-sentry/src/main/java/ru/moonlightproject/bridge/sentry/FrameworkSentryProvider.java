@@ -10,9 +10,18 @@ import io.sentry.Sentry;
 public final class FrameworkSentryProvider implements MoonLightTelemetryProvider {
     private static final String FRAMEWORK_DSN =
         "https://53d54adb173ccd2d0cbc2ac5f3fa5495@o4511248228941824.ingest.us.sentry.io/4511286171664384";
+    private static final String DSN = System.getProperty("moonlight.bridge.telemetry.dsn",
+        System.getenv().getOrDefault("MOONLIGHT_BRIDGE_TELEMETRY_DSN", FRAMEWORK_DSN));
+    private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty(
+        "moonlight.bridge.telemetry.enabled",
+        System.getenv().getOrDefault("MOONLIGHT_BRIDGE_TELEMETRY_ENABLED", "true"))) && !DSN.isBlank();
     private static final TelemetryBuildConfig CONFIG = TelemetryBuildConfig.load();
 
     static {
+        if (ENABLED) initialize();
+    }
+
+    private static void initialize() {
         Thread thread = Thread.currentThread();
         ClassLoader previousLoader = thread.getContextClassLoader();
         // Sentry's profiling service loader also uses the thread context loader.
@@ -21,7 +30,7 @@ public final class FrameworkSentryProvider implements MoonLightTelemetryProvider
         thread.setContextClassLoader(FrameworkSentryProvider.class.getClassLoader());
         try {
             Sentry.init(options -> {
-                options.setDsn(FRAMEWORK_DSN);
+                options.setDsn(DSN);
                 options.setEnvironment(CONFIG.environment());
                 options.setRelease(CONFIG.release());
                 // MoonLightBridge makes its own cheap sampling decision before creating a transaction.
@@ -49,6 +58,7 @@ public final class FrameworkSentryProvider implements MoonLightTelemetryProvider
 
     @Override
     public MoonLightTelemetry createTelemetry() {
-        return new SentryMoonLightTelemetry(CONFIG.traceSampleRate(), CONFIG.successLogs());
+        return ENABLED ? new SentryMoonLightTelemetry(CONFIG.traceSampleRate(), CONFIG.successLogs())
+            : MoonLightTelemetry.disabled();
     }
 }

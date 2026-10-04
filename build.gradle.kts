@@ -16,6 +16,15 @@ allprojects {
         mavenCentral()
     }
 
+    configurations.configureEach {
+        // Keep transitive build and Paper API dependencies above their patched versions.
+        resolutionStrategy.force(
+            "org.apache.commons:commons-lang3:3.18.0",
+            "org.codehaus.plexus:plexus-utils:3.6.1",
+            "org.apache.logging.log4j:log4j-api:2.25.5",
+        )
+    }
+
     tasks.withType<Test>().configureEach {
         failOnNoDiscoveredTests = false
     }
@@ -152,4 +161,21 @@ tasks.register("publishJavaToMavenCentral") {
     description = "Publishes all public Java artifacts to the Maven Central Portal"
     dependsOn("verifyReleaseVersion")
     dependsOn(publishedJavaProjects.keys.map { "$it:publishAndReleaseToMavenCentral" })
+}
+
+project(":java:moonlight-bridge-client") {
+    plugins.withId("java") {
+        tasks.register<JavaExec>("tlsSecurityTest") {
+            group = "verification"
+            dependsOn("testClasses")
+            classpath = project.extensions.getByType<SourceSetContainer>().getByName("test").runtimeClasspath
+            mainClass = "ru.moonlightproject.bridge.client.TlsSecurityMain"
+            doFirst {
+                systemProperty("javax.net.ssl.keyStore", providers.gradleProperty("moonlightBridgeKeyStore").get())
+                systemProperty("javax.net.ssl.keyStorePassword", "changeit")
+                systemProperty("javax.net.ssl.trustStore", providers.gradleProperty("moonlightBridgeTrustStore").get())
+                systemProperty("javax.net.ssl.trustStorePassword", "changeit")
+            }
+        }
+    }
 }

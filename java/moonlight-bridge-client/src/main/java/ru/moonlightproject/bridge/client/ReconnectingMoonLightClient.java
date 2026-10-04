@@ -99,7 +99,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
      */
     public static ReconnectingMoonLightClient start(String endpoint) throws IOException {
         return new ReconnectingMoonLightClient(
-            endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), MoonLightTelemetry.automatic(), false);
+            endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), deferredAutomaticTelemetry(), false);
     }
 
     /**
@@ -112,7 +112,29 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
      */
     public static ReconnectingMoonLightClient start(String endpoint, ReconnectPolicy policy) throws IOException {
         return new ReconnectingMoonLightClient(
-            endpoint, policy, automaticPerformance(endpoint), MoonLightTelemetry.automatic(), false);
+            endpoint, policy, automaticPerformance(endpoint), deferredAutomaticTelemetry(), false);
+    }
+
+    private static MoonLightTelemetry deferredAutomaticTelemetry() {
+        return new MoonLightTelemetry() {
+            private final AtomicReference<MoonLightTelemetry> delegate = new AtomicReference<>();
+
+            private MoonLightTelemetry delegate() {
+                MoonLightTelemetry current = delegate.get();
+                if (current != null) return current;
+                MoonLightTelemetry loaded = MoonLightTelemetry.automatic();
+                return delegate.compareAndSet(null, loaded) ? loaded : delegate.get();
+            }
+
+            @Override public RequestObservation startRequest(RequestInfo request) {
+                return delegate().startRequest(request);
+            }
+            @Override public FunctionObservation startFunction(String name) {
+                return delegate().startFunction(name);
+            }
+            @Override public void connectionOpened() { delegate().connectionOpened(); }
+            @Override public void connectionClosed(Throwable cause) { delegate().connectionClosed(cause); }
+        };
     }
 
     /**

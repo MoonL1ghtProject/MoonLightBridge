@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-codegen"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-example-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "moonlight-bridge-codegen",
  "moonlight-bridge-protocol",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-example-backend"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "moonlight-bridge-example-api",
  "moonlight-bridge-sentry",
@@ -812,11 +812,11 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-protocol"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "moonlight-bridge-sentry"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "moonlight-bridge-server",
  "sentry",
@@ -826,12 +826,12 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures-core",
  "futures-util",
  "moonlight-bridge-protocol",
- "rustls-pemfile",
+ "rustls",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -839,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-test-plugin-backend"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "moonlight-bridge-example-api",
  "moonlight-bridge-sentry",
@@ -1437,9 +1437,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.44"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -1461,15 +1461,6 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]

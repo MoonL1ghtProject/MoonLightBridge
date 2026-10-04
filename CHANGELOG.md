@@ -5,6 +5,21 @@ user-visible framework changes; low-level refactors stay in the Git history.
 
 ## Unreleased
 
+## 0.4.0 — Resource limits and lifecycle hardening
+
+- Bounded server connection admission, frame memory and I/O lifetimes; made blocked-writer shutdown finite.
+- Made idempotency capacity strict, retained results from completion time, and surfaced overload/indeterminate operation outcomes without replaying uncertain mutations.
+- Rejected server handshake settings that exceed client limits or advertise unrequested features.
+- Isolated callback failures, serialized stream completion, and cancelled completed-stream timers.
+- Bounded pooled/outgoing buffer memory and prevented expired queued calls from being written.
+- Preserved cancellation through generated typed calls and batches.
+- Removed raw exception content from embedded telemetry; added runtime opt-out and destination override.
+- Deferred automatic telemetry discovery to the reconnect supervisor so asynchronous startup remains non-blocking.
+- Updated rustls to 0.23.45 and replaced the unmaintained rustls-pemfile wrapper.
+- Added transport/security regression checks and fixed backend readiness in integration tests.
+
+This minor release changes the Rust idempotency result error type to represent overload and uncertain outcomes explicitly. Regenerate typed Java clients to obtain cancellation propagation. Wire protocol version 1 is unchanged.
+
 ## 0.3.0 — Streaming and multi-backend channels
 
 - Added negotiated, credit-based server-streaming RPCs with generated Rust and Java APIs.

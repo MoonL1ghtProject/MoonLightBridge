@@ -28,7 +28,7 @@ out of order. The optional Paper/Folia adapter keeps Minecraft world access on t
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.3.0"
+moonlight-bridge-server = "0.4.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -154,9 +154,9 @@ again:
 
 ```rust
 use std::time::Duration;
-use moonlight_bridge_server::idempotency::IdempotencyCache;
+use moonlight_bridge_server::idempotency::{IdempotencyCache, IdempotencyError};
 
-# async fn example() -> Result<(), String> {
+# async fn example() -> Result<(), IdempotencyError<String>> {
 let cache = IdempotencyCache::<String, u64, String>::new(10_000, Duration::from_secs(300));
 let result = cache.execute("operation-uuid".to_owned(), || async {
     // Perform the mutation exactly once for this process/cache lifetime.

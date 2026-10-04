@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -25,7 +25,7 @@ categories = ["network-programming", "asynchronous"]
 [workspace.dependencies]
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "io-util", "sync", "time"] }
 tokio-rustls = "0.26.5"
-rustls-pemfile = "2.2"
+rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12"] }
 prost = "0.14.4"
 prost-build = "0.14.4"
 prost-types = "0.14.4"

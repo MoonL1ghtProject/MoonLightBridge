@@ -186,10 +186,30 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
     }
 
     @Override
+    public CompletableFuture<byte[]> request(
+        int methodId, byte[] body, Duration deadline, RpcPolicy policy
+    ) {
+        MoonLightClient client = active.get();
+        if (client == null) {
+            return CompletableFuture.failedFuture(new BackendUnavailableException(endpoint));
+        }
+        return client.request(methodId, body, deadline, policy);
+    }
+
+    @Override
     public MoonLightServerStream<byte[]> serverStream(int methodId, byte[] body, Duration deadline) {
         MoonLightClient client = active.get();
         if (client == null) throw new CompletionException(new BackendUnavailableException(endpoint));
         return client.serverStream(methodId, body, deadline);
+    }
+
+    @Override
+    public MoonLightServerStream<byte[]> serverStream(
+        int methodId, byte[] body, Duration deadline, RpcPolicy policy
+    ) {
+        MoonLightClient client = active.get();
+        if (client == null) throw new CompletionException(new BackendUnavailableException(endpoint));
+        return client.serverStream(methodId, body, deadline, policy);
     }
 
     public CompletableFuture<Void> ping(Duration timeout) {

@@ -95,8 +95,17 @@ Payload bodies are never attached to operational events.
 ## Deadlines, batches, and errors
 
 Generated methods return `CompletableFuture<Response>`. `withDeadline(duration)` creates a client
-view with another default deadline. Generated `methodBatch(requests)` methods preserve request order
-while responses complete independently over the multiplexed connection.
+view whose deadline can only tighten the limit declared by that method's `.proto` policy. Generated
+clients expose immutable `METHOD_POLICY` constants with timeout, retry safety, request and response
+limits, required scopes, compression preference, and trace sampling rate. The hot request path uses
+these constants directly and does not perform Protobuf reflection. Generated `methodBatch(requests)`
+methods preserve request order while responses complete independently over the multiplexed
+connection.
+
+`COMPRESSION_MODE_REQUIRED` fails the call before sending when Zstandard was not negotiated;
+`COMPRESSION_MODE_DISABLED` sends that method without compression. `PREFER` and `DEFAULT` retain the
+negotiated size and savings thresholds. Generated clients validate decoded message limits on both
+sides of the call.
 
 Batch size is not fixed at 32. The writer coalesces frames already available, up to active frame and
 byte limits, and sends immediately when a burst reaches those limits. It does not intentionally wait

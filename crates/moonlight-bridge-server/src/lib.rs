@@ -85,6 +85,15 @@ where
 {
     Box::pin(stream.map(move |item| item.map(&mut mapper)))
 }
+/// Fallibly maps successful stream items while preserving existing handler failures.
+pub fn try_map_server_stream<T, U, F>(stream: ServerStream<T>, mut mapper: F) -> ServerStream<U>
+where
+    T: 'static,
+    U: 'static,
+    F: FnMut(T) -> Result<U, HandlerError> + Send + 'static,
+{
+    Box::pin(stream.map(move |item| item.and_then(&mut mapper)))
+}
 /// Creates a server stream from a finite iterator.
 pub fn iter_server_stream<T, I>(items: I) -> ServerStream<T>
 where

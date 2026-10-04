@@ -47,7 +47,7 @@ public final class HardeningMain {
     }
     public static void main(String[] args) throws Exception {
         var failures = new java.util.ArrayList<Throwable>();
-        for (String test : new String[]{"welcome", "terminal", "callback", "event", "batch", "compression", "compression-limit", "compression-wire-limit"}) {
+        for (String test : new String[]{"welcome", "terminal", "callback", "event", "batch", "compression", "compression-limit", "compression-wire-limit", "rpc-policy"}) {
             try { run(test); } catch(Throwable e) { failures.add(e); e.printStackTrace(); }
         }
         if (!failures.isEmpty()) throw new AssertionError("hardening failures: " + failures.size());
@@ -177,6 +177,58 @@ public final class HardeningMain {
                 }
             }
         }
+        if(test.equals("rpc-policy")) {
+            var policy=new RpcPolicy(
+                Duration.ofSeconds(2),Duration.ZERO,
+                new RpcPolicy.Retry(3,Duration.ofMillis(25),Duration.ofMillis(250),2000),
+                RpcPolicy.Idempotency.IDEMPOTENT,4096,8192,
+                java.util.Set.of("player.read"),RpcPolicy.Compression.PREFER,25000);
+            check(policy.effectiveDeadline(Duration.ofSeconds(5)).equals(Duration.ofSeconds(2)),
+                "RPC deadline override cannot weaken schema timeout");
+            check(policy.effectiveDeadline(Duration.ofMillis(500)).equals(Duration.ofMillis(500)),
+                "RPC deadline override may tighten schema timeout");
+            expectIllegalArgument(() -> new RpcPolicy(
+                Duration.ZERO,Duration.ZERO,policy.retry(),policy.idempotency(),4096,8192,
+                java.util.Set.of(),policy.compression(),0));
+            check(true,"RPC policy rejects unsafe ranges");
+
+            var required=new RpcPolicy(policy.timeout(),policy.idleTimeout(),policy.retry(),
+                policy.idempotency(),policy.maxRequestBytes(),policy.maxResponseBytes(),
+                policy.requiredScopes(),RpcPolicy.Compression.REQUIRED,policy.traceSamplePerMillion());
+            try(var ss=new ServerSocket(0)) {
+                serve(ss,8192,8192,1,(in,out)->{while(read(in).kind()!=21) { }});
+                try(var c=client(ss)) {
+                    try {
+                        c.request(1,new byte[32],Duration.ofSeconds(1),required).get();
+                        throw new AssertionError("required compression was not enforced");
+                    } catch(ExecutionException expected) {
+                        check(expected.getCause() instanceof IOException,
+                            "required RPC compression fails without negotiation");
+                    }
+                }
+            }
+
+            var disabledSeen=new AtomicBoolean();
+            var disabled=new RpcPolicy(policy.timeout(),policy.idleTimeout(),policy.retry(),
+                policy.idempotency(),policy.maxRequestBytes(),policy.maxResponseBytes(),
+                policy.requiredScopes(),RpcPolicy.Compression.DISABLED,policy.traceSamplePerMillion());
+            try(var ss=new ServerSocket(0)) {
+                serve(ss,8192,8192,3,(in,out)->{
+                    Frame request=read(in);
+                    var metadata=MoonLightMetadata.decode(
+                        request.body(),new MoonLightMetadata.Limits(16*1024,64,8*1024));
+                    disabledSeen.set(metadata.metadata().get(
+                        MoonLightMetadata.ReservedKey.COMPRESSION_CODEC)==null
+                        && metadata.payload().length==4096);
+                    write(out,2,request.method(),request.id(),new byte[0]);
+                    while(read(in).kind()!=21) { }
+                });
+                try(var c=client(ss)) {
+                    c.request(1,new byte[4096],Duration.ofSeconds(1),disabled).get();
+                    check(disabledSeen.get(),"disabled RPC compression bypasses negotiated codec");
+                }
+            }
+        }
     }
 
     interface IoAction { void run() throws Exception; }
@@ -185,5 +237,11 @@ public final class HardeningMain {
             action.run();
             throw new AssertionError("compression failure was not rejected");
         } catch (IOException expected) { }
+    }
+    static void expectIllegalArgument(IoAction action) throws Exception {
+        try {
+            action.run();
+            throw new AssertionError("invalid RPC policy was not rejected");
+        } catch (IllegalArgumentException expected) { }
     }
 }

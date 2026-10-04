@@ -3,6 +3,7 @@ package ru.moonlightproject.bridge.gradle;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import org.gradle.api.Plugin;
@@ -30,10 +31,32 @@ public final class MoonLightBridgePlugin implements Plugin<Project> {
         extension.getProtocExecutable().convention("protoc");
         extension.getCodegenExecutable().convention("moonlight-bridge-codegen");
 
+        var bundledProtoRoot = project.getLayout().getBuildDirectory().dir("moonlightBridge/includes");
+        var bundledOptions = bundledProtoRoot.map(directory -> directory.file(
+            "moonlight/bridge/options/v1/options.proto"));
+        var prepareOptions = project.getTasks().register("prepareMoonLightOptions", task -> {
+            task.setGroup("moonlight bridge");
+            task.setDescription("Extracts the bundled MoonLightBridge RPC option schema");
+            task.getOutputs().file(bundledOptions);
+            task.doLast(ignored -> {
+                File output = bundledOptions.get().getAsFile();
+                createDirectories(output.getParentFile());
+                try (var source = MoonLightBridgePlugin.class.getResourceAsStream(
+                    "/moonlight-bridge-proto/moonlight/bridge/options/v1/options.proto")) {
+                    if (source == null) throw new IOException("bundled options.proto is missing");
+                    Files.copy(source, output.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException error) {
+                    throw new GradleException("Cannot extract MoonLightBridge options.proto", error);
+                }
+            });
+        });
+
         var descriptor = project.getTasks().register("generateMoonLightDescriptor", Exec.class, task -> {
             task.setGroup("moonlight bridge");
             task.setDescription("Compiles protobuf sources into a descriptor set");
+            task.dependsOn(prepareOptions);
             task.getInputs().dir(extension.getProtoDirectory());
+            task.getInputs().file(bundledOptions);
             task.getOutputs().file(extension.getDescriptorFile());
             task.getOutputs().dir(extension.getGeneratedProtoSources());
             task.doFirst(ignored -> {
@@ -43,11 +66,17 @@ public final class MoonLightBridgePlugin implements Plugin<Project> {
                 List<String> command = new ArrayList<>();
                 command.add(extension.getProtocExecutable().get());
                 command.add("--proto_path=" + extension.getProtoDirectory().get().getAsFile());
+                command.add("--proto_path=" + bundledProtoRoot.get().getAsFile());
                 command.add("--include_imports");
                 command.add("--java_out=" + extension.getGeneratedProtoSources().get().getAsFile());
                 command.add("--descriptor_set_out=" + output);
-                project.fileTree(extension.getProtoDirectory()).matching(pattern -> pattern.include("**/*.proto"))
-                    .getFiles().stream().sorted().forEach(file -> command.add(file.getAbsolutePath()));
+                List<File> sources = project.fileTree(extension.getProtoDirectory())
+                    .matching(pattern -> pattern.include("**/*.proto"))
+                    .getFiles().stream().sorted().toList();
+                sources.forEach(file -> command.add(file.getAbsolutePath()));
+                boolean suppliesOptions = sources.stream().anyMatch(file -> file.toPath().endsWith(
+                    "moonlight/bridge/options/v1/options.proto"));
+                if (!suppliesOptions) command.add(bundledOptions.get().getAsFile().getAbsolutePath());
                 task.commandLine(command);
             });
         });

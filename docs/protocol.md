@@ -64,6 +64,20 @@ Reserved keys carry deadlines, trace context, idempotency and authorization data
 state, retry identity, event cursors, content type, and anonymous diagnostic correlation. Payloads
 and authorization values are never telemetry fields.
 
+## RPC policies
+
+Each RPC may declare `(moonlight.bridge.options.v1.rpc_policy)` in its `.proto` method options.
+The policy contains the logical-call timeout, stream idle timeout, bounded retry and backoff,
+idempotency class, decoded request and response limits, required authorization scopes, compression
+mode, and trace sampling rate. Java and Rust generators compile these values into constants; the
+runtime does not use Protobuf reflection on the request path.
+
+The schema compiler rejects unsafe or ambiguous policies. Timeouts, message sizes, retry counts,
+backoff values, scopes, and sampling rates must remain inside bounded ranges. Transparent retries
+require an explicit read-only, idempotent, or idempotency-key declaration, and streaming calls
+cannot enable transparent retry. A caller may tighten a generated deadline but cannot extend it.
+Policy changes are recorded in `schema.lock` and require an intentional compatibility review.
+
 ## Compression
 
 Codec bit `0` represents `none`; codec bit `1` represents Zstandard. An application frame may use
@@ -107,6 +121,6 @@ unrelated multiplexed calls.
 - payload codec;
 - concrete payload codec;
 - automatic endpoint discovery;
-- application authorization policy.
+- the application-specific meaning of authorization scopes.
 
 These features must extend the header semantics without changing its size.

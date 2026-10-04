@@ -26,3 +26,9 @@ tasks.withType<JavaCompile>().configureEach {
     options.release = 21
     options.encoding = "UTF-8"
 }
+
+tasks.processResources {
+    from(rootProject.file("proto/moonlight/bridge/options/v1/options.proto")) {
+        into("moonlight-bridge-proto/moonlight/bridge/options/v1")
+    }
+}

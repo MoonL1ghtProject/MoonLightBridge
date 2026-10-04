@@ -414,7 +414,21 @@ public final class MoonLightClient implements MoonLightChannel {
     public Throwable lastFailure() { return lastFailure.get(); }
 
     public CompletableFuture<byte[]> request(int methodId, byte[] body, Duration deadline) {
+        return request(methodId, body, deadline, null);
+    }
+
+    @Override
+    public CompletableFuture<byte[]> request(
+        int methodId, byte[] body, Duration deadline, RpcPolicy policy
+    ) {
         if (closed.get()) return CompletableFuture.failedFuture(new IOException("MoonLightBridge client is closed"));
+        if (policy != null) {
+            if (body.length > policy.maxRequestBytes()) {
+                return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("request exceeds generated RPC policy"));
+            }
+            deadline = policy.effectiveDeadline(deadline);
+        }
         long timeoutMillis = deadline.toMillis();
         if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("deadline must be between 1ms and 2147483647ms"));
@@ -443,7 +457,8 @@ public final class MoonLightClient implements MoonLightChannel {
         PendingRequest pendingRequest = new PendingRequest(RESPONSE, methodId, true, future);
         pending.put(requestId, pendingRequest);
         try {
-            enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body);
+            enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
+                policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression());
         } catch (IOException error) {
             future.completeExceptionally(error);
         }
@@ -467,10 +482,23 @@ public final class MoonLightClient implements MoonLightChannel {
 
     @Override
     public MoonLightServerStream<byte[]> serverStream(int methodId, byte[] body, Duration deadline) {
+        return serverStream(methodId, body, deadline, null);
+    }
+
+    @Override
+    public MoonLightServerStream<byte[]> serverStream(
+        int methodId, byte[] body, Duration deadline, RpcPolicy policy
+    ) {
         if ((negotiatedFeatures & FEATURE_SERVER_STREAMING) == 0) {
             throw new UnsupportedOperationException("server did not negotiate streaming support");
         }
         if (closed.get()) throw new CompletionException(new IOException("MoonLightBridge client is closed"));
+        if (policy != null) {
+            if (body.length > policy.maxRequestBytes()) {
+                throw new IllegalArgumentException("request exceeds generated RPC policy");
+            }
+            deadline = policy.effectiveDeadline(deadline);
+        }
         long timeoutMillis = deadline.toMillis();
         if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("deadline must be between 1ms and 2147483647ms");
@@ -512,7 +540,8 @@ public final class MoonLightClient implements MoonLightChannel {
         reference.set(stream);
         streams.put(requestId, new StreamRequest(methodId, stream, responseBytes));
         try {
-            enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body);
+            enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
+                policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression());
         } catch (IOException error) {
             stream.fail(error);
             return stream;
@@ -765,7 +794,8 @@ public final class MoonLightClient implements MoonLightChannel {
     }
 
     private void enqueueRequestFrame(
-        int methodId, long requestId, int timeoutMillis, MoonLightTraceContext traceContext, byte[] body
+        int methodId, long requestId, int timeoutMillis, MoonLightTraceContext traceContext,
+        byte[] body, RpcPolicy.Compression compression
     )
         throws IOException {
         MoonLightMetadata.Builder metadata = MoonLightMetadata.builder()
@@ -776,7 +806,12 @@ public final class MoonLightClient implements MoonLightChannel {
             traceContext.writeTo(trace);
             metadata.putReserved(MoonLightMetadata.ReservedKey.TRACE_CONTEXT, trace.array());
         }
-        MoonLightCompression.Encoded compressed = (negotiatedCompressionCodecs & 2) != 0
+        boolean zstdNegotiated = (negotiatedCompressionCodecs & 2) != 0;
+        if (compression == RpcPolicy.Compression.REQUIRED && !zstdNegotiated) {
+            throw new IOException("generated RPC policy requires zstd compression");
+        }
+        MoonLightCompression.Encoded compressed = zstdNegotiated
+            && compression != RpcPolicy.Compression.DISABLED
             ? MoonLightCompression.encode(body, MoonLightCompression.Codec.ZSTD, compressionOptions)
             : null;
         byte[] encodedBody = compressed == null ? body : compressed.internalBytes();

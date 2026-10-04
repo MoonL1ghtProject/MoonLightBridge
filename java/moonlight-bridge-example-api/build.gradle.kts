@@ -22,7 +22,8 @@ val descriptorFile = layout.buildDirectory.file("generated/descriptors/example.p
 
 val generateProto = tasks.register<Exec>("generateProto") {
     val schema = rootProject.file("proto/moonlight/bridge/example/v1/echo.proto")
-    inputs.file(schema)
+    val optionsSchema = rootProject.file("proto/moonlight/bridge/options/v1/options.proto")
+    inputs.files(schema, optionsSchema)
     outputs.dir(generatedProtoDirectory)
     outputs.file(descriptorFile)
     doFirst {
@@ -36,6 +37,7 @@ val generateProto = tasks.register<Exec>("generateProto") {
         "--descriptor_set_out=${descriptorFile.get().asFile}",
         "--include_imports",
         schema.absolutePath,
+        optionsSchema.absolutePath,
     )
 }
 

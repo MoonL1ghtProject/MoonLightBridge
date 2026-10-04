@@ -18,6 +18,25 @@ public interface MoonLightChannel extends AutoCloseable {
     CompletableFuture<byte[]> request(int methodId, byte[] body, Duration deadline);
 
     /**
+     * Sends a request under a generated policy, tightening the caller deadline and size limit.
+     *
+     * @param methodId stable generated method identifier
+     * @param body encoded request payload
+     * @param deadline caller deadline cap
+     * @param policy generated method policy
+     * @return future containing the encoded response payload
+     */
+    default CompletableFuture<byte[]> request(
+        int methodId, byte[] body, Duration deadline, RpcPolicy policy
+    ) {
+        if (body.length > policy.maxRequestBytes()) {
+            return CompletableFuture.failedFuture(
+                new IllegalArgumentException("request exceeds generated RPC policy"));
+        }
+        return request(methodId, body, policy.effectiveDeadline(deadline));
+    }
+
+    /**
      * Opens a credit-controlled server-streaming RPC.
      *
      * @param methodId stable generated method identifier
@@ -27,6 +46,23 @@ public interface MoonLightChannel extends AutoCloseable {
      */
     default MoonLightServerStream<byte[]> serverStream(int methodId, byte[] body, Duration deadline) {
         throw new UnsupportedOperationException("server streaming is not supported");
+    }
+    /**
+     * Opens a server stream under a generated policy.
+     *
+     * @param methodId stable generated method identifier
+     * @param body encoded request payload
+     * @param deadline caller deadline cap
+     * @param policy generated method policy
+     * @return credit-controlled response stream
+     */
+    default MoonLightServerStream<byte[]> serverStream(
+        int methodId, byte[] body, Duration deadline, RpcPolicy policy
+    ) {
+        if (body.length > policy.maxRequestBytes()) {
+            throw new IllegalArgumentException("request exceeds generated RPC policy");
+        }
+        return serverStream(methodId, body, policy.effectiveDeadline(deadline));
     }
     /**
      * Performs a transport liveness check within {@code timeout}.
@@ -65,7 +101,9 @@ public interface MoonLightChannel extends AutoCloseable {
      */
     default CompletableFuture<List<byte[]>> requestBatch(List<MoonLightRequest> requests) {
         List<CompletableFuture<byte[]>> futures = requests.stream()
-            .map(request -> request(request.methodId(), request.body(), request.deadline()))
+            .map(request -> request.policy() == null
+                ? request(request.methodId(), request.body(), request.deadline())
+                : request(request.methodId(), request.body(), request.deadline(), request.policy()))
             .toList();
         CompletableFuture<List<byte[]>> result = mapFuture(
             CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)),

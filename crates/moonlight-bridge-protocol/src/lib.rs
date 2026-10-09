@@ -127,6 +127,8 @@ pub enum FrameKind {
     StreamEnd = 26,
     /// Client-to-server delivery-credit update for a stream.
     StreamCredit = 27,
+    /// Server admission-stop notification; existing calls may still complete.
+    GoAway = 28,
 }
 
 impl TryFrom<u8> for FrameKind {
@@ -149,6 +151,7 @@ impl TryFrom<u8> for FrameKind {
             25 => Ok(Self::StreamItem),
             26 => Ok(Self::StreamEnd),
             27 => Ok(Self::StreamCredit),
+            28 => Ok(Self::GoAway),
             other => Err(ProtocolError::UnknownKind(other)),
         }
     }

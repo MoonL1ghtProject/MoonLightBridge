@@ -26,14 +26,16 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpListener,
-    sync::{Mutex, OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot},
+    sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot, watch},
     task::AbortHandle,
     time::timeout,
 };
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 use tracing::Instrument;
 
+mod drain;
 pub mod idempotency;
+pub use drain::ServerHandle;
 mod middleware;
 use middleware::CancellationGuard;
 pub use middleware::{
@@ -197,6 +199,10 @@ struct RuntimeState {
     max_in_flight: u32,
     compression_policy: CompressionPolicy,
     decoded_byte_budget: DecodedByteBudget,
+    draining: AtomicBool,
+    drain_tx: watch::Sender<bool>,
+    force_drain_tx: watch::Sender<bool>,
+    state_changed: Notify,
     started: Instant,
 }
 
@@ -205,6 +211,7 @@ struct ConnectionGuard(Arc<RuntimeState>);
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         self.0.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.0.state_changed.notify_waiters();
     }
 }
 
@@ -213,6 +220,7 @@ struct RequestGuard(Arc<RuntimeState>);
 impl Drop for RequestGuard {
     fn drop(&mut self) {
         self.0.active_requests.fetch_sub(1, Ordering::Relaxed);
+        self.0.state_changed.notify_waiters();
     }
 }
 
@@ -1078,6 +1086,8 @@ enum Listener {
 
 impl Server {
     fn runtime(settings: PeerSettings) -> (EventHub, Arc<RuntimeState>) {
+        let (drain_tx, _) = watch::channel(false);
+        let (force_drain_tx, _) = watch::channel(false);
         (
             EventHub::default(),
             Arc::new(RuntimeState {
@@ -1091,6 +1101,10 @@ impl Server {
                 },
                 decoded_byte_budget: DecodedByteBudget::new(64 * 1024 * 1024)
                     .expect("non-zero decoded byte budget"),
+                draining: AtomicBool::new(false),
+                drain_tx,
+                force_drain_tx,
+                state_changed: Notify::new(),
                 started: Instant::now(),
             }),
         )
@@ -1203,14 +1217,29 @@ impl Server {
         HealthHandle(self.runtime.clone())
     }
 
+    /// Returns a handle that can stop admission and await graceful shutdown.
+    pub fn handle(&self) -> ServerHandle {
+        ServerHandle::new(self.runtime.clone())
+    }
+
     /// Runs the accept loop until an unrecoverable listener error occurs.
     pub async fn run(self) -> io::Result<()> {
-        self.runtime.ready.store(true, Ordering::Relaxed);
+        if self.runtime.draining.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.runtime.ready.store(true, Ordering::Release);
         let connection_permits = Arc::new(Semaphore::new(self.limits.max_connections));
         let request_bytes = Arc::new(Semaphore::new(self.limits.max_buffered_request_bytes));
+        let mut drain_rx = self.runtime.drain_tx.subscribe();
         match self.listener {
             Listener::Tcp(listener) => loop {
-                let (stream, _) = listener.accept().await?;
+                let (stream, _) = tokio::select! {
+                    accepted = listener.accept() => accepted?,
+                    changed = drain_rx.changed() => {
+                        if changed.is_err() || *drain_rx.borrow() { return Ok(()); }
+                        continue;
+                    }
+                };
                 stream.set_nodelay(true)?;
                 let router = self.router.clone();
                 let settings = self.settings;
@@ -1245,7 +1274,13 @@ impl Server {
                 });
             },
             Listener::Tls(listener, acceptor) => loop {
-                let (stream, _) = listener.accept().await?;
+                let (stream, _) = tokio::select! {
+                    accepted = listener.accept() => accepted?,
+                    changed = drain_rx.changed() => {
+                        if changed.is_err() || *drain_rx.borrow() { return Ok(()); }
+                        continue;
+                    }
+                };
                 stream.set_nodelay(true)?;
                 let acceptor = acceptor.clone();
                 let router = self.router.clone();
@@ -1299,7 +1334,13 @@ impl Server {
             },
             #[cfg(unix)]
             Listener::Unix(listener) => loop {
-                let (stream, _) = listener.accept().await?;
+                let (stream, _) = tokio::select! {
+                    accepted = listener.accept() => accepted?,
+                    changed = drain_rx.changed() => {
+                        if changed.is_err() || *drain_rx.borrow() { return Ok(()); }
+                        continue;
+                    }
+                };
                 let router = self.router.clone();
                 let settings = self.settings;
                 let hello_timeout = self.hello_timeout;
@@ -1410,6 +1451,10 @@ where
     let active: ActiveRequests = Arc::new(Mutex::new(HashMap::new()));
     let permits = Arc::new(Semaphore::new(negotiated.max_in_flight as usize));
     let mut event_rx = events.sender.subscribe();
+    let mut drain_rx = runtime.drain_tx.subscribe();
+    let mut force_drain_rx = runtime.force_drain_tx.subscribe();
+    let active_changed = Arc::new(Notify::new());
+    let mut draining = *drain_rx.borrow();
     let connection_compression_policy = CompressionPolicy {
         max_decoded_body_len: negotiated.max_decoded_body_len,
         ..runtime.compression_policy
@@ -1487,6 +1532,12 @@ where
         Ok::<(), io::Error>(())
     });
 
+    if draining {
+        responses_tx
+            .send(Frame::new(FrameKind::GoAway, 0, 0, Vec::new()))
+            .await
+            .map_err(channel_closed)?;
+    }
     let connection_result = loop {
         let buffered = tokio::select! {
             result = frames_rx.recv() => match result {
@@ -1520,7 +1571,34 @@ where
                     }
                     Err(broadcast::error::RecvError::Closed) => continue,
                 }
-            }
+            },
+            changed = drain_rx.changed(), if !draining => {
+                if changed.is_ok() && *drain_rx.borrow() {
+                    draining = true;
+                    if responses_tx.send(Frame::new(FrameKind::GoAway, 0, 0, Vec::new())).await.is_err() {
+                        break Err(io::Error::new(io::ErrorKind::BrokenPipe, "response writer stopped"));
+                    }
+                    if active.lock().await.is_empty() {
+                        let _ = responses_tx.send(Frame::new(FrameKind::Goodbye, 0, 0, Vec::new())).await;
+                        break Ok(());
+                    }
+                }
+                continue;
+            },
+            _ = active_changed.notified(), if draining => {
+                if active.lock().await.is_empty() {
+                    let _ = responses_tx.send(Frame::new(FrameKind::Goodbye, 0, 0, Vec::new())).await;
+                    break Ok(());
+                }
+                continue;
+            },
+            changed = force_drain_rx.changed() => {
+                if changed.is_err() || *force_drain_rx.borrow() {
+                    let _ = responses_tx.send(Frame::new(FrameKind::Goodbye, 0, 0, Vec::new())).await;
+                    break Ok(());
+                }
+                continue;
+            },
         };
         let BufferedFrame {
             frame,
@@ -1528,6 +1606,23 @@ where
         } = buffered;
         match frame.kind {
             FrameKind::Request => {
+                if draining {
+                    if responses_tx
+                        .send(error_frame(
+                            &frame,
+                            ErrorCode::Unavailable,
+                            "server connection is draining",
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        break Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "response writer stopped",
+                        ));
+                    }
+                    continue;
+                }
                 if frame.request_id == 0 {
                     break Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -1553,6 +1648,7 @@ where
                 let router = router.clone();
                 let responses_tx = responses_tx.clone();
                 let active_for_task = active.clone();
+                let active_changed_for_task = active_changed.clone();
                 let request_id = frame.request_id;
                 let runtime_for_task = runtime.clone();
                 let peer_identity = peer_identity.clone();
@@ -1627,6 +1723,7 @@ where
                         let _ = responses_tx.send(response).await;
                     }
                     active_for_task.lock().await.remove(&request_id);
+                    active_changed_for_task.notify_one();
                 });
                 let mut active_requests = active.lock().await;
                 if active_requests.contains_key(&request_id) {
@@ -1650,6 +1747,7 @@ where
             FrameKind::Cancel => {
                 if let Some(request) = active.lock().await.remove(&frame.request_id) {
                     request.task.abort();
+                    active_changed.notify_one();
                 }
             }
             FrameKind::StreamCredit => {
@@ -2313,6 +2411,176 @@ mod tests {
         let _ = task.await;
 
         assert!(cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn begin_drain_immediately_clears_readiness() {
+        let settings = PeerSettings::default();
+        let (_, runtime) = Server::runtime(settings);
+        runtime.ready.store(true, Ordering::Relaxed);
+        let handle = ServerHandle::new(runtime);
+
+        assert!(handle.begin_drain());
+        assert!(!handle.health().snapshot().ready);
+        assert!(!handle.begin_drain(), "drain transition must happen once");
+    }
+
+    #[tokio::test]
+    async fn server_drain_completes_existing_call_and_rejects_new_calls() {
+        let (mut client, stream) = tokio::io::duplex(4096);
+        let settings = PeerSettings {
+            max_in_flight: 2,
+            ..PeerSettings::default()
+        };
+        let (events, runtime) = Server::runtime(settings);
+        let handle = ServerHandle::new(runtime.clone());
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let entered_tx = Arc::new(StdMutex::new(Some(entered_tx)));
+        let (release_tx, release_rx) = oneshot::channel();
+        let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+        let router = Router::builder()
+            .route(1, move |body| {
+                let entered_tx = entered_tx.clone();
+                let release_rx = release_rx.clone();
+                async move {
+                    if let Some(sender) = entered_tx.lock().unwrap().take() {
+                        let _ = sender.send(());
+                    }
+                    if let Some(receiver) = release_rx.lock().await.take() {
+                        let _ = receiver.await;
+                    }
+                    Ok(body)
+                }
+            })
+            .build();
+        let task = tokio::spawn(serve_test_connection(
+            stream,
+            router,
+            settings,
+            Duration::from_secs(1),
+            events,
+            runtime,
+        ));
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Hello, 0, 0, settings.encode()),
+        )
+        .await
+        .unwrap();
+        read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Request, 1, 41, b"existing".to_vec()),
+        )
+        .await
+        .unwrap();
+        entered_rx.await.unwrap();
+
+        assert!(handle.begin_drain());
+        let goaway = read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(goaway.kind, FrameKind::GoAway);
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Request, 1, 42, b"new".to_vec()),
+        )
+        .await
+        .unwrap();
+        let rejected = read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(rejected.kind, FrameKind::Error);
+        assert_eq!(
+            ErrorCode::try_from(u16::from_be_bytes(rejected.body[..2].try_into().unwrap()))
+                .unwrap(),
+            ErrorCode::Unavailable
+        );
+
+        let _ = release_tx.send(());
+        let response = read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(response.kind, FrameKind::Response);
+        assert_eq!(response.request_id, 41);
+        let goodbye = read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(goodbye.kind, FrameKind::Goodbye);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn drain_timeout_cancels_stuck_requests_and_releases_permits() {
+        let (mut client, stream) = tokio::io::duplex(4096);
+        let settings = PeerSettings::default();
+        let (events, runtime) = Server::runtime(settings);
+        let handle = ServerHandle::new(runtime.clone());
+        let router = Router::builder()
+            .route(1, |_| async {
+                std::future::pending::<Result<Vec<u8>, HandlerError>>().await
+            })
+            .build();
+        let task = tokio::spawn(serve_test_connection(
+            stream,
+            router,
+            settings,
+            Duration::from_secs(1),
+            events,
+            runtime,
+        ));
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Hello, 0, 0, settings.encode()),
+        )
+        .await
+        .unwrap();
+        read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Request, 1, 51, Vec::new()),
+        )
+        .await
+        .unwrap();
+        timeout(Duration::from_secs(1), async {
+            while handle.health().snapshot().active_requests == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(!handle.drain(Duration::from_millis(10)).await);
+        task.await.unwrap().unwrap();
+        let health = handle.health().snapshot();
+        assert_eq!(health.active_connections, 0);
+        assert_eq!(health.active_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn begin_drain_stops_the_accept_loop() {
+        let server = Server::bind_tcp(
+            "127.0.0.1:0",
+            Router::builder()
+                .route(1, |body| async move { Ok(body) })
+                .build(),
+        )
+        .await
+        .unwrap();
+        let handle = server.handle();
+        let task = tokio::spawn(server.run());
+        tokio::task::yield_now().await;
+
+        assert!(handle.begin_drain());
+        timeout(Duration::from_secs(1), task)
+            .await
+            .expect("accept loop did not stop")
+            .unwrap()
+            .unwrap();
     }
 
     async fn serve_test_connection<S>(

@@ -12,6 +12,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import ru.moonlightproject.bridge.client.MoonLightChannel;
 import ru.moonlightproject.bridge.client.MoonLightHealth;
+import ru.moonlightproject.bridge.client.MoonLightDrainHandle;
 import ru.moonlightproject.bridge.client.MoonLightServerStream;
 import ru.moonlightproject.bridge.client.ReconnectingMoonLightClient;
 
@@ -146,6 +147,18 @@ public final class MoonLightBridge implements MoonLightChannel {
     @Override
     public CompletableFuture<MoonLightHealth> health(Duration timeout) {
         return client.health(timeout);
+    }
+
+    /**
+     * Stops admission and drains active calls without blocking the caller thread.
+     *
+     * @param timeout maximum drain duration
+     * @return shared asynchronous drain handle
+     */
+    @Override
+    public MoonLightDrainHandle drain(Duration timeout) {
+        if (closed.compareAndSet(false, true)) background.shutdown();
+        return client.drain(timeout);
     }
 
     @Override

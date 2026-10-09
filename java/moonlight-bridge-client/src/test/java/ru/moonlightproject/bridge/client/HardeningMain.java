@@ -47,7 +47,10 @@ public final class HardeningMain {
     }
     public static void main(String[] args) throws Exception {
         var failures = new java.util.ArrayList<Throwable>();
-        for (String test : new String[]{"welcome", "terminal", "callback", "event", "batch", "compression", "compression-limit", "compression-wire-limit", "rpc-policy", "interceptor-order", "interceptor-short-circuit", "interceptor-cancel"}) {
+        String[] tests = args.length == 0
+            ? new String[]{"welcome", "terminal", "callback", "event", "batch", "compression", "compression-limit", "compression-wire-limit", "rpc-policy", "interceptor-order", "interceptor-short-circuit", "interceptor-cancel", "drain"}
+            : args;
+        for (String test : tests) {
             try { run(test); } catch(Throwable e) { failures.add(e); e.printStackTrace(); }
         }
         if (!failures.isEmpty()) throw new AssertionError("hardening failures: " + failures.size());
@@ -327,6 +330,78 @@ public final class HardeningMain {
                     future.cancel(true);
                     Thread.sleep(50);
                     check(terminals.get()==1,"cancellation emits one terminal interceptor callback");
+                }
+            }
+        }
+        if(test.equals("drain")) {
+            var release=new CountDownLatch(1);
+            try(var ss=new ServerSocket(0)) {
+                serve(ss,8192,(in,out)->{
+                    Frame request=read(in);
+                    release.await();
+                    write(out,2,request.method(),request.id(),request.body());
+                    while(read(in).kind()!=21) { }
+                });
+                try(var c=client(ss)) {
+                    var existing=c.request(1,new byte[0],Duration.ofSeconds(2));
+                    MoonLightDrainHandle drain=c.drain(Duration.ofSeconds(1));
+                    try { c.request(1,new byte[0],Duration.ofSeconds(1)).get();
+                        throw new AssertionError("draining client admitted a new call");
+                    } catch(ExecutionException expected) {
+                        check(expected.getCause() instanceof RejectedExecutionException,
+                            "client drain rejects new calls");
+                    }
+                    release.countDown();
+                    existing.get();
+                    drain.completion().toCompletableFuture().get(1,TimeUnit.SECONDS);
+                    check(drain.isDone(),"client drain completes after existing calls");
+                }
+            }
+            var releaseRemote=new CountDownLatch(1);
+            try(var ss=new ServerSocket(0)) {
+                serve(ss,8192,(in,out)->{
+                    Frame request=read(in);
+                    write(out,28,0,0,new byte[0]);
+                    releaseRemote.await();
+                    write(out,2,request.method(),request.id(),request.body());
+                    while(read(in).kind()!=21) { }
+                });
+                try(var c=client(ss)) {
+                    var existing=c.request(1,new byte[0],Duration.ofSeconds(2));
+                    Thread.sleep(50);
+                    try { c.request(1,new byte[0],Duration.ofSeconds(1)).get();
+                        throw new AssertionError("GOAWAY did not stop admission");
+                    } catch(ExecutionException expected) {
+                        check(expected.getCause() instanceof RejectedExecutionException,
+                            "remote GOAWAY rejects new calls");
+                    }
+                    releaseRemote.countDown();
+                    existing.get();
+                }
+            }
+            var terminals=new AtomicInteger();
+            MoonLightInterceptor interceptor=new MoonLightInterceptor(){
+                public MoonLightCallContext beforeCall(MoonLightCallContext context){return context;}
+                public void afterCall(MoonLightCallContext context,byte[] response,Throwable failure){
+                    terminals.incrementAndGet();
+                }
+            };
+            try(var ss=new ServerSocket(0)) {
+                serve(ss,8192,(in,out)->{ read(in); while(read(in).kind()!=21) { } });
+                try(var c=MoonLightClient.connect("tcp://127.0.0.1:"+ss.getLocalPort(),
+                    MoonLightPerformanceOptions.automatic("tcp"),MoonLightTelemetry.disabled(),
+                    java.util.List.of(interceptor))) {
+                    var pending=c.request(1,new byte[0],Duration.ofSeconds(2));
+                    MoonLightDrainHandle drain=c.drain(Duration.ofMillis(10));
+                    try { drain.completion().toCompletableFuture().get(1,TimeUnit.SECONDS);
+                        throw new AssertionError("drain timeout completed successfully");
+                    } catch(ExecutionException expected) {
+                        check(expected.getCause() instanceof TimeoutException,
+                            "client drain timeout is reported");
+                    }
+                    try { pending.get(1,TimeUnit.SECONDS); }
+                    catch(ExecutionException expected) { }
+                    check(terminals.get()==1,"drain timeout emits one terminal callback");
                 }
             }
         }

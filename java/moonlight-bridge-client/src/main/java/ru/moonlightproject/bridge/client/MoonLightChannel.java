@@ -73,6 +73,16 @@ public interface MoonLightChannel extends AutoCloseable {
     CompletableFuture<Void> ping(Duration timeout);
 
     /**
+     * Stops admission and asynchronously closes after current calls finish or timeout.
+     *
+     * @param timeout maximum drain duration
+     * @return shared drain completion handle
+     */
+    default MoonLightDrainHandle drain(Duration timeout) {
+        throw new UnsupportedOperationException("draining is not supported");
+    }
+
+    /**
      * Requests the server's built-in health snapshot.
      *
      * @param timeout maximum time to wait for the snapshot

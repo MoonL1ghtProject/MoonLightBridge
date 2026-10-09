@@ -190,3 +190,9 @@ fn every_v2_error_code_has_a_stable_wire_value() {
         Err(ProtocolError::UnknownErrorCode(14))
     );
 }
+
+#[test]
+fn goaway_has_a_stable_wire_kind() {
+    assert_eq!(FrameKind::GoAway as u8, 28);
+    assert_eq!(FrameKind::try_from(28).unwrap(), FrameKind::GoAway);
+}

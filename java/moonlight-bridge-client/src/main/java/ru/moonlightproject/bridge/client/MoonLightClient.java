@@ -43,6 +43,7 @@ public final class MoonLightClient implements MoonLightChannel {
     private static final int STREAM_ITEM = 25;
     private static final int STREAM_END = 26;
     private static final int STREAM_CREDIT = 27;
+    private static final int GOAWAY = 28;
     private static final int FLAG_HAS_METADATA = 1;
     private static final int DEFAULT_MAX_BODY_LENGTH = 8 * 1024 * 1024;
     private static final int DEFAULT_MAX_DECODED_BODY_LENGTH = 16 * 1024 * 1024;
@@ -72,6 +73,8 @@ public final class MoonLightClient implements MoonLightChannel {
     private final MoonLightCompression.DecodedByteBudget decodedByteBudget;
     private final long negotiatedFeatures;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean accepting = new AtomicBoolean(true);
+    private final AtomicReference<MoonLightDrainHandle> drainHandle = new AtomicReference<>();
     private final CompletableFuture<Throwable> termination = new CompletableFuture<>();
     private final AtomicReference<Throwable> lastFailure = new AtomicReference<>();
     private final ConcurrentMap<Integer, CopyOnWriteArrayList<Consumer<byte[]>>> eventListeners =
@@ -455,6 +458,8 @@ public final class MoonLightClient implements MoonLightChannel {
         int methodId, byte[] body, Duration deadline, RpcPolicy policy
     ) {
         if (closed.get()) return CompletableFuture.failedFuture(new IOException("MoonLightBridge client is closed"));
+        if (!accepting.get()) return CompletableFuture.failedFuture(
+            new RejectedExecutionException("MoonLightBridge client is draining"));
         if (policy != null) {
             if (body.length > policy.maxRequestBytes()) {
                 return CompletableFuture.failedFuture(
@@ -553,6 +558,7 @@ public final class MoonLightClient implements MoonLightChannel {
             throw new UnsupportedOperationException("server did not negotiate streaming support");
         }
         if (closed.get()) throw new CompletionException(new IOException("MoonLightBridge client is closed"));
+        if (!accepting.get()) throw new RejectedExecutionException("MoonLightBridge client is draining");
         if (policy != null) {
             if (body.length > policy.maxRequestBytes()) {
                 throw new IllegalArgumentException("request exceeds generated RPC policy");
@@ -736,6 +742,13 @@ public final class MoonLightClient implements MoonLightChannel {
         try {
             while (!closed.get()) {
                 Frame received = readFrame(maxBodyLength);
+                if (received.kind == GOAWAY) {
+                    if (received.methodId != 0 || received.requestId != 0 || received.body.length != 0) {
+                        throw new IOException("invalid MoonLightBridge GOAWAY frame");
+                    }
+                    drain(Duration.ofSeconds(30));
+                    continue;
+                }
                 Frame frame = received.kind == RESPONSE || received.kind == EVENT
                     || received.kind == STREAM_ITEM ? decodeApplicationFrame(received) : received;
                 if (frame.kind == EVENT) {
@@ -1068,7 +1081,45 @@ public final class MoonLightClient implements MoonLightChannel {
     }
 
     @Override
+    public MoonLightDrainHandle drain(Duration timeout) {
+        java.util.Objects.requireNonNull(timeout, "timeout");
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("drain timeout must be positive");
+        }
+        MoonLightDrainHandle existing = drainHandle.get();
+        if (existing != null) return existing;
+        MoonLightDrainHandle created = new MoonLightDrainHandle();
+        if (!drainHandle.compareAndSet(null, created)) return drainHandle.get();
+        accepting.set(false);
+        Thread.ofVirtual().name("moonlight-bridge-drain").start(() -> {
+            long deadline;
+            try {
+                deadline = Math.addExact(System.nanoTime(), timeout.toNanos());
+            } catch (ArithmeticException overflow) {
+                deadline = Long.MAX_VALUE;
+            }
+            while ((!pending.isEmpty() || !streams.isEmpty()) && System.nanoTime() < deadline) {
+                java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+            }
+            if (!pending.isEmpty() || !streams.isEmpty()) {
+                TimeoutException failure = new TimeoutException("MoonLightBridge client drain timed out");
+                created.fail(failure);
+                try { close(); } catch (IOException ignored) { }
+                return;
+            }
+            try {
+                close();
+                created.complete();
+            } catch (IOException failure) {
+                created.fail(failure);
+            }
+        });
+        return created;
+    }
+
+    @Override
     public void close() throws IOException {
+        accepting.set(false);
         if (!closed.compareAndSet(false, true)) return;
         IOException reason = new IOException("MoonLightBridge client closed");
         CompletableFuture<Void> goodbye = new CompletableFuture<>();

@@ -25,6 +25,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
     private final ConcurrentMap<Integer, CopyOnWriteArrayList<Consumer<byte[]>>> eventListeners =
         new ConcurrentHashMap<>();
     private final AtomicReference<Throwable> lastFailure = new AtomicReference<>();
+    private final AtomicReference<MoonLightDrainHandle> drainHandle = new AtomicReference<>();
 
     private ReconnectingMoonLightClient(
         String endpoint,
@@ -266,6 +267,27 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
             return CompletableFuture.failedFuture(new BackendUnavailableException(endpoint));
         }
         return client.ping(timeout);
+    }
+
+    @Override
+    public MoonLightDrainHandle drain(Duration timeout) {
+        MoonLightDrainHandle existing = drainHandle.get();
+        if (existing != null) return existing;
+        MoonLightClient client = active.get();
+        if (client == null) {
+            MoonLightDrainHandle completed = new MoonLightDrainHandle();
+            if (!drainHandle.compareAndSet(null, completed)) return drainHandle.get();
+            closed.set(true);
+            scheduler.shutdownNow();
+            completed.complete();
+            return completed;
+        }
+        MoonLightDrainHandle created = client.drain(timeout);
+        if (!drainHandle.compareAndSet(null, created)) return drainHandle.get();
+        closed.set(true);
+        scheduler.shutdownNow();
+        created.completion().whenComplete((ignored, failure) -> active.compareAndSet(client, null));
+        return created;
     }
 
     @Override

@@ -46,6 +46,7 @@ val publishedJavaProjects = mapOf(
     ":java:moonlight-bridge-paper" to "Paper and Folia integration built on the universal Java runtime",
     ":java:moonlight-bridge-framework" to "Compatibility aggregate for MoonLightBridge 0.1.x consumers",
     ":java:moonlight-bridge-gradle-plugin" to "Gradle schema and code-generation plugin for MoonLightBridge",
+    ":java:moonlight-bridge-code-first" to "Code-first contract annotations and processor for Java and Kotlin",
     ":java:moonlight-bridge-otel" to "Optional OpenTelemetry and OTLP integration for MoonLightBridge",
     ":java:moonlight-bridge-micrometer" to "Optional Micrometer metrics integration for MoonLightBridge",
 )

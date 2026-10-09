@@ -1,0 +1,16 @@
+package ru.moonlightproject.bridge.codegen;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+/** Declares one Java or Kotlin-owned MoonLightBridge contract. */
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.TYPE)
+public @interface MoonLightContract {
+    /** Canonical Protobuf package. */
+    String protoPackage();
+    /** Package used by generated JVM bindings. */
+    String javaPackage();
+}

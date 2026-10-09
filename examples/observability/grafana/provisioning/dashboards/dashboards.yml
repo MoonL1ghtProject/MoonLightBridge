@@ -1,0 +1,9 @@
+apiVersion: 1
+
+providers:
+  - name: MoonLightBridge
+    folder: MoonLightBridge
+    type: file
+    updateIntervalSeconds: 5
+    options:
+      path: /var/lib/grafana/dashboards

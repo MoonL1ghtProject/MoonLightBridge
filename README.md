@@ -290,6 +290,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 - [Minecraft SDK](docs/minecraft-sdk.md)
 - [Protocol reference](docs/protocol.md)
 - [Schema and code generation](docs/codegen.md)
+- [Observability, Prometheus, and tracing](docs/observability.md)
 - [Performance and tuning](docs/performance.md)
 - [Pterodactyl deployment](docs/deployment-pterodactyl.md)
 - [Security model](docs/security.md)

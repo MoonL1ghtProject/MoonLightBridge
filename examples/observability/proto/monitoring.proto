@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package moonlight.bridge.monitoring.v1;
+
+option java_package = "ru.moonlightproject.bridge.monitoring.v1";
+option java_multiple_files = true;
+
+message PingRequest {
+  string message = 1;
+}
+
+message PingResponse {
+  string message = 1;
+  int64 handled_at_unix_ms = 2;
+}
+
+service MonitoringService {
+  rpc Ping(PingRequest) returns (PingResponse);
+}

@@ -861,6 +861,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "moonlight-bridge-observability-backend"
+version = "0.5.0"
+dependencies = [
+ "moonlight-bridge-codegen",
+ "moonlight-bridge-observability",
+ "moonlight-bridge-protocol",
+ "moonlight-bridge-server",
+ "opentelemetry",
+ "prost",
+ "prost-build",
+ "tokio",
+]
+
+[[package]]
 name = "moonlight-bridge-protocol"
 version = "0.5.0"
 dependencies = [

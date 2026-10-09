@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 2s
+
+scrape_configs:
+  - job_name: moonlight-rust
+    static_configs:
+      - targets: ["host.docker.internal:9898"]
+  - job_name: moonlight-java
+    static_configs:
+      - targets: ["host.docker.internal:9899"]

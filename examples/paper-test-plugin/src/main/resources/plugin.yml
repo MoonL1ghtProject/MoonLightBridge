@@ -15,6 +15,10 @@ commands:
     description: Send a batch of typed RPCs to the MoonLightBridge Rust backend
     usage: /moonlightbatch <count> <text>
     permission: moonlightbridge.test
+  moonlightstream:
+    description: Consume a typed server stream from the MoonLightBridge Rust backend
+    usage: /moonlightstream <text>
+    permission: moonlightbridge.test
 permissions:
   moonlightbridge.test:
     description: Allows use of the MoonLightBridge test commands

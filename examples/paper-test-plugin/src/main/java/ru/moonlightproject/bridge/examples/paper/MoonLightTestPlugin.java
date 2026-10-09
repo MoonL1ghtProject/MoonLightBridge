@@ -1,6 +1,8 @@
 package ru.moonlightproject.bridge.examples.paper;
 
 import ru.moonlightproject.bridge.example.v1.EchoRequest;
+import ru.moonlightproject.bridge.example.v1.EchoResponse;
+import ru.moonlightproject.bridge.example.v1.EchoEvents;
 import ru.moonlightproject.bridge.example.v1.EchoServiceClient;
 import ru.moonlightproject.bridge.paper.MoonLightBridge;
 import java.io.IOException;
@@ -8,6 +10,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Flow;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.command.Command;
@@ -19,6 +23,7 @@ import org.jetbrains.annotations.NotNull;
 public final class MoonLightTestPlugin extends JavaPlugin implements CommandExecutor {
     private MoonLightBridge bridge;
     private volatile EchoServiceClient backend;
+    private AutoCloseable noticeSubscription;
 
     @Override
     public void onEnable() {
@@ -26,6 +31,8 @@ public final class MoonLightTestPlugin extends JavaPlugin implements CommandExec
         Objects.requireNonNull(getCommand("moonlighttest"), "moonlighttest command is not registered")
             .setExecutor(this);
         Objects.requireNonNull(getCommand("moonlightbatch"), "moonlightbatch command is not registered")
+            .setExecutor(this);
+        Objects.requireNonNull(getCommand("moonlightstream"), "moonlightstream command is not registered")
             .setExecutor(this);
 
         String endpoint = getConfig().getString("endpoint", "tcp://127.0.0.1:38201");
@@ -38,6 +45,8 @@ public final class MoonLightTestPlugin extends JavaPlugin implements CommandExec
         }
 
         backend = new EchoServiceClient(bridge.channel());
+        noticeSubscription = EchoEvents.onBackendNoticeEvent(
+            bridge.channel(), notice -> getLogger().info("Backend event: " + notice.getMessage()));
         bridge.warmUp(() -> backend.echo(request("MoonLightBridge warmup")))
             .whenCompleteOnGlobal((ignored, error) -> {
                 if (error == null) {
@@ -66,6 +75,11 @@ public final class MoonLightTestPlugin extends JavaPlugin implements CommandExec
             callOnce(sender, client, text);
             return true;
         }
+        if (command.getName().equalsIgnoreCase("moonlightstream")) {
+            String text = args.length == 0 ? "Paper stream" : String.join(" ", args);
+            callStream(sender, client, text);
+            return true;
+        }
         int count;
         try {
             count = args.length == 0 ? 32 : Math.max(1, Math.min(256, Integer.parseInt(args[0])));
@@ -78,6 +92,24 @@ public final class MoonLightTestPlugin extends JavaPlugin implements CommandExec
             : String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
         callBatch(sender, client, count, text);
         return true;
+    }
+
+    private void callStream(CommandSender sender, EchoServiceClient client, String text) {
+        var completed = new CompletableFuture<List<String>>();
+        var items = new ArrayList<String>();
+        client.streamEcho(request(text)).subscribe(new Flow.Subscriber<EchoResponse>() {
+            public void onSubscribe(Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
+            public void onNext(EchoResponse response) { items.add(response.getMessage()); }
+            public void onError(Throwable error) { completed.completeExceptionally(error); }
+            public void onComplete() { completed.complete(List.copyOf(items)); }
+        });
+        bridge.call(completed).whenCompleteFor(sender, (responses, error) -> {
+            if (error != null) {
+                showError(sender, error);
+                return;
+            }
+            sender.sendMessage(Component.text(String.join(", ", responses), NamedTextColor.GREEN));
+        });
     }
 
     private void callOnce(CommandSender sender, EchoServiceClient client, String text) {
@@ -139,6 +171,15 @@ public final class MoonLightTestPlugin extends JavaPlugin implements CommandExec
     @Override
     public void onDisable() {
         backend = null;
+        AutoCloseable subscription = noticeSubscription;
+        noticeSubscription = null;
+        if (subscription != null) {
+            try {
+                subscription.close();
+            } catch (Exception error) {
+                getLogger().warning("Failed to remove backend event subscription: " + error.getMessage());
+            }
+        }
         MoonLightBridge activeBridge = bridge;
         bridge = null;
         if (activeBridge != null) {

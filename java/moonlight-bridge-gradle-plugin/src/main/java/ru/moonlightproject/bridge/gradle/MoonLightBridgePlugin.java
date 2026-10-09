@@ -90,6 +90,13 @@ public final class MoonLightBridgePlugin implements Plugin<Project> {
             task.getOutputs().file(extension.getDescriptorFile());
             task.getOutputs().dir(extension.getGeneratedProtoSources());
             task.doFirst(ignored -> {
+                if (sourceSchema.get().getSource().isEmpty()) {
+                    try {
+                        Files.deleteIfExists(extension.getGeneratedSchema().get().getAsFile().toPath());
+                    } catch (IOException error) {
+                        throw new GradleException("Cannot remove stale code-first schema", error);
+                    }
+                }
                 File output = extension.getDescriptorFile().get().getAsFile();
                 createDirectories(output.getParentFile());
                 createDirectories(extension.getGeneratedProtoSources().get().getAsFile());

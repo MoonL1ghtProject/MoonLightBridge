@@ -212,6 +212,74 @@ mod contract {
     );
 }
 
+#[test]
+fn generated_contract_can_be_extended_by_handwritten_proto_and_locked() {
+    let directory = temporary_directory("rust-source-mixed");
+    let source = directory.join("contract.rs");
+    let generated = directory.join("contract.proto");
+    let extension = directory.join("extension.proto");
+    let descriptor = directory.join("mixed.pb");
+    let lock = directory.join("schema.lock");
+    fs::write(
+        &source,
+        r#"
+#[moonlight::contract(package = "example.mixed.v1", java_package = "example.mixed.v1")]
+mod contract {
+    #[moonlight::message]
+    struct Request { value: String }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &extension,
+        r#"syntax = "proto3";
+package example.mixed.v1;
+import "contract.proto";
+option java_package = "example.mixed.v1";
+option java_multiple_files = true;
+message Envelope {
+  Request request = 1;
+  string handwritten_note = 2;
+}
+"#,
+    )
+    .unwrap();
+    generate_proto_from_rust_source(RustSourceConfig {
+        source,
+        output: generated,
+        schema_lock: None,
+    })
+    .unwrap();
+    let protoc = Command::new("protoc")
+        .arg(format!("--proto_path={}", directory.display()))
+        .arg(format!("--descriptor_set_out={}", descriptor.display()))
+        .arg("--include_imports")
+        .arg(&extension)
+        .status()
+        .unwrap();
+    assert!(
+        protoc.success(),
+        "generated + handwritten Protobuf must compile"
+    );
+    let update = Command::new(env!("CARGO_BIN_EXE_moonlight-bridge-codegen"))
+        .arg("lock")
+        .arg(&descriptor)
+        .arg(&lock)
+        .arg("--update")
+        .status()
+        .unwrap();
+    assert!(update.success(), "mixed schema lock must be writable");
+    let check = Command::new(env!("CARGO_BIN_EXE_moonlight-bridge-codegen"))
+        .arg("lock")
+        .arg(&descriptor)
+        .arg(&lock)
+        .arg("--check")
+        .status()
+        .unwrap();
+    assert!(check.success(), "mixed schema lock must remain compatible");
+}
+
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)

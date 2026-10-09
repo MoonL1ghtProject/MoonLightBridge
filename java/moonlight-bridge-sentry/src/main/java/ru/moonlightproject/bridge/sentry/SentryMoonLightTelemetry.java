@@ -69,6 +69,9 @@ public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
 
     @Override
     public RequestObservation startRequest(RequestInfo request) {
+        String operationName = request.methodName() == null
+            ? "MoonLightBridge method " + Integer.toUnsignedString(request.methodId())
+            : request.methodName();
         boolean sampled = traceSampleRate >= 1
             || (traceSampleRate > 0
                 && ThreadLocalRandom.current().nextDouble() < traceSampleRate);
@@ -79,10 +82,9 @@ public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
         ISpan span = null;
         if (parent != null && !parent.isNoOp()) {
             span = parent.startChild(
-                "rpc.client", "MoonLightBridge method " + Integer.toUnsignedString(request.methodId()));
+                "rpc.client", operationName);
         } else if (sampled) {
-            span = Sentry.startTransaction(
-                "MoonLightBridge method " + Integer.toUnsignedString(request.methodId()), "rpc.client");
+            span = Sentry.startTransaction(operationName, "rpc.client");
         }
         if (span == null && !logsEnabled) {
             return new ErrorOnlyObservation(request, System.nanoTime());

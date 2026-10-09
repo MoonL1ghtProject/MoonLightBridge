@@ -70,6 +70,7 @@ val generateDescriptor = tasks.register<Exec>("generateDescriptor") {
 val generateBridge = tasks.register<Exec>("generateBridge") {
     dependsOn(generateDescriptor)
     inputs.file(descriptor)
+    inputs.file(codegenExecutable)
     outputs.dir(generatedBridgeJava)
     doFirst { generatedBridgeJava.get().asFile.mkdirs() }
     commandLine(

@@ -59,7 +59,10 @@ impl Telemetry for SentryMoonLightTelemetry {
                 hex(&trace.parent_span_id),
                 if trace.sampled { '1' } else { '0' }
             );
-            let name = format!("MoonLightBridge method {}", info.method_id);
+            let name = info
+                .method_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("MoonLightBridge method {}", info.method_id));
             let context = TransactionContext::continue_from_headers(
                 &name,
                 "rpc.server",
@@ -241,6 +244,7 @@ mod tests {
     fn requests_without_trace_context_still_create_log_observations() {
         let observation = SentryMoonLightTelemetry.start_request(RequestInfo {
             method_id: 7,
+            method_name: None,
             request_id: 11,
             request_bytes: 13,
             trace_context: None,

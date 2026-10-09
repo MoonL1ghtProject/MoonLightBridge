@@ -26,7 +26,10 @@ public final class MoonLightOpenTelemetry implements MoonLightTelemetry {
 
     @Override
     public RequestObservation startRequest(RequestInfo request) {
-        Span span = tracer.spanBuilder("moonlight.rpc." + Integer.toUnsignedString(request.methodId(), 16))
+        String spanName = request.methodName() == null
+            ? "moonlight.rpc." + Integer.toUnsignedString(request.methodId(), 16)
+            : request.methodName();
+        Span span = tracer.spanBuilder(spanName)
             .setAttribute("rpc.system", "moonlight_bridge")
             .setAttribute("rpc.method_id", Integer.toUnsignedLong(request.methodId()))
             .setAttribute("rpc.request_id", Long.toUnsignedString(request.requestId()))

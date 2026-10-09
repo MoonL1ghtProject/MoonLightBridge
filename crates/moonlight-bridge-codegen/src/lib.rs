@@ -438,6 +438,11 @@ fn generate_rust_method(
     }
     writeln!(code, "        }}").unwrap();
     writeln!(code, "    }});").unwrap();
+    writeln!(
+        code,
+        "    builder = builder.method_name(0x{id:08X}, \"{service}/{method_name}\");"
+    )
+    .unwrap();
     Ok(())
 }
 
@@ -468,7 +473,7 @@ fn generate_java_method(
         upper_snake(name)
     )
     .unwrap();
-    generate_java_policy_constant(code, name, policy);
+    generate_java_policy_constant(code, service, name, policy);
     let policy_name = format!("{}_POLICY", upper_snake(name));
     if method.server_streaming.unwrap_or(false) {
         writeln!(code, "/** Opens the credit-controlled {{@code {name}}} server stream. */\npublic Flow.Publisher<{output}> {java_method}({input} request) {{").unwrap();
@@ -597,7 +602,12 @@ fn generate_rust_policy_constant(
     writeln!(code, "}};\n").unwrap();
 }
 
-fn generate_java_policy_constant(code: &mut String, method: &str, policy: &RpcPolicy) {
+fn generate_java_policy_constant(
+    code: &mut String,
+    service: &str,
+    method: &str,
+    policy: &RpcPolicy,
+) {
     let name = format!("{}_POLICY", upper_snake(method));
     let scopes = policy
         .required_scopes
@@ -647,7 +657,8 @@ fn generate_java_policy_constant(code: &mut String, method: &str, policy: &RpcPo
     .unwrap();
     writeln!(code, "    Set.of({scopes}),").unwrap();
     writeln!(code, "    RpcPolicy.Compression.{compression},").unwrap();
-    writeln!(code, "    {}", policy.trace_sample_per_million).unwrap();
+    writeln!(code, "    {},", policy.trace_sample_per_million).unwrap();
+    writeln!(code, "    \"{service}/{method}\"").unwrap();
     writeln!(code, ");\n").unwrap();
 }
 

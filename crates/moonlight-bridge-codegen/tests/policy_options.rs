@@ -71,9 +71,12 @@ message Output {}
     let rust = fs::read_to_string(rust_output).unwrap();
     assert!(rust.contains("pub const TEST_SERVICE_READ_POLICY: RpcPolicy"));
     assert!(rust.contains("body.len() > TEST_SERVICE_READ_POLICY.max_request_bytes"));
+    assert!(rust.contains("method_name(0x"));
+    assert!(rust.contains("\"TestService/Read\""));
 
     let java = fs::read_to_string(java_output.join("policy/test/TestServiceClient.java")).unwrap();
     assert!(java.contains("public static final RpcPolicy READ_POLICY"));
+    assert!(java.contains("\"TestService/Read\""));
     assert!(java.contains("channel.request(READ_METHOD_ID, payload, callDeadline, READ_POLICY)"));
 }
 

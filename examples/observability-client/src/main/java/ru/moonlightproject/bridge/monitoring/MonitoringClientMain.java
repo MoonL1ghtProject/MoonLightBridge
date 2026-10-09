@@ -22,7 +22,8 @@ public final class MonitoringClientMain {
         var micrometer = new MoonLightMicrometerTelemetry(registry);
         String otlpEndpoint = System.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
         MoonLightOtlp otlp = otlpEndpoint == null || otlpEndpoint.isBlank()
-            ? null : MoonLightOtlp.create(otlpEndpoint, 1_024);
+            ? null : MoonLightOtlp.create(
+                otlpEndpoint, 1_024, "moonlight-observability-java");
         MoonLightTelemetry telemetry = otlp == null
             ? micrometer : MoonLightTelemetry.composite(micrometer, otlp.telemetry());
         var metricsServer = metricsServer(registry);

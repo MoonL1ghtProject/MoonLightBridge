@@ -504,7 +504,8 @@ public final class MoonLightClient implements MoonLightChannel {
         }
         MoonLightTelemetry.RequestObservation observation;
         try {
-            observation = telemetry.startRequest(new MoonLightTelemetry.RequestInfo(methodId, requestId, body.length));
+            observation = telemetry.startRequest(new MoonLightTelemetry.RequestInfo(
+                methodId, requestId, body.length, policy == null ? null : policy.methodName()));
             if (observation == null) observation = MoonLightTelemetry.disabled().startRequest(null);
         } catch (RuntimeException ignored) {
             observation = MoonLightTelemetry.disabled().startRequest(null);
@@ -599,7 +600,8 @@ public final class MoonLightClient implements MoonLightChannel {
         }
         MoonLightTelemetry.RequestObservation observation;
         try {
-            observation = telemetry.startRequest(new MoonLightTelemetry.RequestInfo(methodId, requestId, body.length));
+            observation = telemetry.startRequest(new MoonLightTelemetry.RequestInfo(
+                methodId, requestId, body.length, policy == null ? null : policy.methodName()));
             if (observation == null) observation = MoonLightTelemetry.disabled().startRequest(null);
         } catch (RuntimeException ignored) {
             observation = MoonLightTelemetry.disabled().startRequest(null);

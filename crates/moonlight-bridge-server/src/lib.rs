@@ -240,6 +240,8 @@ impl Drop for RequestGuard {
 pub struct RequestInfo {
     /// Generated method identifier.
     pub method_id: u32,
+    /// Generated service and method name, when registered by generated code.
+    pub method_name: Option<&'static str>,
     /// Connection-local correlation identifier.
     pub request_id: u64,
     /// Decoded application payload size in bytes.
@@ -460,6 +462,7 @@ impl HandlerError {
 pub struct Router {
     handlers: Arc<HashMap<u32, Handler>>,
     stream_handlers: Arc<HashMap<u32, StreamHandler>>,
+    method_names: Arc<HashMap<u32, &'static str>>,
     required_scopes: Arc<HashMap<u32, &'static [&'static str]>>,
     middleware: Arc<[Arc<dyn Middleware>]>,
     telemetry: Option<Arc<dyn Telemetry>>,
@@ -469,6 +472,7 @@ pub struct Router {
 pub struct RouterBuilder {
     handlers: HashMap<u32, Handler>,
     stream_handlers: HashMap<u32, StreamHandler>,
+    method_names: HashMap<u32, &'static str>,
     required_scopes: HashMap<u32, &'static [&'static str]>,
     middleware: Vec<Arc<dyn Middleware>>,
     telemetry: Option<Arc<dyn Telemetry>>,
@@ -487,6 +491,7 @@ impl Router {
         RouterBuilder {
             handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
+            method_names: HashMap::new(),
             required_scopes: HashMap::new(),
             middleware: Vec::new(),
             telemetry: None,
@@ -532,6 +537,7 @@ impl Router {
         let mut observation = self.telemetry.as_ref().and_then(|telemetry| {
             telemetry.start_request(RequestInfo {
                 method_id: frame.method_id,
+                method_name: self.method_names.get(&frame.method_id).copied(),
                 request_id: frame.request_id,
                 request_bytes: payload.len(),
                 trace_context,
@@ -710,6 +716,7 @@ impl Router {
         let observation = self.telemetry.as_ref().and_then(|telemetry| {
             telemetry.start_request(RequestInfo {
                 method_id: frame.method_id,
+                method_name: self.method_names.get(&frame.method_id).copied(),
                 request_id: frame.request_id,
                 request_bytes: payload.len(),
                 trace_context,
@@ -910,6 +917,24 @@ impl Router {
 }
 
 impl RouterBuilder {
+    /// Associates a generated display name with an already registered method.
+    pub fn method_name(mut self, method_id: u32, name: &'static str) -> Self {
+        assert!(
+            self.handlers.contains_key(&method_id) || self.stream_handlers.contains_key(&method_id),
+            "cannot name an unregistered MoonLightBridge method: 0x{method_id:08X}"
+        );
+        assert!(
+            !name.is_empty(),
+            "MoonLightBridge method name must not be empty"
+        );
+        let previous = self.method_names.insert(method_id, name);
+        assert!(
+            previous.is_none(),
+            "duplicate MoonLightBridge method name registered: 0x{method_id:08X}"
+        );
+        self
+    }
+
     /// Appends a middleware layer. Layers wrap handlers in registration order.
     pub fn layer(mut self, middleware: Arc<dyn Middleware>) -> Self {
         self.middleware.push(middleware);
@@ -1040,6 +1065,7 @@ impl RouterBuilder {
         Router {
             handlers: Arc::new(self.handlers),
             stream_handlers: Arc::new(self.stream_handlers),
+            method_names: Arc::new(self.method_names),
             required_scopes: Arc::new(self.required_scopes),
             middleware: self.middleware.into(),
             telemetry: self.telemetry,
@@ -2649,6 +2675,16 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct MethodNameCapture(StdMutex<Option<&'static str>>);
+
+    impl Telemetry for MethodNameCapture {
+        fn start_request(&self, info: RequestInfo) -> Option<Box<dyn RequestObservation>> {
+            *self.0.lock().unwrap() = info.method_name;
+            None
+        }
+    }
+
     #[tokio::test]
     async fn no_observation_does_not_collect_function_stages() {
         let router = Router::builder()
@@ -2721,13 +2757,16 @@ mod tests {
     async fn dispatch_strips_trace_metadata_and_records_metrics() {
         let metrics = MoonLightMetrics::default();
         let trace_capture = Arc::new(TraceCapture::default());
+        let method_name_capture = Arc::new(MethodNameCapture::default());
         let chain = TelemetryChain::new([
             Arc::new(metrics.clone()) as Arc<dyn Telemetry>,
             trace_capture.clone() as Arc<dyn Telemetry>,
+            method_name_capture.clone() as Arc<dyn Telemetry>,
         ]);
         let router = Router::builder()
             .telemetry(Arc::new(chain))
             .route(7, |body| async move { Ok(body) })
+            .method_name(7, "MonitoringService/Ping")
             .build();
         let expected_trace = TraceContext {
             trace_id: [3; 16],
@@ -2769,6 +2808,10 @@ mod tests {
 
         assert_eq!(response.body, b"payload");
         assert_eq!(*trace_capture.0.lock().unwrap(), Some(expected_trace));
+        assert_eq!(
+            *method_name_capture.0.lock().unwrap(),
+            Some("MonitoringService/Ping")
+        );
         assert_eq!(metrics.snapshot().started, 1);
         assert_eq!(metrics.snapshot().succeeded, 1);
         assert_eq!(metrics.snapshot().request_bytes, 7);
@@ -2834,6 +2877,7 @@ mod tests {
         let metrics = MoonLightMetrics::default();
         let observation = metrics.start_request(RequestInfo {
             method_id: 1,
+            method_name: None,
             request_id: 2,
             request_bytes: 3,
             trace_context: None,

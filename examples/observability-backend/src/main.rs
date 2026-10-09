@@ -42,8 +42,11 @@ async fn main() -> std::io::Result<()> {
     let otlp_provider = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
         .ok()
         .map(|endpoint| {
-            moonlight_bridge_observability::otlp::tracer_provider(endpoint)
-                .map_err(std::io::Error::other)
+            moonlight_bridge_observability::otlp::tracer_provider_with_service(
+                endpoint,
+                "moonlight-observability-rust",
+            )
+            .map_err(std::io::Error::other)
         })
         .transpose()?;
     if let Some(provider) = &otlp_provider {

@@ -6,7 +6,7 @@ use opentelemetry::{
         TraceState, Tracer,
     },
 };
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// OpenTelemetry request adapter using a caller-owned tracer/provider.
 pub struct OpenTelemetryTelemetry<T> {
@@ -22,17 +22,20 @@ impl<T> OpenTelemetryTelemetry<T> {
 
 impl<T> Telemetry for OpenTelemetryTelemetry<T>
 where
-    T: Tracer + Send + Sync + 'static,
+    T: Tracer + Clone + Send + Sync + 'static,
     T::Span: Send,
 {
     fn start_request(&self, info: RequestInfo) -> Option<Box<dyn RequestObservation>> {
-        let builder = SpanBuilder::from_name(format!("moonlight.rpc.{:08x}", info.method_id))
-            .with_attributes([
-                KeyValue::new("rpc.system", "moonlight_bridge"),
-                KeyValue::new("rpc.method_id", i64::from(info.method_id)),
-                KeyValue::new("rpc.request_id", info.request_id.to_string()),
-                KeyValue::new("rpc.request.size", info.request_bytes as i64),
-            ]);
+        let span_name = info
+            .method_name
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("moonlight.rpc.{:08x}", info.method_id));
+        let builder = SpanBuilder::from_name(span_name).with_attributes([
+            KeyValue::new("rpc.system", "moonlight_bridge"),
+            KeyValue::new("rpc.method_id", i64::from(info.method_id)),
+            KeyValue::new("rpc.request_id", info.request_id.to_string()),
+            KeyValue::new("rpc.request.size", info.request_bytes as i64),
+        ]);
         let span = if let Some(parent) = info.trace_context {
             let flags = if parent.sampled {
                 TraceFlags::SAMPLED
@@ -50,16 +53,36 @@ where
         } else {
             builder.start(&self.tracer)
         };
-        Some(Box::new(OpenTelemetryObservation { span }))
+        Some(Box::new(OpenTelemetryObservation {
+            tracer: self.tracer.clone(),
+            span,
+        }))
     }
 }
 
-struct OpenTelemetryObservation<S> {
+struct OpenTelemetryObservation<T, S> {
+    tracer: T,
     span: S,
 }
 
-impl<S: Span + Send> RequestObservation for OpenTelemetryObservation<S> {
+impl<T, S> RequestObservation for OpenTelemetryObservation<T, S>
+where
+    T: Tracer + Send,
+    T::Span: Send,
+    S: Span + Send,
+{
     fn record_stage(&mut self, name: &'static str, duration: Duration) {
+        let finished_at = SystemTime::now();
+        let started_at = finished_at.checked_sub(duration).unwrap_or(finished_at);
+        let parent = Context::new().with_remote_span_context(self.span.span_context().clone());
+        let mut stage_span = SpanBuilder::from_name(name)
+            .with_start_time(started_at)
+            .with_attributes([KeyValue::new(
+                "stage.duration_ns",
+                duration.as_nanos().min(i64::MAX as u128) as i64,
+            )])
+            .start_with_context(&self.tracer, &parent);
+        stage_span.end_with_timestamp(finished_at);
         self.span.add_event(
             "moonlight.stage",
             vec![
@@ -106,6 +129,7 @@ mod tests {
         let mut observation = telemetry
             .start_request(RequestInfo {
                 method_id: 0x1234,
+                method_name: Some("MonitoringService/Ping"),
                 request_id: u64::MAX,
                 request_bytes: 42,
                 trace_context: None,
@@ -118,10 +142,18 @@ mod tests {
         provider.force_flush().unwrap();
 
         let spans = exporter.get_finished_spans().unwrap();
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].name, "moonlight.rpc.00001234");
-        assert_eq!(spans[0].events.len(), 1);
-        assert!(spans[0].attributes.iter().any(|attribute| {
+        assert_eq!(spans.len(), 2);
+        let request_span = spans
+            .iter()
+            .find(|span| span.name == "MonitoringService/Ping")
+            .unwrap();
+        let stage_span = spans.iter().find(|span| span.name == "decode").unwrap();
+        assert_eq!(
+            stage_span.parent_span_id,
+            request_span.span_context.span_id()
+        );
+        assert_eq!(request_span.events.len(), 1);
+        assert!(request_span.attributes.iter().any(|attribute| {
             attribute.key.as_str() == "rpc.request_id"
                 && attribute.value.as_str() == "18446744073709551615"
         }));
@@ -137,6 +169,7 @@ mod tests {
         telemetry
             .start_request(RequestInfo {
                 method_id: 1,
+                method_name: Some("MonitoringService/Ping"),
                 request_id: 2,
                 request_bytes: 3,
                 trace_context: Some(moonlight_bridge_protocol::TraceContext {

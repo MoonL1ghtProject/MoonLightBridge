@@ -17,6 +17,7 @@ import java.util.TreeSet;
  * @param requiredScopes authorization scopes required by middleware
  * @param compression per-method negotiated compression behavior
  * @param traceSamplePerMillion trace sampling probability in millionths
+ * @param methodName generated service and method name used by telemetry
  */
 public record RpcPolicy(
     Duration timeout,
@@ -27,7 +28,8 @@ public record RpcPolicy(
     int maxResponseBytes,
     Set<String> requiredScopes,
     Compression compression,
-    int traceSamplePerMillion
+    int traceSamplePerMillion,
+    String methodName
 ) {
     private static final Duration MAX_TIMEOUT = Duration.ofMinutes(10);
     private static final int MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -57,6 +59,25 @@ public record RpcPolicy(
         if (traceSamplePerMillion < 0 || traceSamplePerMillion > 1_000_000) {
             throw new IllegalArgumentException("trace sample rate must be between 0 and 1000000");
         }
+        if (methodName != null && (methodName.isBlank() || methodName.length() > 256)) {
+            throw new IllegalArgumentException("methodName must be non-blank and at most 256 characters");
+        }
+    }
+
+    /** Creates a policy without generated telemetry naming metadata. */
+    public RpcPolicy(
+        Duration timeout,
+        Duration idleTimeout,
+        Retry retry,
+        Idempotency idempotency,
+        int maxRequestBytes,
+        int maxResponseBytes,
+        Set<String> requiredScopes,
+        Compression compression,
+        int traceSamplePerMillion
+    ) {
+        this(timeout, idleTimeout, retry, idempotency, maxRequestBytes, maxResponseBytes,
+            requiredScopes, compression, traceSamplePerMillion, null);
     }
 
     /**

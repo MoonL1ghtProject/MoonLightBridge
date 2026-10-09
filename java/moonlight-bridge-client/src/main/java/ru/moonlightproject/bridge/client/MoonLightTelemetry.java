@@ -94,8 +94,14 @@ public interface MoonLightTelemetry {
      * @param methodId stable generated method identifier
      * @param requestId connection-local request identifier
      * @param requestBytes encoded application payload size
+     * @param methodName generated service and method name, or {@code null} for raw calls
      */
-    record RequestInfo(int methodId, long requestId, int requestBytes) { }
+    record RequestInfo(int methodId, long requestId, int requestBytes, String methodName) {
+        /** Creates metadata for a raw call whose method name is unavailable. */
+        public RequestInfo(int methodId, long requestId, int requestBytes) {
+            this(methodId, requestId, requestBytes, null);
+        }
+    }
 
     /** Per-request instrumentation completed by the response or failure path. */
     interface RequestObservation {

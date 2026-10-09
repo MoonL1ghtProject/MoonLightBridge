@@ -12,8 +12,10 @@ use std::{
 mod policy;
 /// Schema-lock creation and backward-compatibility validation.
 pub mod schema;
+mod source;
 
 pub use policy::{CompressionMode, Idempotency, RetryPolicy, RpcPolicy, descriptor_policies};
+pub use source::{RustSourceConfig, generate_proto_from_rust_source};
 
 /// Complete Cargo build-script configuration for models, compatibility checks and bindings.
 pub struct RustBuildConfig {
@@ -25,6 +27,44 @@ pub struct RustBuildConfig {
     pub schema_lock: PathBuf,
     /// Filename written into Cargo's `OUT_DIR` for generated service bindings.
     pub generated_services_name: String,
+}
+
+/// Cargo build-script configuration for a Rust-owned code-first contract.
+pub struct RustSourceBuildConfig {
+    /// Annotated Rust contract source.
+    pub source: PathBuf,
+    /// Additional handwritten Protobuf schemas compiled with the generated contract.
+    pub additional_protos: Vec<PathBuf>,
+    /// Import roots used for handwritten schemas and MoonLightBridge options.
+    pub includes: Vec<PathBuf>,
+    /// Compatibility baseline used for stable field numbers and validation.
+    pub schema_lock: PathBuf,
+    /// Filename written into Cargo's `OUT_DIR` for generated service bindings.
+    pub generated_services_name: String,
+}
+
+/// Generates Protobuf from annotated Rust source, then runs the normal Rust binding pipeline.
+pub fn compile_rust_source_api(
+    config: RustSourceBuildConfig,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed={}", config.source.display());
+    let output = PathBuf::from(std::env::var("OUT_DIR")?);
+    let generated_schema = output.join("moonlight-bridge-code-first.proto");
+    generate_proto_from_rust_source(RustSourceConfig {
+        source: config.source,
+        output: generated_schema.clone(),
+        schema_lock: Some(config.schema_lock.clone()),
+    })?;
+    let mut protos = vec![generated_schema];
+    protos.extend(config.additional_protos);
+    let mut includes = vec![output];
+    includes.extend(config.includes);
+    compile_rust_api(RustBuildConfig {
+        protos,
+        includes,
+        schema_lock: config.schema_lock,
+        generated_services_name: config.generated_services_name,
+    })
 }
 
 /// Runs the complete Rust generation pipeline and returns the generated service source path.

@@ -21,3 +21,4 @@ prost-reflect.workspace = true
 prost-build.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+syn = { version = "2", features = ["full", "parsing"] }

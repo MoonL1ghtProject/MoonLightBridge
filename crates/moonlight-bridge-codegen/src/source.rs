@@ -23,11 +23,19 @@ pub struct RustSourceConfig {
 #[derive(Default)]
 struct LockedSchema {
     messages: BTreeMap<String, LockedMessage>,
+    enums: BTreeMap<String, LockedEnum>,
 }
 
 #[derive(Default)]
 struct LockedMessage {
     fields: BTreeMap<i32, String>,
+    reserved_numbers: BTreeSet<i32>,
+    reserved_names: BTreeSet<String>,
+}
+
+#[derive(Default)]
+struct LockedEnum {
+    values: BTreeMap<i32, String>,
     reserved_numbers: BTreeSet<i32>,
     reserved_names: BTreeSet<String>,
 }
@@ -86,7 +94,7 @@ pub fn generate_proto_from_rust_source(config: RustSourceConfig) -> io::Result<(
                 generate_message(&mut proto, &package, message, &locked)?;
             }
             Item::Enum(enumeration) if attribute(&enumeration.attrs, "enumeration").is_some() => {
-                generate_enum(&mut proto, enumeration)?;
+                generate_enum(&mut proto, &package, enumeration, &locked)?;
             }
             Item::Trait(service) if attribute(&service.attrs, "service").is_some() => {
                 generate_service(&mut proto, service)?;
@@ -182,21 +190,68 @@ fn generate_message(
     Ok(())
 }
 
-fn generate_enum(proto: &mut String, enumeration: &syn::ItemEnum) -> io::Result<()> {
+fn generate_enum(
+    proto: &mut String,
+    package: &str,
+    enumeration: &syn::ItemEnum,
+    locked: &LockedSchema,
+) -> io::Result<()> {
     let name = enumeration.ident.to_string();
-    writeln!(proto, "enum {name} {{").unwrap();
-    for (number, variant) in enumeration.variants.iter().enumerate() {
+    let previous = locked.enums.get(&format!("{package}.{name}"));
+    let current_names = enumeration
+        .variants
+        .iter()
+        .map(|variant| upper_snake(&variant.ident.to_string()))
+        .collect::<BTreeSet<_>>();
+    let mut used = previous
+        .map(|enumeration| enumeration.values.keys().copied().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    if let Some(previous) = previous {
+        used.extend(previous.reserved_numbers.iter().copied());
+    }
+    let mut values = Vec::new();
+    for variant in &enumeration.variants {
         if !matches!(variant.fields, Fields::Unit) {
             return Err(invalid(format!(
                 "enum {name} variants must not contain fields"
             )));
         }
-        writeln!(
-            proto,
-            "  {} = {number};",
-            upper_snake(&variant.ident.to_string())
-        )
-        .unwrap();
+        let variant_name = upper_snake(&variant.ident.to_string());
+        let number = previous
+            .and_then(|enumeration| {
+                enumeration
+                    .values
+                    .iter()
+                    .find_map(|(number, old_name)| (old_name == &variant_name).then_some(*number))
+            })
+            .unwrap_or_else(|| next_enum_number(&mut used));
+        used.insert(number);
+        values.push((number, variant_name));
+    }
+    values.sort_by_key(|(number, _)| *number);
+    if values.first().is_some_and(|(number, _)| *number != 0) {
+        return Err(invalid(format!(
+            "enum {name} must retain or declare an active zero-valued variant"
+        )));
+    }
+
+    writeln!(proto, "enum {name} {{").unwrap();
+    if let Some(previous) = previous {
+        for (number, old_name) in &previous.values {
+            if !current_names.contains(old_name) {
+                writeln!(proto, "  reserved {number};").unwrap();
+                writeln!(proto, "  reserved \"{old_name}\";").unwrap();
+            }
+        }
+        for number in &previous.reserved_numbers {
+            writeln!(proto, "  reserved {number};").unwrap();
+        }
+        for name in &previous.reserved_names {
+            writeln!(proto, "  reserved \"{name}\";").unwrap();
+        }
+    }
+    for (number, variant_name) in values {
+        writeln!(proto, "  {variant_name} = {number};").unwrap();
     }
     proto.push_str("}\n\n");
     Ok(())
@@ -382,41 +437,78 @@ fn simple_type_name(ty: &Type) -> Option<String> {
 fn load_lock(path: &PathBuf) -> io::Result<LockedSchema> {
     let value: Value = serde_json::from_slice(&fs::read(path)?).map_err(invalid)?;
     let mut schema = LockedSchema::default();
-    let Some(messages) = value.get("messages").and_then(Value::as_object) else {
-        return Ok(schema);
-    };
-    for (full_name, message) in messages {
-        let mut locked = LockedMessage::default();
-        if let Some(fields) = message.get("fields").and_then(Value::as_object) {
-            for (number, field) in fields {
-                let number = number.parse::<i32>().map_err(invalid)?;
-                if let Some(name) = field.get("name").and_then(Value::as_str) {
-                    locked.fields.insert(number, name.to_owned());
+    if let Some(messages) = value.get("messages").and_then(Value::as_object) {
+        for (full_name, message) in messages {
+            let mut locked = LockedMessage::default();
+            if let Some(fields) = message.get("fields").and_then(Value::as_object) {
+                for (number, field) in fields {
+                    let number = number.parse::<i32>().map_err(invalid)?;
+                    if let Some(name) = field.get("name").and_then(Value::as_str) {
+                        locked.fields.insert(number, name.to_owned());
+                    }
                 }
             }
+            load_reservations(
+                message,
+                &mut locked.reserved_numbers,
+                &mut locked.reserved_names,
+            );
+            schema.messages.insert(full_name.clone(), locked);
         }
-        if let Some(ranges) = message.get("reserved_ranges").and_then(Value::as_array) {
-            for range in ranges {
-                let start = range
-                    .get("start")
-                    .and_then(Value::as_i64)
-                    .unwrap_or_default() as i32;
-                let end = range.get("end").and_then(Value::as_i64).unwrap_or_default() as i32;
-                locked.reserved_numbers.extend(start..end);
+    }
+    if let Some(enums) = value.get("enums").and_then(Value::as_object) {
+        for (full_name, enumeration) in enums {
+            let mut locked = LockedEnum::default();
+            if let Some(values) = enumeration.get("values").and_then(Value::as_object) {
+                for (number, name) in values {
+                    let number = number.parse::<i32>().map_err(invalid)?;
+                    if let Some(name) = name.as_str() {
+                        locked.values.insert(number, name.to_owned());
+                    }
+                }
             }
+            load_reservations(
+                enumeration,
+                &mut locked.reserved_numbers,
+                &mut locked.reserved_names,
+            );
+            schema.enums.insert(full_name.clone(), locked);
         }
-        if let Some(names) = message.get("reserved_names").and_then(Value::as_array) {
-            locked
-                .reserved_names
-                .extend(names.iter().filter_map(Value::as_str).map(str::to_owned));
-        }
-        schema.messages.insert(full_name.clone(), locked);
     }
     Ok(schema)
 }
 
+fn load_reservations(value: &Value, numbers: &mut BTreeSet<i32>, names: &mut BTreeSet<String>) {
+    if let Some(ranges) = value.get("reserved_ranges").and_then(Value::as_array) {
+        for range in ranges {
+            let start = range
+                .get("start")
+                .and_then(Value::as_i64)
+                .unwrap_or_default() as i32;
+            let end = range.get("end").and_then(Value::as_i64).unwrap_or_default() as i32;
+            numbers.extend(start..end);
+        }
+    }
+    if let Some(locked_names) = value.get("reserved_names").and_then(Value::as_array) {
+        names.extend(
+            locked_names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned),
+        );
+    }
+}
+
 fn next_number(used: &mut BTreeSet<i32>) -> i32 {
     let mut candidate = 1;
+    while used.contains(&candidate) || (19_000..=19_999).contains(&candidate) {
+        candidate += 1;
+    }
+    candidate
+}
+
+fn next_enum_number(used: &mut BTreeSet<i32>) -> i32 {
+    let mut candidate = 0;
     while used.contains(&candidate) || (19_000..=19_999).contains(&candidate) {
         candidate += 1;
     }

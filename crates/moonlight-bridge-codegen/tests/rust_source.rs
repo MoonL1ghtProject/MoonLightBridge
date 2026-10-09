@@ -27,6 +27,9 @@ mod contract {
     #[moonlight::message]
     pub struct EchoResponse { pub message: String }
 
+    #[moonlight::enumeration]
+    pub enum DeliveryState { Unknown, Ready }
+
     #[moonlight::service]
     pub trait EchoService {
         #[moonlight::rpc(
@@ -57,7 +60,13 @@ mod contract {
       "reserved_names": []
     }
   },
-  "enums": {},
+  "enums": {
+    "moonlight.example.v1.DeliveryState": {
+      "values": {"0":"UNKNOWN","4":"READY","7":"LEGACY"},
+      "reserved_ranges": [{"start":9,"end":10}],
+      "reserved_names": ["DEPRECATED"]
+    }
+  },
   "services": {}
 }
 "#).unwrap();
@@ -78,6 +87,12 @@ mod contract {
     assert!(proto.contains("string message = 7;"), "{proto}");
     assert!(proto.contains("optional int32 attempts = 1;"), "{proto}");
     assert!(proto.contains("repeated string tags = 2;"), "{proto}");
+    assert!(proto.contains("UNKNOWN = 0;"), "{proto}");
+    assert!(proto.contains("READY = 4;"), "{proto}");
+    assert!(proto.contains("reserved 7;"), "{proto}");
+    assert!(proto.contains("reserved \"LEGACY\";"), "{proto}");
+    assert!(proto.contains("reserved 9;"), "{proto}");
+    assert!(proto.contains("reserved \"DEPRECATED\";"), "{proto}");
     assert!(
         proto.contains("rpc Echo(EchoRequest) returns (EchoResponse)"),
         "{proto}"

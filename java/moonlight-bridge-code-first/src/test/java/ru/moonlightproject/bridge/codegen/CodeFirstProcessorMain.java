@@ -27,6 +27,7 @@ public final class CodeFirstProcessorMain {
                 @MoonLightMessage final class KotlinPlayer {
                     private final String displayName = "";
                 }
+                @MoonLightEnumeration enum DeliveryState { UNKNOWN, READY }
 
                 @MoonLightService interface MonitoringService {
                     @MoonLightRpc(
@@ -47,11 +48,17 @@ public final class CodeFirstProcessorMain {
                   "fields": {
                     "8": {"name":"message","number":8,"label":1,"kind":9,"type_name":"","oneof_index":null,"proto3_optional":false}
                   },
-                  "reserved_ranges": [],
-                  "reserved_names": []
+                  "reserved_ranges": [{"start":9,"end":10}],
+                  "reserved_names": ["old_tag"]
                 }
               },
-              "enums": {},
+              "enums": {
+                "moonlight.monitoring.v1.DeliveryState": {
+                  "values": {"0":"UNKNOWN","4":"READY","7":"LEGACY"},
+                  "reserved_ranges": [{"start":9,"end":10}],
+                  "reserved_names": ["DEPRECATED"]
+                }
+              },
               "services": {}
             }
             """);
@@ -75,8 +82,16 @@ public final class CodeFirstProcessorMain {
         check(proto.contains("string message = 8;"), proto);
         check(proto.contains("optional int32 attempts = 1;"), proto);
         check(proto.contains("repeated string tags = 2;"), proto);
+        check(proto.contains("reserved 9;"), proto);
+        check(proto.contains("reserved \"old_tag\";"), proto);
         check(proto.contains("int64 handled_at_unix_ms = 2;"), proto);
         check(proto.contains("string display_name = 1;"), proto);
+        check(proto.contains("UNKNOWN = 0;"), proto);
+        check(proto.contains("READY = 4;"), proto);
+        check(proto.contains("reserved 7;"), proto);
+        check(proto.contains("reserved \"LEGACY\";"), proto);
+        check(proto.contains("reserved 9;"), proto);
+        check(proto.contains("reserved \"DEPRECATED\";"), proto);
         check(proto.contains("rpc Ping(PingRequest) returns (PingResponse)"), proto);
         check(proto.contains("required_scopes: \"monitoring.ping\""), proto);
         Process protoc = new ProcessBuilder(

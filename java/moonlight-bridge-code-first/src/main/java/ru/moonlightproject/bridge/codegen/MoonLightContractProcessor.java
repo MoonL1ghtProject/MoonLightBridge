@@ -34,6 +34,13 @@ import javax.tools.Diagnostic;
 public final class MoonLightContractProcessor extends AbstractProcessor {
     private static final Pattern LOCKED_FIELD = Pattern.compile(
         "\\\"(\\d+)\\\"\\s*:\\s*\\{[^{}]*?\\\"name\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+    private static final Pattern LOCKED_ENUM_VALUE = Pattern.compile(
+        "\\\"(-?\\d+)\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+    private static final Pattern LOCKED_RANGE = Pattern.compile(
+        "\\\"start\\\"\\s*:\\s*(-?\\d+)\\s*,\\s*\\\"end\\\"\\s*:\\s*(-?\\d+)");
+    private static final Pattern LOCKED_RESERVED_NAMES = Pattern.compile(
+        "\\\"reserved_names\\\"\\s*:\\s*\\[(.*?)]", Pattern.DOTALL);
+    private static final Pattern LOCKED_STRING = Pattern.compile("\\\"([^\\\"]+)\\\"");
     private boolean generated;
 
     @Override
@@ -84,9 +91,12 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
 
     private String generate(TypeElement contract) throws IOException {
         MoonLightContract settings = contract.getAnnotation(MoonLightContract.class);
-        Map<String, Map<String, Integer>> locked = loadLockedFields(
+        Map<String, LockedMessage> locked = loadLockedMessages(
+            processingEnv.getOptions().get("moonlight.schemaLock"));
+        Map<String, LockedEnum> lockedEnums = loadLockedEnums(
             processingEnv.getOptions().get("moonlight.schemaLock"));
         List<TypeElement> messages = nestedTypes(contract, MoonLightMessage.class);
+        List<TypeElement> enumerations = nestedTypes(contract, MoonLightEnumeration.class);
         List<TypeElement> services = nestedTypes(contract, MoonLightService.class);
         boolean policies = services.stream().flatMap(service -> service.getEnclosedElements().stream())
             .anyMatch(method -> method.getAnnotation(MoonLightRpc.class) != null);
@@ -99,6 +109,9 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
             .append("option java_multiple_files = true;\n\n");
         for (TypeElement message : messages) {
             emitMessage(proto, settings.protoPackage(), message, locked);
+        }
+        for (TypeElement enumeration : enumerations) {
+            emitEnum(proto, settings.protoPackage(), enumeration, lockedEnums);
         }
         for (TypeElement service : services) emitService(proto, service);
         return proto.toString();
@@ -115,7 +128,7 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
     }
 
     private void emitMessage(StringBuilder proto, String pkg, TypeElement message,
-            Map<String, Map<String, Integer>> locked) {
+            Map<String, LockedMessage> locked) {
         String name = message.getSimpleName().toString();
         List<? extends Element> fields;
         if (message.getKind() == ElementKind.RECORD) {
@@ -126,18 +139,23 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
                 .filter(element -> !element.getModifiers().contains(Modifier.STATIC))
                 .toList();
         }
-        Map<String, Integer> previous = locked.getOrDefault(pkg + "." + name, Map.of());
-        Set<Integer> used = new HashSet<>(previous.values());
+        LockedMessage previous = locked.getOrDefault(pkg + "." + name, LockedMessage.empty());
+        Set<Integer> used = new HashSet<>(previous.fields().values());
+        used.addAll(previous.reservedNumbers());
         Set<String> current = new HashSet<>();
         fields.forEach(field -> current.add(snakeCase(field.getSimpleName().toString())));
         proto.append("message ").append(name).append(" {\n");
-        previous.entrySet().stream().filter(entry -> !current.contains(entry.getKey()))
+        previous.fields().entrySet().stream().filter(entry -> !current.contains(entry.getKey()))
             .sorted(Map.Entry.comparingByValue()).forEach(entry -> proto
                 .append("  reserved ").append(entry.getValue()).append(";\n")
                 .append("  reserved \"").append(entry.getKey()).append("\";\n"));
+        previous.reservedNumbers().stream().sorted()
+            .forEach(number -> proto.append("  reserved ").append(number).append(";\n"));
+        previous.reservedNames().stream().sorted()
+            .forEach(reserved -> proto.append("  reserved \"").append(reserved).append("\";\n"));
         for (Element field : fields) {
             String fieldName = snakeCase(field.getSimpleName().toString());
-            int number = previous.getOrDefault(fieldName, nextNumber(used));
+            int number = previous.fields().getOrDefault(fieldName, nextNumber(used));
             used.add(number);
             TypeMirror type = field instanceof RecordComponentElement component
                 ? component.asType() : field.asType();
@@ -155,6 +173,43 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
             .map(ExecutableElement.class::cast)
             .sorted(Comparator.comparing(method -> method.getSimpleName().toString()))
             .forEach(method -> emitMethod(proto, serviceName, method));
+        proto.append("}\n\n");
+    }
+
+    private void emitEnum(StringBuilder proto, String pkg, TypeElement enumeration,
+            Map<String, LockedEnum> locked) {
+        String name = enumeration.getSimpleName().toString();
+        LockedEnum previous = locked.getOrDefault(pkg + "." + name, LockedEnum.empty());
+        List<String> current = enumeration.getEnclosedElements().stream()
+            .filter(element -> element.getKind() == ElementKind.ENUM_CONSTANT)
+            .map(element -> element.getSimpleName().toString())
+            .toList();
+        Set<Integer> used = new HashSet<>(previous.values().values());
+        used.addAll(previous.reservedNumbers());
+        List<EnumValue> values = new ArrayList<>();
+        for (String value : current) {
+            int number = previous.values().getOrDefault(value, nextEnumNumber(used));
+            used.add(number);
+            values.add(new EnumValue(number, value));
+        }
+        values.sort(Comparator.comparingInt(EnumValue::number));
+        if (!values.isEmpty() && values.getFirst().number() != 0) {
+            throw new IllegalArgumentException("enum " + name
+                + " must retain or declare an active zero-valued constant");
+        }
+        proto.append("enum ").append(name).append(" {\n");
+        previous.values().entrySet().stream()
+            .filter(entry -> !current.contains(entry.getKey()))
+            .sorted(Map.Entry.comparingByValue())
+            .forEach(entry -> proto.append("  reserved ").append(entry.getValue()).append(";\n")
+                .append("  reserved \"").append(entry.getKey()).append("\";\n"));
+        previous.reservedNumbers().stream().sorted()
+            .forEach(number -> proto.append("  reserved ").append(number).append(";\n"));
+        previous.reservedNames().stream().sorted()
+            .forEach(reserved -> proto.append("  reserved \"").append(reserved).append("\";\n"));
+        for (EnumValue value : values) {
+            proto.append("  ").append(value.name()).append(" = ").append(value.number()).append(";\n");
+        }
         proto.append("}\n\n");
     }
 
@@ -251,19 +306,45 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
         return ((TypeElement) declared.asElement()).getSimpleName().toString();
     }
 
-    private Map<String, Map<String, Integer>> loadLockedFields(String path) throws IOException {
+    private Map<String, LockedMessage> loadLockedMessages(String path) throws IOException {
         if (path == null || path.isBlank() || !Files.isRegularFile(Path.of(path))) return Map.of();
         String json = Files.readString(Path.of(path));
-        Map<String, Map<String, Integer>> result = new HashMap<>();
+        Map<String, LockedMessage> result = new HashMap<>();
         Matcher messageName = Pattern.compile("\\\"([^\\\"]+)\\\"\\s*:\\s*\\{\\s*\\\"fields\\\"").matcher(json);
         while (messageName.find()) {
+            int messageStart = json.indexOf('{', messageName.start());
+            int messageEnd = matchingBrace(json, messageStart);
             int fieldsStart = json.indexOf('{', messageName.end());
             int fieldsEnd = matchingBrace(json, fieldsStart);
-            if (fieldsStart < 0 || fieldsEnd < 0) continue;
+            if (messageStart < 0 || messageEnd < 0 || fieldsStart < 0 || fieldsEnd < 0) continue;
             Matcher field = LOCKED_FIELD.matcher(json.substring(fieldsStart, fieldsEnd + 1));
             Map<String, Integer> numbers = new HashMap<>();
             while (field.find()) numbers.put(field.group(2), Integer.parseInt(field.group(1)));
-            result.put(messageName.group(1), numbers);
+            String reservations = json.substring(fieldsEnd + 1, messageEnd + 1);
+            result.put(messageName.group(1), new LockedMessage(
+                numbers, reservedNumbers(reservations), reservedNames(reservations)));
+        }
+        return result;
+    }
+
+    private Map<String, LockedEnum> loadLockedEnums(String path) throws IOException {
+        if (path == null || path.isBlank() || !Files.isRegularFile(Path.of(path))) return Map.of();
+        String json = Files.readString(Path.of(path));
+        Map<String, LockedEnum> result = new HashMap<>();
+        Matcher enumName = Pattern.compile(
+            "\\\"([^\\\"]+)\\\"\\s*:\\s*\\{\\s*\\\"values\\\"\\s*:\\s*\\{").matcher(json);
+        while (enumName.find()) {
+            int enumStart = json.indexOf('{', enumName.start());
+            int enumEnd = matchingBrace(json, enumStart);
+            int valuesStart = enumName.end() - 1;
+            int valuesEnd = matchingBrace(json, valuesStart);
+            if (enumStart < 0 || enumEnd < 0 || valuesEnd < 0) continue;
+            Map<String, Integer> values = new HashMap<>();
+            Matcher value = LOCKED_ENUM_VALUE.matcher(json.substring(valuesStart, valuesEnd + 1));
+            while (value.find()) values.put(value.group(2), Integer.parseInt(value.group(1)));
+            String reservations = json.substring(valuesEnd + 1, enumEnd + 1);
+            result.put(enumName.group(1), new LockedEnum(
+                values, reservedNumbers(reservations), reservedNames(reservations)));
         }
         return result;
     }
@@ -277,8 +358,35 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
         return -1;
     }
 
+    private static Set<Integer> reservedNumbers(String value) {
+        Set<Integer> result = new HashSet<>();
+        Matcher range = LOCKED_RANGE.matcher(value);
+        while (range.find()) {
+            int start = Integer.parseInt(range.group(1));
+            int end = Integer.parseInt(range.group(2));
+            for (int number = start; number < end; number++) result.add(number);
+        }
+        return result;
+    }
+
+    private static Set<String> reservedNames(String value) {
+        Set<String> result = new HashSet<>();
+        Matcher names = LOCKED_RESERVED_NAMES.matcher(value);
+        if (names.find()) {
+            Matcher reservedName = LOCKED_STRING.matcher(names.group(1));
+            while (reservedName.find()) result.add(reservedName.group(1));
+        }
+        return result;
+    }
+
     private static int nextNumber(Set<Integer> used) {
         int candidate = 1;
+        while (used.contains(candidate) || candidate >= 19_000 && candidate <= 19_999) candidate++;
+        return candidate;
+    }
+
+    private static int nextEnumNumber(Set<Integer> used) {
+        int candidate = 0;
         while (used.contains(candidate) || candidate >= 19_000 && candidate <= 19_999) candidate++;
         return candidate;
     }
@@ -318,4 +426,17 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
     }
 
     private record ProtoType(String label, String name) { }
+    private record EnumValue(int number, String name) { }
+    private record LockedMessage(Map<String, Integer> fields, Set<Integer> reservedNumbers,
+            Set<String> reservedNames) {
+        private static LockedMessage empty() {
+            return new LockedMessage(Map.of(), Set.of(), Set.of());
+        }
+    }
+    private record LockedEnum(Map<String, Integer> values, Set<Integer> reservedNumbers,
+            Set<String> reservedNames) {
+        private static LockedEnum empty() {
+            return new LockedEnum(Map.of(), Set.of(), Set.of());
+        }
+    }
 }

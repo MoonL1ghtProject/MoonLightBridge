@@ -9,8 +9,12 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.SOURCE)
 @Target(ElementType.TYPE)
 public @interface MoonLightContract {
-    /** Canonical Protobuf package. */
+    /** Canonical Protobuf package.
+     * @return package written to the generated schema
+     */
     String protoPackage();
-    /** Package used by generated JVM bindings. */
+    /** Package used by generated JVM bindings.
+     * @return package for generated JVM message classes
+     */
     String javaPackage();
 }

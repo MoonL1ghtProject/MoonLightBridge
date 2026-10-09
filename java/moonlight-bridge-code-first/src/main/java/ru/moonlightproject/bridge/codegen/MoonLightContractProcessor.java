@@ -43,6 +43,9 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
     private static final Pattern LOCKED_STRING = Pattern.compile("\\\"([^\\\"]+)\\\"");
     private boolean generated;
 
+    /** Creates a processor for one compiler invocation. */
+    public MoonLightContractProcessor() { }
+
     @Override
     public Set<String> getSupportedAnnotationTypes() {
         return Set.of(MoonLightContract.class.getCanonicalName());
@@ -55,7 +58,7 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
 
     @Override
     public SourceVersion getSupportedSourceVersion() {
-        return SourceVersion.RELEASE_21;
+        return SourceVersion.latestSupported();
     }
 
     @Override

@@ -11,6 +11,7 @@ release_tag="${2:-}"
 # so those are checked as workspace sources and their package file lists are
 # inspected here; the registry performs the final package verification in the
 # dependency-ordered publication job.
+cargo package --locked --allow-dirty --package moonlight-bridge-contract
 cargo package --locked --allow-dirty --package moonlight-bridge-protocol
 cargo package --locked --allow-dirty --package moonlight-bridge-codegen
 cargo package --locked --allow-dirty --package moonlight-bridge-server --list >/dev/null

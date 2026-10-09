@@ -4,6 +4,7 @@ members = [
     "crates/moonlight-bridge-server",
     "crates/moonlight-bridge-example-api",
     "crates/moonlight-bridge-codegen",
+    "crates/moonlight-bridge-contract",
     "crates/moonlight-bridge-observability",
     "crates/moonlight-bridge-sentry",
     "examples/example-backend",

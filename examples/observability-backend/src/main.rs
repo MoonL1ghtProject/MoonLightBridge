@@ -7,6 +7,9 @@ use tokio::{
     net::TcpListener,
 };
 
+#[path = "contract.rs"]
+mod contract_source;
+
 pub mod model {
     include!(concat!(
         env!("OUT_DIR"),

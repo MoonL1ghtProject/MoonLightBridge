@@ -7,6 +7,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+moonlight = { package = "moonlight-bridge-contract", version = "0.5.0", path = "../../crates/moonlight-bridge-contract" }
 moonlight-bridge-protocol = { path = "../../crates/moonlight-bridge-protocol" }
 moonlight-bridge-server = { path = "../../crates/moonlight-bridge-server" }
 moonlight-bridge-observability = { path = "../../crates/moonlight-bridge-observability", features = ["prometheus", "otel", "otlp"] }

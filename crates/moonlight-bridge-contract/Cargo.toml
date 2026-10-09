@@ -1,0 +1,17 @@
+[package]
+name = "moonlight-bridge-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "IDE-aware Rust contract attributes for MoonLightBridge code-first APIs"
+documentation = "https://docs.rs/moonlight-bridge-contract"
+publish = ["crates-io"]
+
+[lib]
+proc-macro = true

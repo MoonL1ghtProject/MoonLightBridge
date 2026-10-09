@@ -44,6 +44,7 @@ jobs:
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace --locked
           RUSTDOCFLAGS="-D missing-docs" cargo doc \
+            -p moonlight-bridge-contract \
             -p moonlight-bridge-protocol \
             -p moonlight-bridge-server \
             -p moonlight-bridge-codegen \

@@ -82,6 +82,7 @@ jobs:
       - name: Verify public Rust API documentation
         run: |
           RUSTDOCFLAGS="-D missing-docs" cargo doc \
+            -p moonlight-bridge-contract \
             -p moonlight-bridge-protocol \
             -p moonlight-bridge-server \
             -p moonlight-bridge-codegen \

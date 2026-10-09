@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     compileOnly(gradleApi())
+    testImplementation(gradleTestKit())
 }
 
 java {
@@ -25,4 +26,17 @@ gradlePlugin {
 tasks.withType<JavaCompile>().configureEach {
     options.release = 21
     options.encoding = "UTF-8"
+}
+
+tasks.processResources {
+    from(rootProject.file("proto/moonlight/bridge/options/v1/options.proto")) {
+        into("moonlight-bridge-proto/moonlight/bridge/options/v1")
+    }
+}
+
+tasks.register<JavaExec>("protoOnlyFunctionalTest") {
+    group = "verification"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "ru.moonlightproject.bridge.gradle.ProtoOnlyFunctionalMain"
 }

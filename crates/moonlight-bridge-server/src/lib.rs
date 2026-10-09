@@ -4,9 +4,13 @@ use futures_core::Stream;
 use futures_util::StreamExt;
 pub use moonlight_bridge_protocol::ErrorCode;
 use moonlight_bridge_protocol::{
-    DEFAULT_MAX_BODY_LEN, DEFAULT_MAX_IN_FLIGHT, FLAG_HAS_DEADLINE, FLAG_HAS_TRACE_CONTEXT, Frame,
-    FrameKind, HEADER_LEN, PeerSettings, SERVER_FEATURES, TRACE_CONTEXT_LEN, TraceContext,
+    COMPRESSION_CODEC_ZSTD, CompressionCodec, CompressionPolicy, DecodedByteBudget,
+    DecodedBytePermit, FLAG_HAS_METADATA, Frame, FrameKind, HEADER_LEN, Metadata, MetadataKey,
+    MetadataLimits, PeerSettingsV2 as PeerSettings, ReservedMetadataKey, TRACE_CONTEXT_LEN,
+    TraceContext,
 };
+#[cfg(test)]
+use moonlight_bridge_protocol::{DEFAULT_MAX_BODY_LEN, DEFAULT_MAX_IN_FLIGHT, SERVER_FEATURES};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -22,14 +26,21 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpListener,
-    sync::{Mutex, OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot},
+    sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot, watch},
     task::AbortHandle,
     time::timeout,
 };
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 use tracing::Instrument;
 
+mod drain;
 pub mod idempotency;
+pub use drain::ServerHandle;
+mod middleware;
+use middleware::CancellationGuard;
+pub use middleware::{
+    Middleware, MiddlewareFuture, Next, PeerIdentity, RequestCancellation, RequestContext,
+};
 /// Helpers for loading mutual-TLS server configuration from PEM files.
 pub mod tls;
 
@@ -69,7 +80,7 @@ use std::path::Path;
 use tokio::net::UnixListener;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>, HandlerError>> + Send>>;
-type Handler = Arc<dyn Fn(Vec<u8>) -> HandlerFuture + Send + Sync>;
+pub(crate) type Handler = Arc<dyn Fn(Vec<u8>) -> HandlerFuture + Send + Sync>;
 /// Type-erased asynchronous sequence returned by a server-streaming handler.
 pub type ServerStream<T> = Pin<Box<dyn Stream<Item = Result<T, HandlerError>> + Send + 'static>>;
 /// Maps successful stream items while preserving handler failures.
@@ -80,6 +91,15 @@ where
     F: FnMut(T) -> U + Send + 'static,
 {
     Box::pin(stream.map(move |item| item.map(&mut mapper)))
+}
+/// Fallibly maps successful stream items while preserving existing handler failures.
+pub fn try_map_server_stream<T, U, F>(stream: ServerStream<T>, mut mapper: F) -> ServerStream<U>
+where
+    T: 'static,
+    U: 'static,
+    F: FnMut(T) -> Result<U, HandlerError> + Send + 'static,
+{
+    Box::pin(stream.map(move |item| item.and_then(&mut mapper)))
 }
 /// Creates a server stream from a finite iterator.
 pub fn iter_server_stream<T, I>(items: I) -> ServerStream<T>
@@ -104,6 +124,17 @@ struct ConnectionResources {
     limits: ServerLimits,
     request_bytes: Arc<Semaphore>,
     _admission: OwnedSemaphorePermit,
+}
+
+struct ConnectionConfig {
+    server: PeerSettings,
+    hello_timeout: Duration,
+    events: EventHub,
+}
+
+struct StreamDelivery {
+    credits: Arc<Semaphore>,
+    responses: mpsc::Sender<Frame>,
 }
 
 type ActiveRequests = Arc<Mutex<HashMap<u64, ActiveRequest>>>;
@@ -177,6 +208,12 @@ struct RuntimeState {
     active_connections: AtomicU64,
     active_requests: AtomicU64,
     max_in_flight: u32,
+    compression_policy: CompressionPolicy,
+    decoded_byte_budget: DecodedByteBudget,
+    draining: AtomicBool,
+    drain_tx: watch::Sender<bool>,
+    force_drain_tx: watch::Sender<bool>,
+    state_changed: Notify,
     started: Instant,
 }
 
@@ -185,6 +222,7 @@ struct ConnectionGuard(Arc<RuntimeState>);
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         self.0.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.0.state_changed.notify_waiters();
     }
 }
 
@@ -193,6 +231,7 @@ struct RequestGuard(Arc<RuntimeState>);
 impl Drop for RequestGuard {
     fn drop(&mut self) {
         self.0.active_requests.fetch_sub(1, Ordering::Relaxed);
+        self.0.state_changed.notify_waiters();
     }
 }
 
@@ -421,6 +460,8 @@ impl HandlerError {
 pub struct Router {
     handlers: Arc<HashMap<u32, Handler>>,
     stream_handlers: Arc<HashMap<u32, StreamHandler>>,
+    required_scopes: Arc<HashMap<u32, &'static [&'static str]>>,
+    middleware: Arc<[Arc<dyn Middleware>]>,
     telemetry: Option<Arc<dyn Telemetry>>,
 }
 
@@ -428,7 +469,16 @@ pub struct Router {
 pub struct RouterBuilder {
     handlers: HashMap<u32, Handler>,
     stream_handlers: HashMap<u32, StreamHandler>,
+    required_scopes: HashMap<u32, &'static [&'static str]>,
+    middleware: Vec<Arc<dyn Middleware>>,
     telemetry: Option<Arc<dyn Telemetry>>,
+}
+
+#[derive(Clone, Copy)]
+struct RequestCompression<'a> {
+    codecs: u32,
+    policy: CompressionPolicy,
+    budget: &'a DecodedByteBudget,
 }
 
 impl Router {
@@ -437,18 +487,47 @@ impl Router {
         RouterBuilder {
             handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
+            required_scopes: HashMap::new(),
+            middleware: Vec::new(),
             telemetry: None,
         }
     }
 
-    async fn dispatch(&self, mut frame: Frame, max_response_body_len: u32) -> Frame {
+    #[cfg(test)]
+    async fn dispatch(
+        &self,
+        frame: Frame,
+        max_response_body_len: u32,
+        max_metadata_len: u32,
+        compression: RequestCompression<'_>,
+    ) -> Frame {
+        self.dispatch_with_peer(
+            frame,
+            max_response_body_len,
+            max_metadata_len,
+            compression,
+            None,
+        )
+        .await
+    }
+
+    async fn dispatch_with_peer(
+        &self,
+        mut frame: Frame,
+        max_response_body_len: u32,
+        max_metadata_len: u32,
+        compression: RequestCompression<'_>,
+        peer_identity: Option<PeerIdentity>,
+    ) -> Frame {
         let ParsedRequest {
             deadline,
             trace_context,
+            metadata,
             payload,
-        } = match request_payload(&mut frame) {
+            _decoded_permit,
+        } = match request_payload(&mut frame, max_metadata_len, compression) {
             Ok(parts) => parts,
-            Err(message) => return error_frame(&frame, ErrorCode::InvalidRequest, message),
+            Err((code, message)) => return error_frame(&frame, code, message),
         };
         let mut observation = self.telemetry.as_ref().and_then(|telemetry| {
             telemetry.start_request(RequestInfo {
@@ -472,20 +551,45 @@ impl Router {
             );
             return error_frame(&frame, ErrorCode::UnknownMethod, "method is not registered");
         };
+        let absolute_deadline = deadline.map(|duration| tokio::time::Instant::now() + duration);
+        let cancellation = RequestCancellation::new();
+        let context = RequestContext::new(
+            frame.method_id,
+            frame.request_id,
+            absolute_deadline,
+            metadata,
+            self.required_scopes
+                .get(&frame.method_id)
+                .copied()
+                .unwrap_or(&[]),
+            peer_identity,
+            cancellation.clone(),
+        );
         let handler = handler.clone();
+        let middleware = self.middleware.clone();
         let collect_stages = observation.is_some();
         let instrumented = async move {
+            let invocation = async move {
+                let mut cancellation_guard = CancellationGuard::new(cancellation);
+                let result = if middleware.is_empty() {
+                    handler(payload).await
+                } else {
+                    Next::root(middleware, handler).run(context, payload).await
+                };
+                cancellation_guard.complete();
+                result
+            };
             if collect_stages {
                 FUNCTION_STAGES
                     .scope(RefCell::new(Vec::new()), async move {
-                        let result = handler(payload).await;
+                        let result = invocation.await;
                         let stages = FUNCTION_STAGES
                             .with(|stages| std::mem::take(&mut *stages.borrow_mut()));
                         (result, stages)
                     })
                     .await
             } else {
-                (handler(payload).await, Vec::new())
+                (invocation.await, Vec::new())
             }
         };
         let (result, stages) = match deadline {
@@ -584,19 +688,22 @@ impl Router {
         &self,
         mut frame: Frame,
         max_response_body_len: u32,
-        credits: Arc<Semaphore>,
-        responses: mpsc::Sender<Frame>,
+        max_metadata_len: u32,
+        compression: RequestCompression<'_>,
+        delivery: StreamDelivery,
+        peer_identity: Option<PeerIdentity>,
     ) {
+        let StreamDelivery { credits, responses } = delivery;
         let ParsedRequest {
             deadline,
             trace_context,
+            metadata,
             payload,
-        } = match request_payload(&mut frame) {
+            _decoded_permit,
+        } = match request_payload(&mut frame, max_metadata_len, compression) {
             Ok(parts) => parts,
-            Err(message) => {
-                let _ = responses
-                    .send(error_frame(&frame, ErrorCode::InvalidRequest, message))
-                    .await;
+            Err((code, message)) => {
+                let _ = responses.send(error_frame(&frame, code, message)).await;
                 return;
             }
         };
@@ -624,45 +731,44 @@ impl Router {
                 .await;
             return;
         };
-        let expires = deadline.map(|duration| tokio::time::Instant::now() + duration);
-        let open = handler(payload);
-        let opened = match expires {
-            Some(at) => match tokio::time::timeout_at(at, open).await {
-                Ok(result) => result,
-                Err(_) => {
-                    finish_observation(
-                        observation,
-                        RequestOutcome::Error {
-                            code: ErrorCode::DeadlineExceeded,
-                        },
-                    );
+        let cancellation = RequestCancellation::new();
+        let context = RequestContext::new(
+            frame.method_id,
+            frame.request_id,
+            deadline.map(|duration| tokio::time::Instant::now() + duration),
+            metadata,
+            self.required_scopes
+                .get(&frame.method_id)
+                .copied()
+                .unwrap_or(&[]),
+            peer_identity,
+            cancellation.clone(),
+        );
+        let payload = if self.middleware.is_empty() {
+            payload
+        } else {
+            let identity: Handler = Arc::new(|body| Box::pin(async move { Ok(body) }));
+            match Next::root(self.middleware.clone(), identity)
+                .run(context, payload)
+                .await
+            {
+                Ok(payload) => payload,
+                Err(error) => {
+                    finish_observation(observation, RequestOutcome::Error { code: error.code });
                     let _ = responses
-                        .send(error_frame(
-                            &frame,
-                            ErrorCode::DeadlineExceeded,
-                            "request deadline exceeded",
-                        ))
+                        .send(error_frame(&frame, error.code, &error.message))
                         .await;
                     return;
                 }
-            },
-            None => open.await,
-        };
-        let mut stream = match opened {
-            Ok(stream) => stream,
-            Err(error) => {
-                finish_observation(observation, RequestOutcome::Error { code: error.code });
-                let _ = responses
-                    .send(error_frame(&frame, error.code, &error.message))
-                    .await;
-                return;
             }
         };
-        let mut response_bytes = 0usize;
-        loop {
-            let item = match expires {
-                Some(at) => match tokio::time::timeout_at(at, stream.next()).await {
-                    Ok(item) => item,
+        let mut cancellation_guard = CancellationGuard::new(cancellation);
+        async {
+            let expires = deadline.map(|duration| tokio::time::Instant::now() + duration);
+            let open = handler(payload);
+            let opened = match expires {
+                Some(at) => match tokio::time::timeout_at(at, open).await {
+                    Ok(result) => result,
                     Err(_) => {
                         finish_observation(
                             observation,
@@ -680,93 +786,136 @@ impl Router {
                         return;
                     }
                 },
-                None => stream.next().await,
+                None => open.await,
             };
-            match item {
-                Some(Ok(body)) if body.len() <= max_response_body_len as usize => {
-                    let credit = credits.acquire();
-                    let permit = match expires {
-                        Some(at) => match tokio::time::timeout_at(at, credit).await {
-                            Ok(Ok(permit)) => permit,
-                            Ok(Err(_)) => return,
-                            Err(_) => {
-                                finish_observation(
-                                    observation,
-                                    RequestOutcome::Error {
-                                        code: ErrorCode::DeadlineExceeded,
-                                    },
-                                );
-                                let _ = responses
-                                    .send(error_frame(
-                                        &frame,
-                                        ErrorCode::DeadlineExceeded,
-                                        "request deadline exceeded",
-                                    ))
-                                    .await;
-                                return;
-                            }
-                        },
-                        None => match credit.await {
-                            Ok(permit) => permit,
-                            Err(_) => return,
-                        },
-                    };
-                    permit.forget();
-                    response_bytes += body.len();
-                    if responses
-                        .send(Frame::new(
-                            FrameKind::StreamItem,
-                            frame.method_id,
-                            frame.request_id,
-                            body,
-                        ))
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                Some(Ok(_)) => {
-                    finish_observation(
-                        observation,
-                        RequestOutcome::Error {
-                            code: ErrorCode::ResourceExhausted,
-                        },
-                    );
-                    let _ = responses
-                        .send(error_frame(
-                            &frame,
-                            ErrorCode::ResourceExhausted,
-                            "stream item exceeds negotiated body limit",
-                        ))
-                        .await;
-                    return;
-                }
-                Some(Err(error)) => {
+            let mut stream = match opened {
+                Ok(stream) => stream,
+                Err(error) => {
                     finish_observation(observation, RequestOutcome::Error { code: error.code });
                     let _ = responses
                         .send(error_frame(&frame, error.code, &error.message))
                         .await;
                     return;
                 }
-                None => {
-                    finish_observation(observation, RequestOutcome::Success { response_bytes });
-                    let _ = responses
-                        .send(Frame::new(
-                            FrameKind::StreamEnd,
-                            frame.method_id,
-                            frame.request_id,
-                            Vec::new(),
-                        ))
-                        .await;
-                    return;
+            };
+            let mut response_bytes = 0usize;
+            loop {
+                let item = match expires {
+                    Some(at) => match tokio::time::timeout_at(at, stream.next()).await {
+                        Ok(item) => item,
+                        Err(_) => {
+                            finish_observation(
+                                observation,
+                                RequestOutcome::Error {
+                                    code: ErrorCode::DeadlineExceeded,
+                                },
+                            );
+                            let _ = responses
+                                .send(error_frame(
+                                    &frame,
+                                    ErrorCode::DeadlineExceeded,
+                                    "request deadline exceeded",
+                                ))
+                                .await;
+                            return;
+                        }
+                    },
+                    None => stream.next().await,
+                };
+                match item {
+                    Some(Ok(body)) if body.len() <= max_response_body_len as usize => {
+                        let credit = credits.acquire();
+                        let permit = match expires {
+                            Some(at) => match tokio::time::timeout_at(at, credit).await {
+                                Ok(Ok(permit)) => permit,
+                                Ok(Err(_)) => return,
+                                Err(_) => {
+                                    finish_observation(
+                                        observation,
+                                        RequestOutcome::Error {
+                                            code: ErrorCode::DeadlineExceeded,
+                                        },
+                                    );
+                                    let _ = responses
+                                        .send(error_frame(
+                                            &frame,
+                                            ErrorCode::DeadlineExceeded,
+                                            "request deadline exceeded",
+                                        ))
+                                        .await;
+                                    return;
+                                }
+                            },
+                            None => match credit.await {
+                                Ok(permit) => permit,
+                                Err(_) => return,
+                            },
+                        };
+                        permit.forget();
+                        response_bytes += body.len();
+                        if responses
+                            .send(Frame::new(
+                                FrameKind::StreamItem,
+                                frame.method_id,
+                                frame.request_id,
+                                body,
+                            ))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Some(Ok(_)) => {
+                        finish_observation(
+                            observation,
+                            RequestOutcome::Error {
+                                code: ErrorCode::ResourceExhausted,
+                            },
+                        );
+                        let _ = responses
+                            .send(error_frame(
+                                &frame,
+                                ErrorCode::ResourceExhausted,
+                                "stream item exceeds negotiated body limit",
+                            ))
+                            .await;
+                        return;
+                    }
+                    Some(Err(error)) => {
+                        finish_observation(observation, RequestOutcome::Error { code: error.code });
+                        let _ = responses
+                            .send(error_frame(&frame, error.code, &error.message))
+                            .await;
+                        return;
+                    }
+                    None => {
+                        finish_observation(observation, RequestOutcome::Success { response_bytes });
+                        let _ = responses
+                            .send(Frame::new(
+                                FrameKind::StreamEnd,
+                                frame.method_id,
+                                frame.request_id,
+                                Vec::new(),
+                            ))
+                            .await;
+                        return;
+                    }
                 }
             }
         }
+        .await;
+        cancellation_guard.complete();
     }
 }
 
 impl RouterBuilder {
+    /// Appends a middleware layer. Layers wrap handlers in registration order.
+    pub fn layer(mut self, middleware: Arc<dyn Middleware>) -> Self {
+        self.middleware.push(middleware);
+        self
+    }
+
     /// Installs the telemetry implementation used for handled requests.
     pub fn telemetry(mut self, telemetry: Arc<dyn Telemetry>) -> Self {
         self.telemetry = Some(telemetry);
@@ -795,6 +944,32 @@ impl RouterBuilder {
             previous.is_none(),
             "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
         );
+        self
+    }
+
+    /// Registers a handler and exposes generated authorization scopes to middleware.
+    pub fn route_scoped<F, Fut>(
+        mut self,
+        method_id: u32,
+        required_scopes: &'static [&'static str],
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<u8>, HandlerError>> + Send + 'static,
+    {
+        assert!(
+            !self.stream_handlers.contains_key(&method_id),
+            "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
+        );
+        let previous = self
+            .handlers
+            .insert(method_id, Arc::new(move |body| Box::pin(handler(body))));
+        assert!(
+            previous.is_none(),
+            "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
+        );
+        self.required_scopes.insert(method_id, required_scopes);
         self
     }
 
@@ -829,11 +1004,44 @@ impl RouterBuilder {
         self
     }
 
+    /// Registers a server-streaming handler and exposes generated scopes to middleware.
+    pub fn route_stream_scoped<F, Fut, S>(
+        mut self,
+        method_id: u32,
+        required_scopes: &'static [&'static str],
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<S, HandlerError>> + Send + 'static,
+        S: Stream<Item = Result<Vec<u8>, HandlerError>> + Send + 'static,
+    {
+        assert!(
+            !self.handlers.contains_key(&method_id)
+                && !self.stream_handlers.contains_key(&method_id),
+            "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
+        );
+        self.stream_handlers.insert(
+            method_id,
+            Arc::new(move |body| {
+                let future = handler(body);
+                Box::pin(async move {
+                    let stream = future.await?;
+                    Ok(Box::pin(stream) as RawServerStream)
+                })
+            }),
+        );
+        self.required_scopes.insert(method_id, required_scopes);
+        self
+    }
+
     /// Freezes handler registration into a cloneable router.
     pub fn build(self) -> Router {
         Router {
             handlers: Arc::new(self.handlers),
             stream_handlers: Arc::new(self.stream_handlers),
+            required_scopes: Arc::new(self.required_scopes),
+            middleware: self.middleware.into(),
             telemetry: self.telemetry,
         }
     }
@@ -889,6 +1097,8 @@ enum Listener {
 
 impl Server {
     fn runtime(settings: PeerSettings) -> (EventHub, Arc<RuntimeState>) {
+        let (drain_tx, _) = watch::channel(false);
+        let (force_drain_tx, _) = watch::channel(false);
         (
             EventHub::default(),
             Arc::new(RuntimeState {
@@ -896,6 +1106,16 @@ impl Server {
                 active_connections: AtomicU64::new(0),
                 active_requests: AtomicU64::new(0),
                 max_in_flight: settings.max_in_flight,
+                compression_policy: CompressionPolicy {
+                    max_decoded_body_len: settings.max_decoded_body_len,
+                    ..CompressionPolicy::default()
+                },
+                decoded_byte_budget: DecodedByteBudget::new(64 * 1024 * 1024)
+                    .expect("non-zero decoded byte budget"),
+                draining: AtomicBool::new(false),
+                drain_tx,
+                force_drain_tx,
+                state_changed: Notify::new(),
                 started: Instant::now(),
             }),
         )
@@ -908,11 +1128,7 @@ impl Server {
 
     /// Binds a plaintext TCP listener without starting the accept loop.
     pub async fn bind_tcp(address: &str, router: Router) -> io::Result<Self> {
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Self::runtime(settings);
         Ok(Self {
             listener: Listener::Tcp(TcpListener::bind(address).await?),
@@ -931,11 +1147,7 @@ impl Server {
         router: Router,
         config: Arc<ServerConfig>,
     ) -> io::Result<Self> {
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Self::runtime(settings);
         Ok(Self {
             listener: Listener::Tls(TcpListener::bind(address).await?, TlsAcceptor::from(config)),
@@ -951,11 +1163,7 @@ impl Server {
     #[cfg(unix)]
     /// Binds a Unix-domain socket without starting the accept loop.
     pub fn bind_unix(path: impl AsRef<Path>, router: Router) -> io::Result<Self> {
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Self::runtime(settings);
         Ok(Self {
             listener: Listener::Unix(UnixListener::bind(path)?),
@@ -1020,14 +1228,29 @@ impl Server {
         HealthHandle(self.runtime.clone())
     }
 
+    /// Returns a handle that can stop admission and await graceful shutdown.
+    pub fn handle(&self) -> ServerHandle {
+        ServerHandle::new(self.runtime.clone())
+    }
+
     /// Runs the accept loop until an unrecoverable listener error occurs.
     pub async fn run(self) -> io::Result<()> {
-        self.runtime.ready.store(true, Ordering::Relaxed);
+        if self.runtime.draining.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.runtime.ready.store(true, Ordering::Release);
         let connection_permits = Arc::new(Semaphore::new(self.limits.max_connections));
         let request_bytes = Arc::new(Semaphore::new(self.limits.max_buffered_request_bytes));
+        let mut drain_rx = self.runtime.drain_tx.subscribe();
         match self.listener {
             Listener::Tcp(listener) => loop {
-                let (stream, _) = listener.accept().await?;
+                let (stream, _) = tokio::select! {
+                    accepted = listener.accept() => accepted?,
+                    changed = drain_rx.changed() => {
+                        if changed.is_err() || *drain_rx.borrow() { return Ok(()); }
+                        continue;
+                    }
+                };
                 stream.set_nodelay(true)?;
                 let router = self.router.clone();
                 let settings = self.settings;
@@ -1044,9 +1267,12 @@ impl Server {
                     if let Err(error) = serve_connection(
                         stream,
                         router,
-                        settings,
-                        hello_timeout,
-                        events,
+                        None,
+                        ConnectionConfig {
+                            server: settings,
+                            hello_timeout,
+                            events,
+                        },
                         runtime,
                         ConnectionResources {
                             limits,
@@ -1061,7 +1287,13 @@ impl Server {
                 });
             },
             Listener::Tls(listener, acceptor) => loop {
-                let (stream, _) = listener.accept().await?;
+                let (stream, _) = tokio::select! {
+                    accepted = listener.accept() => accepted?,
+                    changed = drain_rx.changed() => {
+                        if changed.is_err() || *drain_rx.borrow() { return Ok(()); }
+                        continue;
+                    }
+                };
                 stream.set_nodelay(true)?;
                 let acceptor = acceptor.clone();
                 let router = self.router.clone();
@@ -1079,12 +1311,23 @@ impl Server {
                     let handshake = timeout(Duration::from_secs(10), acceptor.accept(stream)).await;
                     match handshake {
                         Ok(Ok(stream)) => {
+                            let peer_identity = stream
+                                .get_ref()
+                                .1
+                                .peer_certificates()
+                                .and_then(|certificates| certificates.first())
+                                .map(|certificate| {
+                                    PeerIdentity::tls_certificate(certificate.as_ref().to_vec())
+                                });
                             if let Err(error) = serve_connection(
                                 stream,
                                 router,
-                                settings,
-                                hello_timeout,
-                                events,
+                                peer_identity,
+                                ConnectionConfig {
+                                    server: settings,
+                                    hello_timeout,
+                                    events,
+                                },
                                 runtime,
                                 ConnectionResources {
                                     limits,
@@ -1106,7 +1349,13 @@ impl Server {
             },
             #[cfg(unix)]
             Listener::Unix(listener) => loop {
-                let (stream, _) = listener.accept().await?;
+                let (stream, _) = tokio::select! {
+                    accepted = listener.accept() => accepted?,
+                    changed = drain_rx.changed() => {
+                        if changed.is_err() || *drain_rx.borrow() { return Ok(()); }
+                        continue;
+                    }
+                };
                 let router = self.router.clone();
                 let settings = self.settings;
                 let hello_timeout = self.hello_timeout;
@@ -1122,9 +1371,12 @@ impl Server {
                     if let Err(error) = serve_connection(
                         stream,
                         router,
-                        settings,
-                        hello_timeout,
-                        events,
+                        None,
+                        ConnectionConfig {
+                            server: settings,
+                            hello_timeout,
+                            events,
+                        },
                         runtime,
                         ConnectionResources {
                             limits,
@@ -1145,15 +1397,19 @@ impl Server {
 async fn serve_connection<S>(
     mut stream: S,
     router: Router,
-    server: PeerSettings,
-    hello_timeout: Duration,
-    events: EventHub,
+    peer_identity: Option<PeerIdentity>,
+    config: ConnectionConfig,
     runtime: Arc<RuntimeState>,
     resources: ConnectionResources,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let ConnectionConfig {
+        server,
+        hello_timeout,
+        events,
+    } = config;
     let ConnectionResources {
         limits,
         request_bytes,
@@ -1177,8 +1433,18 @@ where
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let negotiated = PeerSettings {
         max_body_len: client.max_body_len.min(server.max_body_len),
+        max_decoded_body_len: client.max_decoded_body_len.min(server.max_decoded_body_len),
+        max_metadata_len: client.max_metadata_len.min(server.max_metadata_len),
         max_in_flight: client.max_in_flight.min(server.max_in_flight),
+        max_concurrent_streams: client
+            .max_concurrent_streams
+            .min(server.max_concurrent_streams),
+        initial_stream_credit: client
+            .initial_stream_credit
+            .min(server.initial_stream_credit),
+        compression_codecs: client.compression_codecs & server.compression_codecs,
         features: client.features & server.features,
+        diagnostic_features: client.diagnostic_features & server.diagnostic_features,
     };
     write_frame(
         &mut stream,
@@ -1187,7 +1453,12 @@ where
     .await?;
     tracing::debug!(
         max_body_len = negotiated.max_body_len,
+        max_decoded_body_len = negotiated.max_decoded_body_len,
+        max_metadata_len = negotiated.max_metadata_len,
         max_in_flight = negotiated.max_in_flight,
+        max_concurrent_streams = negotiated.max_concurrent_streams,
+        initial_stream_credit = negotiated.initial_stream_credit,
+        compression_codecs = negotiated.compression_codecs,
         features = negotiated.features,
         "MoonLightBridge handshake completed"
     );
@@ -1200,6 +1471,14 @@ where
     let active: ActiveRequests = Arc::new(Mutex::new(HashMap::new()));
     let permits = Arc::new(Semaphore::new(negotiated.max_in_flight as usize));
     let mut event_rx = events.sender.subscribe();
+    let mut drain_rx = runtime.drain_tx.subscribe();
+    let mut force_drain_rx = runtime.force_drain_tx.subscribe();
+    let active_changed = Arc::new(Notify::new());
+    let mut draining = *drain_rx.borrow();
+    let connection_compression_policy = CompressionPolicy {
+        max_decoded_body_len: negotiated.max_decoded_body_len,
+        ..runtime.compression_policy
+    };
 
     // Keep exactly one read future alive for the connection. Selecting directly on
     // read_frame alongside events is not cancellation-safe: an event can drop a
@@ -1233,6 +1512,13 @@ where
                     None => break,
                 },
             };
+            let first = fit_outbound_frame(first, negotiated.max_decoded_body_len);
+            let first = compress_outbound_frame(
+                first,
+                negotiated.compression_codecs,
+                connection_compression_policy,
+                negotiated.max_metadata_len,
+            );
             let first = fit_outbound_frame(first, negotiated.max_body_len);
             encoded.clear();
             first
@@ -1243,6 +1529,13 @@ where
                 let Ok(frame) = responses_rx.try_recv() else {
                     break;
                 };
+                let frame = fit_outbound_frame(frame, negotiated.max_decoded_body_len);
+                let frame = compress_outbound_frame(
+                    frame,
+                    negotiated.compression_codecs,
+                    connection_compression_policy,
+                    negotiated.max_metadata_len,
+                );
                 let frame = fit_outbound_frame(frame, negotiated.max_body_len);
                 let frame_len = HEADER_LEN + frame.body.len();
                 if encoded.len() + frame_len > MAX_BATCH_BYTES {
@@ -1259,6 +1552,12 @@ where
         Ok::<(), io::Error>(())
     });
 
+    if draining {
+        responses_tx
+            .send(Frame::new(FrameKind::GoAway, 0, 0, Vec::new()))
+            .await
+            .map_err(channel_closed)?;
+    }
     let connection_result = loop {
         let buffered = tokio::select! {
             result = frames_rx.recv() => match result {
@@ -1273,7 +1572,7 @@ where
             event = event_rx.recv(), if negotiated.features & moonlight_bridge_protocol::FEATURE_SERVER_EVENTS != 0 => {
                 match event {
                     Ok(frame) => {
-                        if frame.body.len() > negotiated.max_body_len as usize {
+                        if frame.body.len() > negotiated.max_decoded_body_len as usize {
                             tracing::warn!(
                                 event_id = frame.method_id,
                                 event_bytes = frame.body.len(),
@@ -1292,7 +1591,34 @@ where
                     }
                     Err(broadcast::error::RecvError::Closed) => continue,
                 }
-            }
+            },
+            changed = drain_rx.changed(), if !draining => {
+                if changed.is_ok() && *drain_rx.borrow() {
+                    draining = true;
+                    if responses_tx.send(Frame::new(FrameKind::GoAway, 0, 0, Vec::new())).await.is_err() {
+                        break Err(io::Error::new(io::ErrorKind::BrokenPipe, "response writer stopped"));
+                    }
+                    if active.lock().await.is_empty() {
+                        let _ = responses_tx.send(Frame::new(FrameKind::Goodbye, 0, 0, Vec::new())).await;
+                        break Ok(());
+                    }
+                }
+                continue;
+            },
+            _ = active_changed.notified(), if draining => {
+                if active.lock().await.is_empty() {
+                    let _ = responses_tx.send(Frame::new(FrameKind::Goodbye, 0, 0, Vec::new())).await;
+                    break Ok(());
+                }
+                continue;
+            },
+            changed = force_drain_rx.changed() => {
+                if changed.is_err() || *force_drain_rx.borrow() {
+                    let _ = responses_tx.send(Frame::new(FrameKind::Goodbye, 0, 0, Vec::new())).await;
+                    break Ok(());
+                }
+                continue;
+            },
         };
         let BufferedFrame {
             frame,
@@ -1300,6 +1626,23 @@ where
         } = buffered;
         match frame.kind {
             FrameKind::Request => {
+                if draining {
+                    if responses_tx
+                        .send(error_frame(
+                            &frame,
+                            ErrorCode::Unavailable,
+                            "server connection is draining",
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        break Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "response writer stopped",
+                        ));
+                    }
+                    continue;
+                }
                 if frame.request_id == 0 {
                     break Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -1325,9 +1668,11 @@ where
                 let router = router.clone();
                 let responses_tx = responses_tx.clone();
                 let active_for_task = active.clone();
+                let active_changed_for_task = active_changed.clone();
                 let request_id = frame.request_id;
                 let runtime_for_task = runtime.clone();
-                let max_body_len = negotiated.max_body_len;
+                let peer_identity = peer_identity.clone();
+                let max_decoded_body_len = negotiated.max_decoded_body_len;
                 let streaming = router.is_streaming(frame.method_id);
                 if streaming
                     && negotiated.features & moonlight_bridge_protocol::FEATURE_SERVER_STREAMING
@@ -1358,22 +1703,49 @@ where
                     runtime_for_task
                         .active_requests
                         .fetch_add(1, Ordering::Relaxed);
-                    let _request_guard = RequestGuard(runtime_for_task);
+                    let _request_guard = RequestGuard(runtime_for_task.clone());
                     if start_rx.await.is_err() {
                         return;
                     }
                     if let Some(credits) = task_credits {
                         router
-                            .dispatch_stream(frame, max_body_len, credits, responses_tx.clone())
+                            .dispatch_stream(
+                                frame,
+                                max_decoded_body_len,
+                                negotiated.max_metadata_len,
+                                RequestCompression {
+                                    codecs: negotiated.compression_codecs,
+                                    policy: connection_compression_policy,
+                                    budget: &runtime_for_task.decoded_byte_budget,
+                                },
+                                StreamDelivery {
+                                    credits,
+                                    responses: responses_tx.clone(),
+                                },
+                                peer_identity,
+                            )
                             .await;
                     } else {
                         let response = fit_outbound_frame(
-                            router.dispatch(frame, max_body_len).await,
-                            max_body_len,
+                            router
+                                .dispatch_with_peer(
+                                    frame,
+                                    max_decoded_body_len,
+                                    negotiated.max_metadata_len,
+                                    RequestCompression {
+                                        codecs: negotiated.compression_codecs,
+                                        policy: connection_compression_policy,
+                                        budget: &runtime_for_task.decoded_byte_budget,
+                                    },
+                                    peer_identity,
+                                )
+                                .await,
+                            max_decoded_body_len,
                         );
                         let _ = responses_tx.send(response).await;
                     }
                     active_for_task.lock().await.remove(&request_id);
+                    active_changed_for_task.notify_one();
                 });
                 let mut active_requests = active.lock().await;
                 if active_requests.contains_key(&request_id) {
@@ -1397,6 +1769,7 @@ where
             FrameKind::Cancel => {
                 if let Some(request) = active.lock().await.remove(&frame.request_id) {
                     request.task.abort();
+                    active_changed.notify_one();
                 }
             }
             FrameKind::StreamCredit => {
@@ -1505,42 +1878,114 @@ where
 struct ParsedRequest {
     deadline: Option<Duration>,
     trace_context: Option<TraceContext>,
+    metadata: Metadata,
     payload: Vec<u8>,
+    _decoded_permit: Option<DecodedBytePermit>,
 }
 
-fn request_payload(frame: &mut Frame) -> Result<ParsedRequest, &'static str> {
-    let mut offset = 0;
-    let deadline = if frame.flags & FLAG_HAS_DEADLINE != 0 {
-        if frame.body.len() < offset + 4 {
-            return Err("deadline flag requires a four-byte timeout");
-        }
-        let millis = u32::from_be_bytes(frame.body[offset..offset + 4].try_into().unwrap());
+fn request_payload(
+    frame: &mut Frame,
+    max_metadata_len: u32,
+    compression: RequestCompression<'_>,
+) -> Result<ParsedRequest, (ErrorCode, &'static str)> {
+    let (metadata, payload_offset) = if frame.flags & FLAG_HAS_METADATA != 0 {
+        let limits = MetadataLimits {
+            max_bytes: max_metadata_len,
+            ..MetadataLimits::default()
+        };
+        let (metadata, payload) = Metadata::decode(&frame.body, limits)
+            .map_err(|_| (ErrorCode::InvalidRequest, "invalid request metadata"))?;
+        (metadata, frame.body.len() - payload.len())
+    } else {
+        (Metadata::new(), 0)
+    };
+    let deadline = if let Some(value) =
+        metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::DeadlineMillis))
+    {
+        let bytes: [u8; 4] = value.try_into().map_err(|_| {
+            (
+                ErrorCode::InvalidRequest,
+                "deadline metadata must contain four bytes",
+            )
+        })?;
+        let millis = u32::from_be_bytes(bytes);
         if millis == 0 {
-            return Err("deadline must be greater than zero");
+            return Err((
+                ErrorCode::InvalidRequest,
+                "deadline must be greater than zero",
+            ));
         }
-        offset += 4;
         Some(Duration::from_millis(millis as u64))
     } else {
         None
     };
-    let trace_context = if frame.flags & FLAG_HAS_TRACE_CONTEXT != 0 {
-        if frame.body.len() < offset + TRACE_CONTEXT_LEN {
-            return Err("trace-context flag requires a 25-byte context");
+    let trace_context = if let Some(value) =
+        metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::TraceContext))
+    {
+        if value.len() != TRACE_CONTEXT_LEN {
+            return Err((
+                ErrorCode::InvalidRequest,
+                "trace-context metadata must contain 25 bytes",
+            ));
         }
-        let context = TraceContext::decode(&frame.body[offset..offset + TRACE_CONTEXT_LEN])
-            .map_err(|_| "invalid trace context")?;
-        offset += TRACE_CONTEXT_LEN;
+        let context = TraceContext::decode(value)
+            .map_err(|_| (ErrorCode::InvalidRequest, "invalid trace context"))?;
         Some(context)
     } else {
         None
     };
-    let payload_length = frame.body.len() - offset;
-    frame.body.copy_within(offset.., 0);
+    let payload_length = frame.body.len() - payload_offset;
+    frame.body.copy_within(payload_offset.., 0);
     frame.body.truncate(payload_length);
+    let encoded_payload = std::mem::take(&mut frame.body);
+    let codec_value = metadata.get(&MetadataKey::Reserved(
+        ReservedMetadataKey::CompressionCodec,
+    ));
+    let original_value = metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::OriginalLength));
+    let (payload, decoded_permit) = match (codec_value, original_value) {
+        (None, None) => (encoded_payload, None),
+        (Some(&[codec]), Some(original)) => {
+            let codec = CompressionCodec::try_from(codec).map_err(|_| {
+                (
+                    ErrorCode::CompressionFailure,
+                    "unsupported compression codec",
+                )
+            })?;
+            if codec != CompressionCodec::Zstd || compression.codecs & COMPRESSION_CODEC_ZSTD == 0 {
+                return Err((
+                    ErrorCode::CompressionFailure,
+                    "compression codec was not negotiated",
+                ));
+            }
+            let original: [u8; 4] = original.try_into().map_err(|_| {
+                (
+                    ErrorCode::CompressionFailure,
+                    "invalid original payload length",
+                )
+            })?;
+            compression
+                .policy
+                .decode_with_reservation(
+                    codec,
+                    &encoded_payload,
+                    u32::from_be_bytes(original),
+                    compression.budget,
+                )
+                .map_err(|_| (ErrorCode::CompressionFailure, "compressed payload rejected"))?
+        }
+        _ => {
+            return Err((
+                ErrorCode::CompressionFailure,
+                "incomplete compression metadata",
+            ));
+        }
+    };
     Ok(ParsedRequest {
         deadline,
         trace_context,
-        payload: std::mem::take(&mut frame.body),
+        metadata,
+        payload,
+        _decoded_permit: decoded_permit,
     })
 }
 
@@ -1571,6 +2016,80 @@ fn fit_outbound_frame(mut frame: Frame, max_body_len: u32) -> Frame {
     } else {
         Vec::new()
     };
+    frame
+}
+
+fn compress_outbound_frame(
+    mut frame: Frame,
+    compression_codecs: u32,
+    policy: CompressionPolicy,
+    max_metadata_len: u32,
+) -> Frame {
+    if compression_codecs & COMPRESSION_CODEC_ZSTD == 0
+        || !matches!(
+            frame.kind,
+            FrameKind::Response | FrameKind::Event | FrameKind::StreamItem
+        )
+    {
+        return frame;
+    }
+    let (mut metadata, payload_offset) = if frame.flags & FLAG_HAS_METADATA != 0 {
+        let limits = MetadataLimits {
+            max_bytes: max_metadata_len,
+            ..MetadataLimits::default()
+        };
+        match Metadata::decode(&frame.body, limits) {
+            Ok((metadata, payload)) => (metadata, frame.body.len() - payload.len()),
+            Err(_) => return frame,
+        }
+    } else {
+        (Metadata::new(), 0)
+    };
+    let payload = frame.body.split_off(payload_offset);
+    let compressed = match policy.encode(payload, CompressionCodec::Zstd) {
+        Ok(compressed) => compressed,
+        Err(_) => {
+            frame.kind = FrameKind::Error;
+            frame.flags = 0;
+            frame.body = ErrorCode::CompressionFailure.encode("response compression failed");
+            return frame;
+        }
+    };
+    if compressed.codec == CompressionCodec::Zstd
+        && metadata
+            .insert_reserved(
+                ReservedMetadataKey::CompressionCodec,
+                vec![compressed.codec as u8],
+            )
+            .and_then(|()| {
+                metadata.insert_reserved(
+                    ReservedMetadataKey::OriginalLength,
+                    compressed.original_len.to_be_bytes().to_vec(),
+                )
+            })
+            .is_err()
+    {
+        frame.kind = FrameKind::Error;
+        frame.flags = 0;
+        frame.body = ErrorCode::CompressionFailure.encode("response metadata conflict");
+        return frame;
+    }
+    let mut body = Vec::new();
+    if !metadata.is_empty() {
+        if metadata.encode_prefix(&mut body).is_err()
+            || body.len().saturating_sub(4) > max_metadata_len as usize
+        {
+            frame.kind = FrameKind::Error;
+            frame.flags = 0;
+            frame.body = ErrorCode::CompressionFailure.encode("response metadata too large");
+            return frame;
+        }
+        frame.flags |= FLAG_HAS_METADATA;
+    } else {
+        frame.flags &= !FLAG_HAS_METADATA;
+    }
+    body.extend_from_slice(&compressed.bytes);
+    frame.body = body;
     frame
 }
 
@@ -1648,6 +2167,444 @@ mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    struct TestMiddleware {
+        name: &'static str,
+        events: Arc<StdMutex<Vec<String>>>,
+    }
+
+    impl Middleware for TestMiddleware {
+        fn call(&self, context: RequestContext, body: Vec<u8>, next: Next) -> MiddlewareFuture {
+            let name = self.name;
+            let events = self.events.clone();
+            Box::pin(async move {
+                events.lock().unwrap().push(format!("{name}:before"));
+                let result = next.run(context, body).await;
+                events.lock().unwrap().push(format!("{name}:after"));
+                result
+            })
+        }
+    }
+
+    fn test_compression() -> DecodedByteBudget {
+        DecodedByteBudget::new(1024 * 1024).unwrap()
+    }
+
+    async fn dispatch_test(router: &Router, frame: Frame) -> Frame {
+        let budget = test_compression();
+        router
+            .dispatch(
+                frame,
+                DEFAULT_MAX_BODY_LEN,
+                MetadataLimits::default().max_bytes,
+                RequestCompression {
+                    codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                        | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+                    policy: CompressionPolicy::default(),
+                    budget: &budget,
+                },
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn middleware_runs_in_registration_order_around_handler() {
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let handler_events = events.clone();
+        let router = Router::builder()
+            .layer(Arc::new(TestMiddleware {
+                name: "outer",
+                events: events.clone(),
+            }))
+            .layer(Arc::new(TestMiddleware {
+                name: "inner",
+                events: events.clone(),
+            }))
+            .route(1, move |body| {
+                let events = handler_events.clone();
+                async move {
+                    events.lock().unwrap().push("handler".to_owned());
+                    Ok(body)
+                }
+            })
+            .build();
+
+        let response = dispatch_test(
+            &router,
+            Frame::new(FrameKind::Request, 1, 7, b"body".to_vec()),
+        )
+        .await;
+
+        assert_eq!(response.kind, FrameKind::Response);
+        assert_eq!(response.body, b"body");
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "outer:before",
+                "inner:before",
+                "handler",
+                "inner:after",
+                "outer:after"
+            ]
+        );
+    }
+
+    struct RejectMiddleware;
+
+    impl Middleware for RejectMiddleware {
+        fn call(&self, _context: RequestContext, _body: Vec<u8>, _next: Next) -> MiddlewareFuture {
+            Box::pin(async {
+                Err(HandlerError::new(
+                    ErrorCode::PermissionDenied,
+                    "scope denied",
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn middleware_short_circuit_does_not_invoke_handler() {
+        let invoked = Arc::new(AtomicBool::new(false));
+        let handler_invoked = invoked.clone();
+        let router = Router::builder()
+            .layer(Arc::new(RejectMiddleware))
+            .route(1, move |_| {
+                handler_invoked.store(true, Ordering::SeqCst);
+                async { Ok(Vec::new()) }
+            })
+            .build();
+
+        let response = dispatch_test(&router, Frame::new(FrameKind::Request, 1, 8, vec![])).await;
+
+        assert_eq!(response.kind, FrameKind::Error);
+        assert_eq!(
+            ErrorCode::try_from(u16::from_be_bytes(response.body[..2].try_into().unwrap()))
+                .unwrap(),
+            ErrorCode::PermissionDenied
+        );
+        assert!(!invoked.load(Ordering::SeqCst));
+    }
+
+    struct DoubleNextMiddleware;
+
+    impl Middleware for DoubleNextMiddleware {
+        fn call(&self, context: RequestContext, body: Vec<u8>, next: Next) -> MiddlewareFuture {
+            Box::pin(async move {
+                let duplicate = next.clone();
+                let first = next.run(context.clone(), body.clone()).await;
+                assert!(first.is_ok());
+                duplicate.run(context, body).await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn next_rejects_a_second_invocation_without_repeating_handler() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let handler_calls = calls.clone();
+        let router = Router::builder()
+            .layer(Arc::new(DoubleNextMiddleware))
+            .route(1, move |_| {
+                handler_calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok(Vec::new()) }
+            })
+            .build();
+
+        let response = dispatch_test(&router, Frame::new(FrameKind::Request, 1, 9, vec![])).await;
+
+        assert_eq!(response.kind, FrameKind::Error);
+        assert_eq!(
+            ErrorCode::try_from(u16::from_be_bytes(response.body[..2].try_into().unwrap()))
+                .unwrap(),
+            ErrorCode::Internal
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    struct ContextCapture(Arc<StdMutex<Option<RequestContext>>>);
+
+    impl Middleware for ContextCapture {
+        fn call(&self, context: RequestContext, body: Vec<u8>, next: Next) -> MiddlewareFuture {
+            *self.0.lock().unwrap() = Some(context.clone());
+            next.run(context, body)
+        }
+    }
+
+    #[tokio::test]
+    async fn middleware_context_exposes_deadline_reserved_metadata_scopes_and_tls_peer() {
+        let captured = Arc::new(StdMutex::new(None));
+        let router = Router::builder()
+            .layer(Arc::new(ContextCapture(captured.clone())))
+            .route_scoped(1, &["echo.invoke"], |body| async move { Ok(body) })
+            .build();
+        let mut metadata = Metadata::new();
+        metadata
+            .insert_reserved(
+                ReservedMetadataKey::DeadlineMillis,
+                1_000u32.to_be_bytes().to_vec(),
+            )
+            .unwrap();
+        metadata
+            .insert_reserved(ReservedMetadataKey::Authorization, b"opaque".to_vec())
+            .unwrap();
+        let mut body = Vec::new();
+        metadata.encode_prefix(&mut body).unwrap();
+        body.extend_from_slice(b"payload");
+        let budget = test_compression();
+        let peer = PeerIdentity::tls_certificate(vec![1, 2, 3]);
+
+        let response = router
+            .dispatch_with_peer(
+                Frame::new(FrameKind::Request, 1, 10, body).with_flags(FLAG_HAS_METADATA),
+                DEFAULT_MAX_BODY_LEN,
+                MetadataLimits::default().max_bytes,
+                RequestCompression {
+                    codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE,
+                    policy: CompressionPolicy::default(),
+                    budget: &budget,
+                },
+                Some(peer.clone()),
+            )
+            .await;
+
+        assert_eq!(response.body, b"payload");
+        let context = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(context.method_id(), 1);
+        assert_eq!(context.request_id(), 10);
+        assert!(context.deadline().unwrap() > tokio::time::Instant::now());
+        assert_eq!(context.required_scopes(), &["echo.invoke"]);
+        assert_eq!(context.peer_identity(), Some(&peer));
+        assert_eq!(
+            context
+                .metadata()
+                .get(&MetadataKey::Reserved(ReservedMetadataKey::Authorization)),
+            Some(b"opaque".as_slice())
+        );
+    }
+
+    struct PanicMiddleware;
+
+    impl Middleware for PanicMiddleware {
+        fn call(&self, _context: RequestContext, _body: Vec<u8>, _next: Next) -> MiddlewareFuture {
+            Box::pin(async { panic!("middleware panic must be isolated") })
+        }
+    }
+
+    #[tokio::test]
+    async fn middleware_panic_becomes_one_internal_error() {
+        let router = Router::builder()
+            .layer(Arc::new(PanicMiddleware))
+            .route(1, |_| async { Ok(Vec::new()) })
+            .build();
+
+        let response = dispatch_test(&router, Frame::new(FrameKind::Request, 1, 11, vec![])).await;
+
+        assert_eq!(response.kind, FrameKind::Error);
+        assert_eq!(
+            ErrorCode::try_from(u16::from_be_bytes(response.body[..2].try_into().unwrap()))
+                .unwrap(),
+            ErrorCode::Internal
+        );
+    }
+
+    struct CancellationCapture(StdMutex<Option<oneshot::Sender<RequestCancellation>>>);
+
+    impl Middleware for CancellationCapture {
+        fn call(&self, context: RequestContext, _body: Vec<u8>, _next: Next) -> MiddlewareFuture {
+            if let Some(sender) = self.0.lock().unwrap().take() {
+                let _ = sender.send(context.cancellation().clone());
+            }
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn middleware_cancellation_signal_is_set_when_dispatch_is_aborted() {
+        let (sender, receiver) = oneshot::channel();
+        let router = Router::builder()
+            .layer(Arc::new(CancellationCapture(StdMutex::new(Some(sender)))))
+            .route(1, |_| async { Ok(Vec::new()) })
+            .build();
+        let task = tokio::spawn(async move {
+            dispatch_test(&router, Frame::new(FrameKind::Request, 1, 12, vec![])).await
+        });
+        let cancellation = receiver.await.unwrap();
+
+        task.abort();
+        let _ = task.await;
+
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn begin_drain_immediately_clears_readiness() {
+        let settings = PeerSettings::default();
+        let (_, runtime) = Server::runtime(settings);
+        runtime.ready.store(true, Ordering::Relaxed);
+        let handle = ServerHandle::new(runtime);
+
+        assert!(handle.begin_drain());
+        assert!(!handle.health().snapshot().ready);
+        assert!(!handle.begin_drain(), "drain transition must happen once");
+    }
+
+    #[tokio::test]
+    async fn server_drain_completes_existing_call_and_rejects_new_calls() {
+        let (mut client, stream) = tokio::io::duplex(4096);
+        let settings = PeerSettings {
+            max_in_flight: 2,
+            ..PeerSettings::default()
+        };
+        let (events, runtime) = Server::runtime(settings);
+        let handle = ServerHandle::new(runtime.clone());
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let entered_tx = Arc::new(StdMutex::new(Some(entered_tx)));
+        let (release_tx, release_rx) = oneshot::channel();
+        let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+        let router = Router::builder()
+            .route(1, move |body| {
+                let entered_tx = entered_tx.clone();
+                let release_rx = release_rx.clone();
+                async move {
+                    if let Some(sender) = entered_tx.lock().unwrap().take() {
+                        let _ = sender.send(());
+                    }
+                    if let Some(receiver) = release_rx.lock().await.take() {
+                        let _ = receiver.await;
+                    }
+                    Ok(body)
+                }
+            })
+            .build();
+        let task = tokio::spawn(serve_test_connection(
+            stream,
+            router,
+            settings,
+            Duration::from_secs(1),
+            events,
+            runtime,
+        ));
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Hello, 0, 0, settings.encode()),
+        )
+        .await
+        .unwrap();
+        read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Request, 1, 41, b"existing".to_vec()),
+        )
+        .await
+        .unwrap();
+        entered_rx.await.unwrap();
+
+        assert!(handle.begin_drain());
+        let goaway = read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(goaway.kind, FrameKind::GoAway);
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Request, 1, 42, b"new".to_vec()),
+        )
+        .await
+        .unwrap();
+        let rejected = read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(rejected.kind, FrameKind::Error);
+        assert_eq!(
+            ErrorCode::try_from(u16::from_be_bytes(rejected.body[..2].try_into().unwrap()))
+                .unwrap(),
+            ErrorCode::Unavailable
+        );
+
+        let _ = release_tx.send(());
+        let response = read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(response.kind, FrameKind::Response);
+        assert_eq!(response.request_id, 41);
+        let goodbye = read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(goodbye.kind, FrameKind::Goodbye);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn drain_timeout_cancels_stuck_requests_and_releases_permits() {
+        let (mut client, stream) = tokio::io::duplex(4096);
+        let settings = PeerSettings::default();
+        let (events, runtime) = Server::runtime(settings);
+        let handle = ServerHandle::new(runtime.clone());
+        let router = Router::builder()
+            .route(1, |_| async {
+                std::future::pending::<Result<Vec<u8>, HandlerError>>().await
+            })
+            .build();
+        let task = tokio::spawn(serve_test_connection(
+            stream,
+            router,
+            settings,
+            Duration::from_secs(1),
+            events,
+            runtime,
+        ));
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Hello, 0, 0, settings.encode()),
+        )
+        .await
+        .unwrap();
+        read_frame(&mut client, settings.max_body_len)
+            .await
+            .unwrap();
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Request, 1, 51, Vec::new()),
+        )
+        .await
+        .unwrap();
+        timeout(Duration::from_secs(1), async {
+            while handle.health().snapshot().active_requests == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(!handle.drain(Duration::from_millis(10)).await);
+        task.await.unwrap().unwrap();
+        let health = handle.health().snapshot();
+        assert_eq!(health.active_connections, 0);
+        assert_eq!(health.active_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn begin_drain_stops_the_accept_loop() {
+        let server = Server::bind_tcp(
+            "127.0.0.1:0",
+            Router::builder()
+                .route(1, |body| async move { Ok(body) })
+                .build(),
+        )
+        .await
+        .unwrap();
+        let handle = server.handle();
+        let task = tokio::spawn(server.run());
+        tokio::task::yield_now().await;
+
+        assert!(handle.begin_drain());
+        timeout(Duration::from_secs(1), task)
+            .await
+            .expect("accept loop did not stop")
+            .unwrap()
+            .unwrap();
+    }
+
     async fn serve_test_connection<S>(
         stream: S,
         router: Router,
@@ -1666,9 +2623,12 @@ mod tests {
         serve_connection(
             stream,
             router,
-            settings,
-            hello_timeout,
-            events,
+            None,
+            ConnectionConfig {
+                server: settings,
+                hello_timeout,
+                events,
+            },
             runtime,
             ConnectionResources {
                 limits,
@@ -1699,7 +2659,17 @@ mod tests {
             .build();
         assert_eq!(
             router
-                .dispatch(Frame::new(FrameKind::Request, 1, 1, vec![]), 1024)
+                .dispatch(
+                    Frame::new(FrameKind::Request, 1, 1, vec![]),
+                    1024,
+                    MetadataLimits::default().max_bytes,
+                    RequestCompression {
+                        codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                            | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+                        policy: CompressionPolicy::default(),
+                        budget: &DecodedByteBudget::new(1024 * 1024).unwrap(),
+                    },
+                )
                 .await
                 .kind,
             FrameKind::Response
@@ -1713,6 +2683,7 @@ mod tests {
             max_body_len: DEFAULT_MAX_BODY_LEN,
             max_in_flight: 1,
             features: SERVER_FEATURES,
+            ..PeerSettings::default()
         };
         let (events, runtime) = Server::runtime(settings);
         let router = Router::builder()
@@ -1763,14 +2734,36 @@ mod tests {
             parent_span_id: [4; 8],
             sampled: true,
         };
-        let mut body = 1_000u32.to_be_bytes().to_vec();
-        expected_trace.encode_into(&mut body);
+        let mut metadata = moonlight_bridge_protocol::Metadata::new();
+        metadata
+            .insert_reserved(
+                moonlight_bridge_protocol::ReservedMetadataKey::DeadlineMillis,
+                1_000u32.to_be_bytes().to_vec(),
+            )
+            .unwrap();
+        let mut encoded_trace = Vec::new();
+        expected_trace.encode_into(&mut encoded_trace);
+        metadata
+            .insert_reserved(
+                moonlight_bridge_protocol::ReservedMetadataKey::TraceContext,
+                encoded_trace,
+            )
+            .unwrap();
+        let mut body = Vec::new();
+        metadata.encode_prefix(&mut body).unwrap();
         body.extend_from_slice(b"payload");
         let response = router
             .dispatch(
                 Frame::new(FrameKind::Request, 7, 9, body)
-                    .with_flags(FLAG_HAS_DEADLINE | FLAG_HAS_TRACE_CONTEXT),
+                    .with_flags(moonlight_bridge_protocol::FLAG_HAS_METADATA),
                 DEFAULT_MAX_BODY_LEN,
+                MetadataLimits::default().max_bytes,
+                RequestCompression {
+                    codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                        | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+                    policy: CompressionPolicy::default(),
+                    budget: &DecodedByteBudget::new(1024 * 1024).unwrap(),
+                },
             )
             .await;
 
@@ -1780,6 +2773,60 @@ mod tests {
         assert_eq!(metrics.snapshot().succeeded, 1);
         assert_eq!(metrics.snapshot().request_bytes, 7);
         assert_eq!(metrics.snapshot().response_bytes, 7);
+    }
+
+    #[test]
+    fn request_payload_decompresses_zstd_after_bounded_metadata_validation() {
+        let policy = moonlight_bridge_protocol::CompressionPolicy {
+            min_payload_bytes: 1,
+            min_savings_bytes: 0,
+            max_decoded_body_len: 1024 * 1024,
+            max_expansion_ratio: 256,
+            compression_level: 1,
+        };
+        let original = vec![b'x'; 4096];
+        let compressed = policy
+            .encode(
+                original.clone(),
+                moonlight_bridge_protocol::CompressionCodec::Zstd,
+            )
+            .unwrap();
+        assert_eq!(
+            compressed.codec,
+            moonlight_bridge_protocol::CompressionCodec::Zstd
+        );
+        let mut metadata = moonlight_bridge_protocol::Metadata::new();
+        metadata
+            .insert_reserved(
+                moonlight_bridge_protocol::ReservedMetadataKey::CompressionCodec,
+                vec![compressed.codec as u8],
+            )
+            .unwrap();
+        metadata
+            .insert_reserved(
+                moonlight_bridge_protocol::ReservedMetadataKey::OriginalLength,
+                compressed.original_len.to_be_bytes().to_vec(),
+            )
+            .unwrap();
+        let mut body = Vec::new();
+        metadata.encode_prefix(&mut body).unwrap();
+        body.extend_from_slice(&compressed.bytes);
+        let mut frame = Frame::new(FrameKind::Request, 1, 1, body)
+            .with_flags(moonlight_bridge_protocol::FLAG_HAS_METADATA);
+        let budget = moonlight_bridge_protocol::DecodedByteBudget::new(8192).unwrap();
+
+        let parsed = request_payload(
+            &mut frame,
+            MetadataLimits::default().max_bytes,
+            RequestCompression {
+                codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                    | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+                policy,
+                budget: &budget,
+            },
+        )
+        .unwrap();
+        assert_eq!(parsed.payload, original);
     }
 
     #[test]
@@ -1807,11 +2854,7 @@ mod tests {
     #[tokio::test]
     async fn silent_client_is_rejected_by_hello_timeout() {
         let (_client, server_stream) = tokio::io::duplex(256);
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Server::runtime(settings);
         let error = serve_test_connection(
             server_stream,
@@ -1829,11 +2872,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_active_request_id_terminates_connection_and_cleans_up() {
         let (mut client, server_stream) = tokio::io::duplex(4_096);
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Server::runtime(settings);
         let router = Router::builder()
             .route(1, |_| async {
@@ -1887,11 +2926,7 @@ mod tests {
     #[tokio::test]
     async fn event_does_not_cancel_a_partially_read_client_frame() {
         let (mut client, server_stream) = tokio::io::duplex(4_096);
-        let settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let settings = PeerSettings::default();
         let (events, runtime) = Server::runtime(settings);
         let publish_events = events.clone();
         let task = tokio::spawn(serve_test_connection(
@@ -1956,16 +2991,18 @@ mod tests {
     #[tokio::test]
     async fn oversized_handler_response_is_replaced_before_writing() {
         let (mut client, server_stream) = tokio::io::duplex(4_096);
-        let client_settings = PeerSettings {
+        let client_settings = moonlight_bridge_protocol::PeerSettingsV2 {
             max_body_len: 64,
+            max_decoded_body_len: 128,
+            max_metadata_len: 1_024,
             max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            max_concurrent_streams: 8,
+            initial_stream_credit: 4,
+            compression_codecs: 1,
             features: SERVER_FEATURES,
+            diagnostic_features: 0,
         };
-        let server_settings = PeerSettings {
-            max_body_len: DEFAULT_MAX_BODY_LEN,
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
-            features: SERVER_FEATURES,
-        };
+        let server_settings = PeerSettings::default();
         let (events, runtime) = Server::runtime(server_settings);
         let router = Router::builder()
             .route(1, |_| async { Ok(vec![7; 128]) })
@@ -1985,10 +3022,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            read_frame(&mut client, PeerSettings::BODY_LEN as u32)
-                .await
-                .unwrap()
-                .kind,
+            read_frame(
+                &mut client,
+                moonlight_bridge_protocol::PeerSettingsV2::BODY_LEN as u32,
+            )
+            .await
+            .unwrap()
+            .kind,
             FrameKind::Welcome
         );
         write_frame(
@@ -2008,6 +3048,99 @@ mod tests {
             u16::from_be_bytes(response.body[..2].try_into().unwrap()),
             ErrorCode::ResourceExhausted as u16
         );
+
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Goodbye, 0, 0, Vec::new()),
+        )
+        .await
+        .unwrap();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn compressible_response_may_exceed_encoded_but_not_decoded_limit() {
+        let (mut client, server_stream) = tokio::io::duplex(8_192);
+        let client_settings = moonlight_bridge_protocol::PeerSettingsV2 {
+            max_body_len: 256,
+            max_decoded_body_len: 4_096,
+            max_metadata_len: 1_024,
+            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            max_concurrent_streams: 8,
+            initial_stream_credit: 4,
+            compression_codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+            features: SERVER_FEATURES,
+            diagnostic_features: 0,
+        };
+        let block: Vec<u8> = (0..128)
+            .map(|index| ((index * 73 + 19) % 251) as u8)
+            .collect();
+        let expected: Vec<u8> = block.iter().copied().cycle().take(4_096).collect();
+        let response_body = expected.clone();
+        let server_settings = PeerSettings::default();
+        let (events, runtime) = Server::runtime(server_settings);
+        let router = Router::builder()
+            .route(1, move |_| {
+                let response_body = response_body.clone();
+                async move { Ok(response_body) }
+            })
+            .build();
+        let task = tokio::spawn(serve_test_connection(
+            server_stream,
+            router,
+            server_settings,
+            Duration::from_secs(1),
+            events,
+            runtime,
+        ));
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Hello, 0, 0, client_settings.encode()),
+        )
+        .await
+        .unwrap();
+        read_frame(
+            &mut client,
+            moonlight_bridge_protocol::PeerSettingsV2::BODY_LEN as u32,
+        )
+        .await
+        .unwrap();
+        write_frame(
+            &mut client,
+            &Frame::new(FrameKind::Request, 1, 89, Vec::new()),
+        )
+        .await
+        .unwrap();
+
+        let response = read_frame(&mut client, client_settings.max_body_len)
+            .await
+            .unwrap();
+        assert_eq!(response.kind, FrameKind::Response);
+        assert_ne!(response.flags & FLAG_HAS_METADATA, 0);
+        let (metadata, compressed) = Metadata::decode(
+            &response.body,
+            MetadataLimits {
+                max_bytes: client_settings.max_metadata_len,
+                ..MetadataLimits::default()
+            },
+        )
+        .unwrap();
+        let original_len = metadata
+            .get(&MetadataKey::Reserved(ReservedMetadataKey::OriginalLength))
+            .unwrap();
+        let decoded = CompressionPolicy {
+            max_decoded_body_len: client_settings.max_decoded_body_len,
+            ..CompressionPolicy::default()
+        }
+        .decode(
+            CompressionCodec::Zstd,
+            compressed,
+            u32::from_be_bytes(original_len.try_into().unwrap()),
+            &DecodedByteBudget::new(8_192).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded, expected);
 
         write_frame(
             &mut client,

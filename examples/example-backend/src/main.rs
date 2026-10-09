@@ -13,6 +13,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 const ECHO_METHOD_ID: u32 = 1;
 const SLOW_METHOD_ID: u32 = 2;
+const RAW_STREAM_METHOD_ID: u32 = 3;
 
 struct ExampleEchoService(EventHub);
 
@@ -62,6 +63,9 @@ async fn main() -> std::io::Result<()> {
         .route(SLOW_METHOD_ID, |body| async move {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             Ok(body)
+        })
+        .route_stream(RAW_STREAM_METHOD_ID, |body| async move {
+            Ok(iter_server_stream(std::iter::once(Ok(body))))
         });
     let router =
         register_echo_service(builder, Arc::new(ExampleEchoService(events.clone()))).build();

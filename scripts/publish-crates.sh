@@ -37,6 +37,8 @@ publish_crate() {
 }
 
 ./scripts/check-release-version.sh "$release_version"
+publish_crate moonlight-bridge-contract
 publish_crate moonlight-bridge-protocol
 publish_crate moonlight-bridge-codegen
 publish_crate moonlight-bridge-server
+publish_crate moonlight-bridge-observability

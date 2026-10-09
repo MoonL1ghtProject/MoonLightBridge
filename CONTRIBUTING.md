@@ -7,7 +7,8 @@ the protocol whenever applicable.
 ## Before opening a pull request
 
 1. Describe the failure mode or performance goal before the implementation.
-2. Keep wire changes backward compatible and update `proto/schema.lock` intentionally.
+2. Treat wire-version changes as coordinated releases and update the affected `schema.lock`
+   intentionally, whether the contract is code-first or handwritten Protobuf.
 3. Never log request payloads, credentials, player chat or other private data.
 4. Add a regression test for protocol, lifecycle and concurrency fixes.
 5. Run the complete integration suite:
@@ -23,8 +24,8 @@ and `cargo test --workspace`.
 ## Compatibility
 
 The Java bytecode target is 21. Public Java and Rust APIs follow semantic versioning.
-Protocol fields and enum values are never reused; removed Protobuf fields must reserve
-both their old number and name.
+Protocol fields and enum values are never reused. Handwritten Protobuf must reserve both the old
+number and name; code-first generation emits those reservations from the compatibility lock.
 
 ## Performance changes
 

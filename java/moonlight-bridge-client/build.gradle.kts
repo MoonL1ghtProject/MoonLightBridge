@@ -7,6 +7,10 @@ java {
     targetCompatibility = JavaVersion.VERSION_21
 }
 
+dependencies {
+    implementation("com.github.luben:zstd-jni:1.5.7-20")
+}
+
 tasks.withType<JavaCompile>().configureEach {
     options.release = 21
     options.encoding = "UTF-8"

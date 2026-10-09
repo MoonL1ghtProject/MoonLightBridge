@@ -1,0 +1,20 @@
+{
+  "format": 2,
+  "messages": {
+    "moonlight.kotlin.v1.PingRequest": {
+      "fields": {
+        "8": {"name":"message","number":8,"label":1,"kind":9,"type_name":"","oneof_index":null,"proto3_optional":false}
+      },
+      "reserved_ranges": [],
+      "reserved_names": []
+    }
+  },
+  "enums": {
+    "moonlight.kotlin.v1.DeliveryState": {
+      "values": {"0":"UNKNOWN","4":"READY","7":"LEGACY"},
+      "reserved_ranges": [],
+      "reserved_names": []
+    }
+  },
+  "services": {}
+}

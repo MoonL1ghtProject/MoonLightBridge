@@ -1,0 +1,20 @@
+[package]
+name = "moonlight-bridge-observability-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+moonlight = { package = "moonlight-bridge-contract", version = "0.5.0", path = "../../crates/moonlight-bridge-contract" }
+moonlight-bridge-protocol = { path = "../../crates/moonlight-bridge-protocol" }
+moonlight-bridge-server = { path = "../../crates/moonlight-bridge-server" }
+moonlight-bridge-observability = { path = "../../crates/moonlight-bridge-observability", features = ["prometheus", "otel", "otlp"] }
+opentelemetry.workspace = true
+prost.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+moonlight-bridge-codegen = { path = "../../crates/moonlight-bridge-codegen" }
+prost-build.workspace = true

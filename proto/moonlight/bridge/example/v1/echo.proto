@@ -2,12 +2,42 @@ syntax = "proto3";
 
 package moonlight.bridge.example.v1;
 
+import "moonlight/bridge/options/v1/options.proto";
+
 option java_package = "ru.moonlightproject.bridge.example.v1";
 option java_multiple_files = true;
 
 service EchoService {
-  rpc Echo(EchoRequest) returns (EchoResponse);
-  rpc StreamEcho(EchoRequest) returns (stream EchoResponse);
+  rpc Echo(EchoRequest) returns (EchoResponse) {
+    option (moonlight.bridge.options.v1.rpc_policy) = {
+      timeout_ms: 2000
+      retry: {
+        max_attempts: 3
+        initial_backoff_ms: 25
+        max_backoff_ms: 250
+        multiplier_milli: 2000
+      }
+      idempotency: IDEMPOTENCY_IDEMPOTENT
+      max_request_bytes: 1048576
+      max_response_bytes: 1048576
+      required_scopes: "echo.invoke"
+      compression: COMPRESSION_MODE_PREFER
+      trace_sample_per_million: 10000
+    };
+  }
+  rpc StreamEcho(EchoRequest) returns (stream EchoResponse) {
+    option (moonlight.bridge.options.v1.rpc_policy) = {
+      timeout_ms: 30000
+      idle_timeout_ms: 5000
+      retry: { max_attempts: 1 }
+      idempotency: IDEMPOTENCY_IDEMPOTENT
+      max_request_bytes: 1048576
+      max_response_bytes: 1048576
+      required_scopes: "echo.stream"
+      compression: COMPRESSION_MODE_PREFER
+      trace_sample_per_million: 10000
+    };
+  }
 }
 
 message EchoRequest {

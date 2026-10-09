@@ -87,16 +87,32 @@ private network address. See the [deployment guide](deployment-pterodactyl.md).
 - `ping(timeout)` checks transport liveness.
 - `health(timeout)` returns backend readiness, uptime, connections, requests, and limits.
 - `warmUp(operation)` runs an asynchronous codec/JIT warm-up after the first connection.
-- `close()` stops reconnects, closes the socket, and fails pending work.
+- `drain(timeout)` sends `GOODBYE`, rejects new work, and lets accepted calls finish up to the
+  deadline.
+- `close()` stops reconnects, closes the socket, and fails pending work immediately.
 
 Application code does not initialize or configure the framework's internal telemetry provider.
 Payload bodies are never attached to operational events.
 
+For application-owned monitoring, pass `moonlight-bridge-micrometer` and
+`moonlight-bridge-otel` adapters to the low-level connection or facade configuration. Trace
+context is propagated in protocol metadata so a Java/Paper client span and Rust handler stages
+appear as one trace. See [observability.md](observability.md).
+
 ## Deadlines, batches, and errors
 
 Generated methods return `CompletableFuture<Response>`. `withDeadline(duration)` creates a client
-view with another default deadline. Generated `methodBatch(requests)` methods preserve request order
-while responses complete independently over the multiplexed connection.
+view whose deadline can only tighten the limit declared by that method's `.proto` policy. Generated
+clients expose immutable `METHOD_POLICY` constants with timeout, retry safety, request and response
+limits, required scopes, compression preference, and trace sampling rate. The hot request path uses
+these constants directly and does not perform Protobuf reflection. Generated `methodBatch(requests)`
+methods preserve request order while responses complete independently over the multiplexed
+connection.
+
+`COMPRESSION_MODE_REQUIRED` fails the call before sending when Zstandard was not negotiated;
+`COMPRESSION_MODE_DISABLED` sends that method without compression. `PREFER` and `DEFAULT` retain the
+negotiated size and savings thresholds. Generated clients validate decoded message limits on both
+sides of the call.
 
 Batch size is not fixed at 32. The writer coalesces frames already available, up to active frame and
 byte limits, and sends immediately when a burst reaches those limits. It does not intentionally wait
@@ -105,6 +121,11 @@ to fill a batch. Prefer a domain-level batch RPC when Rust can process a group m
 Transport failures complete futures exceptionally. A backend `HandlerError` becomes
 `MoonLightRemoteException` with a stable transport `ErrorCode`. Model business failures in Protobuf
 instead of parsing diagnostic error text.
+
+`MoonLightInterceptor` can add validated metadata or reject a call before it is queued.
+Server middleware receives the matching request context, including deadline, trace context,
+idempotency key, authorization scopes, retry identity, and user metadata. Keep interceptors
+non-blocking because they execute on the request path.
 
 ## Server events
 

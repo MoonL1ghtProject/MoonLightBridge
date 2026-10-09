@@ -14,22 +14,22 @@
 </div>
 
 MoonLightBridge is an embedded Java 21+ library, not a sidecar SDK or mandatory Minecraft plugin.
-Describe an API once with Protocol Buffers and call a Rust service through a generated
-`CompletableFuture` client. The same API works in ordinary JVM applications and Paper/Folia plugins,
-over TCP, mutual TLS, or Unix-domain sockets.
+Describe an API in Java, Kotlin, Rust, or an ordinary `.proto` file and call a Rust service through
+a generated `CompletableFuture` client. The same API works in ordinary JVM applications and
+Paper/Folia plugins over TCP, mutual TLS, or Unix-domain sockets.
 
 ## Why MoonLightBridge?
 
-- **Typed end to end.** One `.proto` schema generates Java clients, Rust service traits,
-  batch methods and server events.
+- **Typed end to end.** Code-first annotations or a handwritten `.proto` schema generate Java
+  clients, Rust service traits, batch methods and server events.
 - **Built for the hot path.** Multiplexed requests, a dedicated bounded writer, burst
   coalescing and reusable buffers keep the bridge overhead small.
 - **Universal first.** The lifecycle, reconnect, batching, health and event API has no Bukkit
   dependency; Paper/Folia support is a thin scheduler-aware adapter.
 - **Failure is explicit.** Deadlines, cancellation, heartbeat, reconnect supervision,
   backpressure, protocol validation and structured remote errors are part of the core.
-- **Operational by default.** Health, metrics, errors, sampled traces and JFR hooks require no
-  application boilerplate and never include request or response bodies.
+- **Observable by the service owner.** Opt-in Micrometer/Prometheus metrics and OpenTelemetry
+  traces stay under the application's exporter and retention policy and never include bodies.
 
 ```mermaid
 flowchart LR
@@ -96,9 +96,33 @@ moonlight-bridge-server = "0.4.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Requirements are Java 21 or newer, Rust 1.88 or newer, and `protoc` for schema generation.
+Requirements are Java 21 or newer, Rust 1.88 or newer, and `protoc` for the generated standard
+Protobuf descriptor and message classes.
 
 ## Define an API once
+
+Code-first contracts keep the API in normal IDE-aware source. Java uses annotation processing,
+Kotlin uses KSP, and Rust uses lightweight attributes understood by rust-analyzer and the build-time
+generator. The generated `.proto` is an implementation artifact; users do not need to maintain it.
+Field numbers and removed-name reservations remain stable through `schema.lock`.
+
+```java
+@MoonLightContract(
+    protoPackage = "my.plugin.v1",
+    javaPackage = "my.plugin.generated")
+interface ProfileContract {
+    @MoonLightMessage record LoadProfileRequest(String playerId) {}
+    @MoonLightMessage record Profile(String displayName, long balance) {}
+
+    @MoonLightService interface ProfileService {
+        @MoonLightRpc(timeoutMs = 250)
+        Profile loadProfile(LoadProfileRequest request);
+    }
+}
+```
+
+Handwritten Protobuf remains fully supported when teams want direct access to every Protobuf
+language feature or already own a schema:
 
 ```proto
 syntax = "proto3";
@@ -136,9 +160,10 @@ dependencies {
 }
 ```
 
-The plugin reads `src/main/proto`, generates Protobuf messages and typed clients, then
-checks `schema.lock` during `check`. The Rust side uses the same descriptor through
-`moonlight-bridge-codegen`; details and the complete `build.rs` are in
+The plugin combines optional `src/main/proto` files with optional annotated contracts from
+`src/main/moonlightContract`, generates Protobuf messages and typed clients, then checks
+`schema.lock` during `check`. Either input can be used alone or both can be mixed. The Rust side
+uses the same descriptor through `moonlight-bridge-codegen`; details and complete examples are in
 [the code generation guide](docs/codegen.md).
 
 ## Call Rust from Java
@@ -271,17 +296,19 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 
 ## What is included
 
-| Area | Available in 0.4.0 |
+| Area | Available on `main` for 0.5.0 |
 |---|---|
 | Transport | Unix socket, TCP, mutual TLS |
-| RPC | Multiplexing, typed unary calls, typed batches, deadlines, cancellation |
+| RPC | Protocol v2 multiplexing, unary, batches, server streaming, deadlines, cancellation |
+| Contracts | Java/Kotlin/Rust code-first generation and handwritten `.proto`, independently or together |
+| Policies | Generated timeouts, size limits, retry safety, scopes, compression and trace sampling |
 | Load control | Bounded outgoing/in-flight queues, dedicated writer, write coalescing |
-| Lifecycle | HELLO timeout, heartbeat, reconnect, health/readiness |
+| Lifecycle | HELLO timeout, heartbeat, reconnect, health/readiness and graceful draining |
 | Server push | Reconnect-safe typed Rust-to-Java events |
-| Safety | Payload limits, method/response validation, duplicate-ID rejection |
+| Safety | Encoded/decoded limits, bounded Zstandard, metadata validation and duplicate-ID rejection |
 | Java | Universal Java 21+ lifecycle API with no Bukkit dependency |
 | Minecraft | Thin Paper/Folia scheduler-aware adapter, no separate bridge plugin |
-| Operations | Health, local metrics, structured errors and JFR events |
+| Operations | Application-owned Prometheus/Micrometer metrics and cross-runtime OpenTelemetry traces |
 
 ## Documentation
 
@@ -290,6 +317,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 - [Minecraft SDK](docs/minecraft-sdk.md)
 - [Protocol reference](docs/protocol.md)
 - [Schema and code generation](docs/codegen.md)
+- [Observability, Prometheus, and tracing](docs/observability.md)
 - [Performance and tuning](docs/performance.md)
 - [Pterodactyl deployment](docs/deployment-pterodactyl.md)
 - [Security model](docs/security.md)
@@ -299,14 +327,15 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 
 The repository contains a working [Paper plugin](examples/paper-test-plugin), its
 [Rust backend](examples/test-plugin-backend), and a separate
-[load-test plugin](examples/paper-load-test-plugin).
+[load-test plugin](examples/paper-load-test-plugin). A complete Java-to-Rust monitoring stack with
+Prometheus, Tempo, and Grafana lives in [examples/observability](examples/observability).
 
 ## Project status
 
-Version `0.4.0` is a stable public API release. The transport and
-lifecycle are fully tested, but the project is still young: benchmark your own workload
-and pin exact versions in production. Backward-incompatible changes follow semantic
-versioning.
+Version `0.4.0` is the latest stable public release. The `main` branch is preparing `0.5.0`; its
+source examples use the upcoming APIs and are not a promise that `0.5.0` artifacts are already in
+public registries. Benchmark your own workload and pin exact released versions in production.
+Backward-incompatible changes follow semantic versioning.
 
 ## Contributing
 

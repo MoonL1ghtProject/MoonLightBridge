@@ -2,23 +2,34 @@
 
 use std::fmt;
 
+mod compression;
+mod metadata;
+
+pub use compression::{
+    CompressedPayload, CompressionCodec, CompressionError, CompressionPolicy, DecodedByteBudget,
+    DecodedBytePermit,
+};
+pub use metadata::{Metadata, MetadataKey, MetadataLimits, ReservedMetadataKey};
+
 /// ASCII `MLBR`, the MoonLightBridge wire signature.
 pub const MAGIC: u32 = 0x4D4C_4252;
 /// Current MoonLightBridge wire-protocol version.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 /// Encoded frame-header length in bytes.
 pub const HEADER_LEN: usize = 24;
 /// Default maximum accepted frame body: 8 MiB.
 pub const DEFAULT_MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 /// Default number of concurrent requests permitted per connection.
 pub const DEFAULT_MAX_IN_FLIGHT: u32 = 256;
+/// Mandatory identity codec bit used during handshake.
+pub const COMPRESSION_CODEC_NONE: u32 = 1;
+/// Zstandard codec bit used during handshake.
+pub const COMPRESSION_CODEC_ZSTD: u32 = 1 << 1;
 
-/// Indicates that a request body starts with deadline metadata.
-pub const FLAG_HAS_DEADLINE: u16 = 1;
-/// Indicates that a request body carries distributed-trace metadata.
-pub const FLAG_HAS_TRACE_CONTEXT: u16 = 1 << 1;
+/// Indicates that a frame body starts with a bounded metadata block.
+pub const FLAG_HAS_METADATA: u16 = 1;
 /// Bit mask containing every flag understood by this protocol version.
-pub const KNOWN_FLAGS: u16 = FLAG_HAS_DEADLINE | FLAG_HAS_TRACE_CONTEXT;
+pub const KNOWN_FLAGS: u16 = FLAG_HAS_METADATA;
 /// Encoded trace-context length in bytes.
 pub const TRACE_CONTEXT_LEN: usize = 25;
 
@@ -116,6 +127,8 @@ pub enum FrameKind {
     StreamEnd = 26,
     /// Client-to-server delivery-credit update for a stream.
     StreamCredit = 27,
+    /// Server admission-stop notification; existing calls may still complete.
+    GoAway = 28,
 }
 
 impl TryFrom<u8> for FrameKind {
@@ -138,6 +151,7 @@ impl TryFrom<u8> for FrameKind {
             25 => Ok(Self::StreamItem),
             26 => Ok(Self::StreamEnd),
             27 => Ok(Self::StreamCredit),
+            28 => Ok(Self::GoAway),
             other => Err(ProtocolError::UnknownKind(other)),
         }
     }
@@ -247,44 +261,91 @@ pub struct DecodedHeader {
     pub request_id: u64,
 }
 
+/// Limits and capabilities exchanged by protocol-v2 HELLO/WELCOME frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Limits and feature bits exchanged during HELLO/WELCOME negotiation.
-pub struct PeerSettings {
-    /// Largest frame body accepted by the peer.
+pub struct PeerSettingsV2 {
+    /// Largest encoded frame body accepted by the peer.
     pub max_body_len: u32,
-    /// Largest number of concurrent requests accepted by the peer.
+    /// Largest decoded application payload accepted by the peer.
+    pub max_decoded_body_len: u32,
+    /// Largest metadata block accepted by the peer.
+    pub max_metadata_len: u32,
+    /// Largest number of concurrent calls accepted by the peer.
     pub max_in_flight: u32,
-    /// Feature-bit mask supported by the peer.
+    /// Largest number of concurrent streams accepted by the peer.
+    pub max_concurrent_streams: u32,
+    /// Initial item credit granted for each stream direction.
+    pub initial_stream_credit: u32,
+    /// Bit set of supported compression codecs; bit zero is the mandatory `none` codec.
+    pub compression_codecs: u32,
+    /// General protocol capability bits.
     pub features: u64,
+    /// Optional diagnostic protocol capability bits.
+    pub diagnostic_features: u64,
 }
 
-impl PeerSettings {
+impl PeerSettingsV2 {
     /// Fixed encoded settings-body length in bytes.
-    pub const BODY_LEN: usize = 16;
+    pub const BODY_LEN: usize = 44;
 
-    /// Encodes settings into a fixed-layout body.
+    /// Encodes every negotiated field in fixed-width network-byte order.
     pub fn encode(self) -> Vec<u8> {
         let mut body = Vec::with_capacity(Self::BODY_LEN);
         body.extend_from_slice(&self.max_body_len.to_be_bytes());
+        body.extend_from_slice(&self.max_decoded_body_len.to_be_bytes());
+        body.extend_from_slice(&self.max_metadata_len.to_be_bytes());
         body.extend_from_slice(&self.max_in_flight.to_be_bytes());
+        body.extend_from_slice(&self.max_concurrent_streams.to_be_bytes());
+        body.extend_from_slice(&self.initial_stream_credit.to_be_bytes());
+        body.extend_from_slice(&self.compression_codecs.to_be_bytes());
         body.extend_from_slice(&self.features.to_be_bytes());
+        body.extend_from_slice(&self.diagnostic_features.to_be_bytes());
         body
     }
 
-    /// Decodes and validates an exact-length settings body.
+    /// Decodes an exact-length v2 settings body and rejects zero safety limits.
     pub fn decode(body: &[u8]) -> Result<Self, ProtocolError> {
         if body.len() != Self::BODY_LEN {
             return Err(ProtocolError::InvalidSettingsLength(body.len()));
         }
         let settings = Self {
             max_body_len: u32::from_be_bytes(body[0..4].try_into().unwrap()),
-            max_in_flight: u32::from_be_bytes(body[4..8].try_into().unwrap()),
-            features: u64::from_be_bytes(body[8..16].try_into().unwrap()),
+            max_decoded_body_len: u32::from_be_bytes(body[4..8].try_into().unwrap()),
+            max_metadata_len: u32::from_be_bytes(body[8..12].try_into().unwrap()),
+            max_in_flight: u32::from_be_bytes(body[12..16].try_into().unwrap()),
+            max_concurrent_streams: u32::from_be_bytes(body[16..20].try_into().unwrap()),
+            initial_stream_credit: u32::from_be_bytes(body[20..24].try_into().unwrap()),
+            compression_codecs: u32::from_be_bytes(body[24..28].try_into().unwrap()),
+            features: u64::from_be_bytes(body[28..36].try_into().unwrap()),
+            diagnostic_features: u64::from_be_bytes(body[36..44].try_into().unwrap()),
         };
-        if settings.max_body_len == 0 || settings.max_in_flight == 0 {
+        if settings.max_body_len == 0
+            || settings.max_decoded_body_len == 0
+            || settings.max_metadata_len == 0
+            || settings.max_in_flight == 0
+            || settings.max_concurrent_streams == 0
+            || settings.initial_stream_credit == 0
+            || settings.compression_codecs & 1 == 0
+        {
             return Err(ProtocolError::InvalidSettingsValue);
         }
         Ok(settings)
+    }
+}
+
+impl Default for PeerSettingsV2 {
+    fn default() -> Self {
+        Self {
+            max_body_len: DEFAULT_MAX_BODY_LEN,
+            max_decoded_body_len: 16 * 1024 * 1024,
+            max_metadata_len: 16 * 1024,
+            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            max_concurrent_streams: 64,
+            initial_stream_credit: 32,
+            compression_codecs: COMPRESSION_CODEC_NONE | COMPRESSION_CODEC_ZSTD,
+            features: SERVER_FEATURES,
+            diagnostic_features: 0,
+        }
     }
 }
 
@@ -304,6 +365,20 @@ pub enum ErrorCode {
     ResourceExhausted = 5,
     /// The handler failed unexpectedly.
     Internal = 6,
+    /// Authentication credentials are absent or invalid.
+    Unauthenticated = 7,
+    /// The authenticated caller lacks a required permission.
+    PermissionDenied = 8,
+    /// The destination is unavailable or draining.
+    Unavailable = 9,
+    /// Compression or decompression validation failed.
+    CompressionFailure = 10,
+    /// Requested event history is no longer available.
+    ReplayGap = 11,
+    /// The operation cannot run in the current state.
+    FailedPrecondition = 12,
+    /// The peer uses an unsupported protocol capability or version.
+    UnsupportedProtocol = 13,
 }
 
 impl ErrorCode {
@@ -313,6 +388,29 @@ impl ErrorCode {
         body.extend_from_slice(&(self as u16).to_be_bytes());
         body.extend_from_slice(message.as_bytes());
         body
+    }
+}
+
+impl TryFrom<u16> for ErrorCode {
+    type Error = ProtocolError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::UnknownMethod),
+            2 => Ok(Self::InvalidRequest),
+            3 => Ok(Self::DeadlineExceeded),
+            4 => Ok(Self::Cancelled),
+            5 => Ok(Self::ResourceExhausted),
+            6 => Ok(Self::Internal),
+            7 => Ok(Self::Unauthenticated),
+            8 => Ok(Self::PermissionDenied),
+            9 => Ok(Self::Unavailable),
+            10 => Ok(Self::CompressionFailure),
+            11 => Ok(Self::ReplayGap),
+            12 => Ok(Self::FailedPrecondition),
+            13 => Ok(Self::UnsupportedProtocol),
+            other => Err(ProtocolError::UnknownErrorCode(other)),
+        }
     }
 }
 
@@ -337,6 +435,31 @@ pub enum ProtocolError {
     InvalidTraceContextLength(usize),
     /// The trace sampling byte is neither zero nor one.
     InvalidTraceSampling(u8),
+    /// The metadata block length exceeds the bytes available in this body.
+    InvalidMetadataLength {
+        /// Length declared by the prefix.
+        announced: u32,
+        /// Bytes remaining after the prefix.
+        available: usize,
+    },
+    /// The metadata block exceeds the configured encoded-byte limit.
+    MetadataTooLarge(u32),
+    /// A metadata entry exceeds the configured value-byte limit.
+    MetadataValueTooLarge(u32),
+    /// The metadata block contains more entries than configured.
+    TooManyMetadataEntries(u16),
+    /// Metadata entry lengths overflow or exceed the enclosing block.
+    InvalidMetadataEntryLength,
+    /// A singleton metadata key occurs more than once.
+    DuplicateMetadataKey,
+    /// Metadata entries are not in canonical key order.
+    NonCanonicalMetadataOrder,
+    /// A user metadata key is not valid lowercase ASCII.
+    InvalidUserMetadataKey,
+    /// A critical numeric metadata key is unknown to this implementation.
+    UnknownCriticalMetadataKey(u16),
+    /// An ERROR frame contains an unknown stable error code.
+    UnknownErrorCode(u16),
 }
 
 impl fmt::Display for ProtocolError {
@@ -354,13 +477,13 @@ mod tests {
     #[test]
     fn frame_round_trip_header() {
         let encoded = Frame::new(FrameKind::Request, 42, 99, b"hello".to_vec())
-            .with_flags(FLAG_HAS_DEADLINE)
+            .with_flags(FLAG_HAS_METADATA)
             .encode()
             .unwrap();
         let header: &[u8; HEADER_LEN] = encoded[..HEADER_LEN].try_into().unwrap();
         let decoded = Frame::decode_header(header, DEFAULT_MAX_BODY_LEN).unwrap();
         assert_eq!(decoded.kind, FrameKind::Request);
-        assert_eq!(decoded.flags, FLAG_HAS_DEADLINE);
+        assert_eq!(decoded.flags, FLAG_HAS_METADATA);
         assert_eq!(decoded.method_id, 42);
         assert_eq!(decoded.request_id, 99);
         assert_eq!(decoded.body_len, 5);
@@ -368,12 +491,16 @@ mod tests {
 
     #[test]
     fn peer_settings_round_trip() {
-        let expected = PeerSettings {
+        let expected = PeerSettingsV2 {
             max_body_len: 1024,
             max_in_flight: 32,
             features: SERVER_FEATURES,
+            ..PeerSettingsV2::default()
         };
-        assert_eq!(PeerSettings::decode(&expected.encode()).unwrap(), expected);
+        assert_eq!(
+            PeerSettingsV2::decode(&expected.encode()).unwrap(),
+            expected
+        );
     }
 
     #[test]

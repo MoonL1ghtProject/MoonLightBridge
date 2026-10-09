@@ -10,6 +10,7 @@ import java.util.function.Supplier;
 import org.bukkit.plugin.Plugin;
 import ru.moonlightproject.bridge.client.MoonLightChannel;
 import ru.moonlightproject.bridge.client.MoonLightHealth;
+import ru.moonlightproject.bridge.client.MoonLightDrainHandle;
 
 /** Embedded Paper/Folia facade. This is a library object, not a server plugin. */
 public final class MoonLightBridge implements AutoCloseable {
@@ -75,6 +76,17 @@ public final class MoonLightBridge implements AutoCloseable {
     public CompletableFuture<MoonLightHealth> health(Duration timeout) { return runtime.health(timeout); }
 
     /**
+     * Stops admission and drains active calls without blocking a Paper/Folia scheduler thread.
+     *
+     * @param timeout maximum drain duration
+     * @return shared asynchronous drain handle
+     */
+    public MoonLightDrainHandle drain(Duration timeout) {
+        closed.set(true);
+        return runtime.drain(timeout);
+    }
+
+    /**
      * Completes after the first successful backend handshake.
      *
      * @return shared initial-readiness stage
@@ -111,6 +123,6 @@ public final class MoonLightBridge implements AutoCloseable {
     @Override
     public void close() throws IOException {
         if (!closed.compareAndSet(false, true)) return;
-        runtime.close();
+        runtime.drain(Duration.ofSeconds(5));
     }
 }

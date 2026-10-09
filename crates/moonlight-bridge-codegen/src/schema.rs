@@ -1,9 +1,12 @@
 use prost::Message as _;
+use prost_reflect::DescriptorPool;
 use prost_types::{DescriptorProto, EnumDescriptorProto, FileDescriptorProto, FileDescriptorSet};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, io, path::Path};
 
-const LOCK_FORMAT: u32 = 1;
+use crate::RpcPolicy;
+
+const LOCK_FORMAT: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct SchemaLock {
@@ -55,6 +58,7 @@ struct LockedMethod {
     output: String,
     client_streaming: bool,
     server_streaming: bool,
+    policy: RpcPolicy,
 }
 
 /// Writes a normalized compatibility baseline from a Protobuf descriptor set.
@@ -101,7 +105,10 @@ pub fn check_lock(
 }
 
 fn snapshot(path: impl AsRef<Path>) -> io::Result<SchemaLock> {
-    let descriptor = FileDescriptorSet::decode(fs::read(path)?.as_slice()).map_err(invalid)?;
+    let bytes = fs::read(path)?;
+    let descriptor = FileDescriptorSet::decode(bytes.as_slice()).map_err(invalid)?;
+    let pool = DescriptorPool::decode(bytes.as_slice()).map_err(invalid)?;
+    let policies = crate::policy::policies_from_pool(&pool)?;
     let mut lock = SchemaLock {
         format: LOCK_FORMAT,
         messages: BTreeMap::new(),
@@ -109,12 +116,23 @@ fn snapshot(path: impl AsRef<Path>) -> io::Result<SchemaLock> {
         services: BTreeMap::new(),
     };
     for file in &descriptor.file {
-        snapshot_file(file, &mut lock)?;
+        if matches!(
+            file.name.as_deref(),
+            Some("google/protobuf/descriptor.proto")
+                | Some("moonlight/bridge/options/v1/options.proto")
+        ) {
+            continue;
+        }
+        snapshot_file(file, &policies, &mut lock)?;
     }
     Ok(lock)
 }
 
-fn snapshot_file(file: &FileDescriptorProto, lock: &mut SchemaLock) -> io::Result<()> {
+fn snapshot_file(
+    file: &FileDescriptorProto,
+    policies: &BTreeMap<String, RpcPolicy>,
+    lock: &mut SchemaLock,
+) -> io::Result<()> {
     let package = file.package.as_deref().unwrap_or("");
     for message in &file.message_type {
         snapshot_message(package, message, lock)?;
@@ -128,6 +146,7 @@ fn snapshot_file(file: &FileDescriptorProto, lock: &mut SchemaLock) -> io::Resul
         let mut methods = BTreeMap::new();
         for method in &service.method {
             let method_name = required(&method.name, "method name")?.to_owned();
+            let canonical = format!("{full_name}/{method_name}");
             methods.insert(
                 method_name,
                 LockedMethod {
@@ -135,6 +154,10 @@ fn snapshot_file(file: &FileDescriptorProto, lock: &mut SchemaLock) -> io::Resul
                     output: required(&method.output_type, "method output")?.to_owned(),
                     client_streaming: method.client_streaming.unwrap_or(false),
                     server_streaming: method.server_streaming.unwrap_or(false),
+                    policy: policies
+                        .get(&canonical)
+                        .ok_or_else(|| invalid(format!("missing policy for {canonical}")))?
+                        .clone(),
                 },
             );
         }
@@ -296,8 +319,16 @@ fn compatibility_errors(old: &SchemaLock, new: &SchemaLock) -> Vec<String> {
         for (method, old_method) in &old_service.methods {
             match new_service.methods.get(method) {
                 None => errors.push(format!("RPC {name}/{method} was removed or renamed")),
-                Some(new_method) if new_method != old_method => {
+                Some(new_method)
+                    if new_method.input != old_method.input
+                        || new_method.output != old_method.output
+                        || new_method.client_streaming != old_method.client_streaming
+                        || new_method.server_streaming != old_method.server_streaming =>
+                {
                     errors.push(format!("RPC {name}/{method} signature changed"))
+                }
+                Some(new_method) if new_method.policy != old_method.policy => {
+                    errors.push(format!("RPC {name}/{method} policy changed"))
                 }
                 Some(_) => {}
             }
@@ -484,6 +515,40 @@ mod tests {
         let errors = compatibility_errors(&old, &new);
         assert!(errors.iter().any(|error| error.contains("numbers 1..2")));
         assert!(errors.iter().any(|error| error.contains("name LEGACY")));
+    }
+
+    #[test]
+    fn method_policy_changes_are_locked() {
+        let mut old = example_lock();
+        old.services.insert(
+            "test.Service".to_owned(),
+            LockedService {
+                methods: BTreeMap::from([(
+                    "Read".to_owned(),
+                    LockedMethod {
+                        input: ".test.Player".to_owned(),
+                        output: ".test.Player".to_owned(),
+                        client_streaming: false,
+                        server_streaming: false,
+                        policy: RpcPolicy::defaults(false),
+                    },
+                )]),
+            },
+        );
+        let mut new = old.clone();
+        new.services
+            .get_mut("test.Service")
+            .unwrap()
+            .methods
+            .get_mut("Read")
+            .unwrap()
+            .policy
+            .timeout_ms = 1_000;
+
+        assert_eq!(
+            compatibility_errors(&old, &new),
+            ["RPC test.Service/Read policy changed"]
+        );
     }
 
     fn example_lock() -> SchemaLock {

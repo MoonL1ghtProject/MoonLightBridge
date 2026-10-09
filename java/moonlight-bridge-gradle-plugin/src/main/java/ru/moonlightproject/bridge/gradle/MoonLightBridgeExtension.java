@@ -13,6 +13,10 @@ public abstract class MoonLightBridgeExtension {
      * @return configurable source directory
      */
     public abstract DirectoryProperty getProtoDirectory();
+    /** Returns the directory containing annotated Java contract declarations.
+     * @return configurable code-first contract source directory
+     */
+    public abstract DirectoryProperty getContractSourceDirectory();
     /** Returns the schema compatibility lock file.
      * @return configurable lock file
      */
@@ -25,6 +29,10 @@ public abstract class MoonLightBridgeExtension {
      * @return configurable generated-Protobuf directory
      */
     public abstract DirectoryProperty getGeneratedProtoSources();
+    /** Returns the standard Protobuf schema generated from source declarations.
+     * @return configurable generated schema file
+     */
+    public abstract RegularFileProperty getGeneratedSchema();
     /** Returns the generated Protobuf descriptor-set file.
      * @return configurable descriptor file
      */

@@ -1,0 +1,32 @@
+[package]
+name = "moonlight-bridge-observability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Optional OpenTelemetry, OTLP, and Prometheus adapters for MoonLightBridge"
+publish = ["crates-io"]
+
+[features]
+default = []
+otel = ["dep:opentelemetry"]
+otlp = ["otel", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+prometheus = ["dep:prometheus"]
+
+[dependencies]
+moonlight-bridge-protocol = { version = "0.5.0", path = "../moonlight-bridge-protocol" }
+moonlight-bridge-server = { version = "0.5.0", path = "../moonlight-bridge-server" }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+prometheus = { workspace = true, optional = true }
+
+[dev-dependencies]
+opentelemetry = { workspace = true, features = ["testing"] }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+prometheus.workspace = true

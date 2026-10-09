@@ -359,14 +359,14 @@ fn generate_rust_method(
     let id = method_id(&canonical);
     let policy_name = rust_policy_name(service, method_name);
     let route = if method.server_streaming.unwrap_or(false) {
-        "route_stream"
+        "route_stream_scoped"
     } else {
-        "route"
+        "route_scoped"
     };
     writeln!(code, "    let {rust_method}_service = service.clone();").unwrap();
     writeln!(
         code,
-        "    builder = builder.{route}(0x{id:08X}, move |body| {{"
+        "    builder = builder.{route}(0x{id:08X}, {policy_name}.required_scopes, move |body| {{"
     )
     .unwrap();
     writeln!(code, "        let service = {rust_method}_service.clone();").unwrap();

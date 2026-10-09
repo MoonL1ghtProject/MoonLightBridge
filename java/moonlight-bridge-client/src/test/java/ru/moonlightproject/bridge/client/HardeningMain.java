@@ -47,7 +47,7 @@ public final class HardeningMain {
     }
     public static void main(String[] args) throws Exception {
         var failures = new java.util.ArrayList<Throwable>();
-        for (String test : new String[]{"welcome", "terminal", "callback", "event", "batch", "compression", "compression-limit", "compression-wire-limit", "rpc-policy"}) {
+        for (String test : new String[]{"welcome", "terminal", "callback", "event", "batch", "compression", "compression-limit", "compression-wire-limit", "rpc-policy", "interceptor-order", "interceptor-short-circuit", "interceptor-cancel"}) {
             try { run(test); } catch(Throwable e) { failures.add(e); e.printStackTrace(); }
         }
         if (!failures.isEmpty()) throw new AssertionError("hardening failures: " + failures.size());
@@ -226,6 +226,107 @@ public final class HardeningMain {
                 try(var c=client(ss)) {
                     c.request(1,new byte[4096],Duration.ofSeconds(1),disabled).get();
                     check(disabledSeen.get(),"disabled RPC compression bypasses negotiated codec");
+                }
+            }
+        }
+        if(test.equals("interceptor-order")) {
+            var events=new CopyOnWriteArrayList<String>();
+            var policy=new RpcPolicy(
+                Duration.ofSeconds(2),Duration.ZERO,
+                new RpcPolicy.Retry(1,Duration.ofMillis(25),Duration.ofMillis(25),1000),
+                RpcPolicy.Idempotency.READ_ONLY,4096,4096,
+                java.util.Set.of("echo.invoke"),RpcPolicy.Compression.DISABLED,0);
+            MoonLightInterceptor outer=new MoonLightInterceptor(){
+                public MoonLightCallContext beforeCall(MoonLightCallContext context){
+                    events.add("outer:before");
+                    check(context.requiredScopes().equals(java.util.Set.of("echo.invoke")),
+                        "interceptor sees generated required scopes");
+                    check(context.deadline().equals(Duration.ofSeconds(2)),
+                        "interceptor sees effective generated deadline");
+                    return context.withDeadline(Duration.ofMillis(500)).withMetadata(
+                        MoonLightMetadata.builder().put("request-origin",
+                            "test".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).build());
+                }
+                public void afterCall(MoonLightCallContext context,byte[] response,Throwable failure){
+                    events.add("outer:after");
+                }
+            };
+            MoonLightInterceptor inner=new MoonLightInterceptor(){
+                public MoonLightCallContext beforeCall(MoonLightCallContext context){
+                    events.add("inner:before"); return context;
+                }
+                public void afterCall(MoonLightCallContext context,byte[] response,Throwable failure){
+                    events.add("inner:after"); throw new IllegalStateException("isolated");
+                }
+            };
+            try(var ss=new ServerSocket(0)) {
+                serve(ss,8192,(in,out)->{
+                    Frame request=read(in);
+                    var decoded=MoonLightMetadata.decode(
+                        request.body(),new MoonLightMetadata.Limits(16*1024,64,8*1024));
+                    check(java.util.Arrays.equals(decoded.metadata().get("request-origin"),
+                        "test".getBytes(java.nio.charset.StandardCharsets.US_ASCII)),
+                        "interceptor metadata reaches the wire");
+                    check(ByteBuffer.wrap(decoded.metadata().get(
+                        MoonLightMetadata.ReservedKey.DEADLINE_MILLIS)).getInt()==500,
+                        "interceptor may tighten the wire deadline");
+                    write(out,2,request.method(),request.id(),decoded.payload());
+                    while(read(in).kind()!=21) { }
+                });
+                try(var c=MoonLightClient.connect("tcp://127.0.0.1:"+ss.getLocalPort(),
+                    MoonLightPerformanceOptions.automatic("tcp"),MoonLightTelemetry.disabled(),
+                    java.util.List.of(outer,inner))) {
+                    byte[] response=c.request(1,"ok".getBytes(),Duration.ofSeconds(5),policy).get();
+                    check(java.util.Arrays.equals(response,"ok".getBytes()),
+                        "interceptor terminal exception is isolated");
+                    check(events.equals(java.util.List.of(
+                        "outer:before","inner:before","inner:after","outer:after")),
+                        "interceptors wrap calls in deterministic order");
+                }
+            }
+        }
+        if(test.equals("interceptor-short-circuit")) {
+            var calls=new AtomicInteger();
+            MoonLightInterceptor reject=new MoonLightInterceptor(){
+                public MoonLightCallContext beforeCall(MoonLightCallContext context){
+                    calls.incrementAndGet(); throw new SecurityException("denied");
+                }
+                public void afterCall(MoonLightCallContext context,byte[] response,Throwable failure){
+                    calls.incrementAndGet();
+                }
+            };
+            try(var ss=new ServerSocket(0)) {
+                serve(ss,8192,(in,out)->{ while(read(in).kind()!=21) { throw new AssertionError("short-circuited call reached wire"); } });
+                try(var c=MoonLightClient.connect("tcp://127.0.0.1:"+ss.getLocalPort(),
+                    MoonLightPerformanceOptions.automatic("tcp"),MoonLightTelemetry.disabled(),
+                    java.util.List.of(reject))) {
+                    try { c.request(1,new byte[0],Duration.ofSeconds(1)).get();
+                        throw new AssertionError("interceptor did not short-circuit");
+                    } catch(ExecutionException expected) {
+                        check(expected.getCause() instanceof SecurityException,
+                            "interceptor short-circuit preserves failure");
+                    }
+                    check(calls.get()==2,"short-circuit emits one terminal interceptor callback");
+                }
+            }
+        }
+        if(test.equals("interceptor-cancel")) {
+            var terminals=new AtomicInteger();
+            MoonLightInterceptor interceptor=new MoonLightInterceptor(){
+                public MoonLightCallContext beforeCall(MoonLightCallContext context){return context;}
+                public void afterCall(MoonLightCallContext context,byte[] response,Throwable failure){
+                    terminals.incrementAndGet();
+                }
+            };
+            try(var ss=new ServerSocket(0)) {
+                serve(ss,8192,(in,out)->{Frame request=read(in); while(read(in).kind()!=18) { }});
+                try(var c=MoonLightClient.connect("tcp://127.0.0.1:"+ss.getLocalPort(),
+                    MoonLightPerformanceOptions.automatic("tcp"),MoonLightTelemetry.disabled(),
+                    java.util.List.of(interceptor))) {
+                    var future=c.request(1,new byte[0],Duration.ofSeconds(2));
+                    future.cancel(true);
+                    Thread.sleep(50);
+                    check(terminals.get()==1,"cancellation emits one terminal interceptor callback");
                 }
             }
         }

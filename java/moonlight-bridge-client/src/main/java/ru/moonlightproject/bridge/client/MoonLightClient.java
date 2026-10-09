@@ -82,6 +82,7 @@ public final class MoonLightClient implements MoonLightChannel {
     private final Semaphore outgoingRequestBytes = new Semaphore(32 * 1024 * 1024);
     private final Thread writerThread;
     private final MoonLightTelemetry telemetry;
+    private final List<MoonLightInterceptor> interceptors;
     private final ThreadPoolExecutor callbackExecutor = new ThreadPoolExecutor(
         2, 4, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1_024),
         Thread.ofPlatform().daemon().name("moonlight-bridge-callback-", 0).factory(),
@@ -104,7 +105,7 @@ public final class MoonLightClient implements MoonLightChannel {
      * @throws IOException when the connection or protocol handshake fails
      */
     public MoonLightClient(String host, int port) throws IOException {
-        this(openTcp(host, port), MoonLightPerformanceOptions.automatic("tcp"), MoonLightTelemetry.automatic());
+        this(openTcp(host, port), MoonLightPerformanceOptions.automatic("tcp"), MoonLightTelemetry.automatic(), List.of());
     }
 
     /**
@@ -116,7 +117,7 @@ public final class MoonLightClient implements MoonLightChannel {
      * @throws IOException when the connection or protocol handshake fails
      */
     public static MoonLightClient tcp(String host, int port) throws IOException {
-        return new MoonLightClient(openTcp(host, port), MoonLightPerformanceOptions.automatic("tcp"), MoonLightTelemetry.automatic());
+        return new MoonLightClient(openTcp(host, port), MoonLightPerformanceOptions.automatic("tcp"), MoonLightTelemetry.automatic(), List.of());
     }
 
     /**
@@ -131,7 +132,7 @@ public final class MoonLightClient implements MoonLightChannel {
         try { uri = URI.create(endpoint); }
         catch (IllegalArgumentException error) { throw new IOException("invalid MoonLightBridge endpoint: " + endpoint, error); }
 
-        return connect(uri, MoonLightPerformanceOptions.automatic(uri.getScheme()), MoonLightTelemetry.automatic());
+        return connect(uri, MoonLightPerformanceOptions.automatic(uri.getScheme()), MoonLightTelemetry.automatic(), List.of());
     }
 
     /**
@@ -146,7 +147,7 @@ public final class MoonLightClient implements MoonLightChannel {
         URI uri;
         try { uri = URI.create(endpoint); }
         catch (IllegalArgumentException error) { throw new IOException("invalid MoonLightBridge endpoint: " + endpoint, error); }
-        return connect(uri, performance, MoonLightTelemetry.automatic());
+        return connect(uri, performance, MoonLightTelemetry.automatic(), List.of());
     }
 
     /**
@@ -164,24 +165,47 @@ public final class MoonLightClient implements MoonLightChannel {
         URI uri;
         try { uri = URI.create(endpoint); }
         catch (IllegalArgumentException error) { throw new IOException("invalid MoonLightBridge endpoint: " + endpoint, error); }
-        return connect(uri, performance, telemetry);
+        return connect(uri, performance, telemetry, List.of());
+    }
+
+    /**
+     * Opens an endpoint with an immutable interceptor chain.
+     *
+     * @param endpoint complete transport endpoint
+     * @param performance writer, batching, and buffer settings
+     * @param telemetry local instrumentation implementation
+     * @param interceptors call interceptors in registration order
+     * @return connected direct client
+     * @throws IOException when the endpoint is invalid or the connection fails
+     */
+    public static MoonLightClient connect(
+        String endpoint,
+        MoonLightPerformanceOptions performance,
+        MoonLightTelemetry telemetry,
+        List<? extends MoonLightInterceptor> interceptors
+    ) throws IOException {
+        URI uri;
+        try { uri = URI.create(endpoint); }
+        catch (IllegalArgumentException error) { throw new IOException("invalid MoonLightBridge endpoint: " + endpoint, error); }
+        return connect(uri, performance, telemetry, interceptors);
     }
 
     private static MoonLightClient connect(
-        URI uri, MoonLightPerformanceOptions performance, MoonLightTelemetry telemetry
+        URI uri, MoonLightPerformanceOptions performance, MoonLightTelemetry telemetry,
+        List<? extends MoonLightInterceptor> interceptors
     ) throws IOException {
         return switch (uri.getScheme()) {
             case "tcp" -> {
                 if (uri.getHost() == null || uri.getPort() < 1) {
                     throw new IOException("TCP endpoint must be tcp://host:port");
                 }
-                yield new MoonLightClient(openTcp(uri.getHost(), uri.getPort()), performance, telemetry);
+                yield new MoonLightClient(openTcp(uri.getHost(), uri.getPort()), performance, telemetry, interceptors);
             }
             case "tls" -> {
                 if (uri.getHost() == null || uri.getPort() < 1) {
                     throw new IOException("TLS endpoint must be tls://host:port");
                 }
-                try { yield openTls(uri.getHost(), uri.getPort(), SSLContext.getDefault(), performance, telemetry); }
+                try { yield openTls(uri.getHost(), uri.getPort(), SSLContext.getDefault(), performance, telemetry, interceptors); }
                 catch (java.security.NoSuchAlgorithmException error) {
                     throw new IOException("default TLS context is unavailable", error);
                 }
@@ -190,7 +214,7 @@ public final class MoonLightClient implements MoonLightChannel {
                 if (uri.getPath() == null || uri.getPath().isBlank()) {
                     throw new IOException("Unix endpoint must contain an absolute socket path");
                 }
-                yield unix(Path.of(uri.getPath()), performance, telemetry);
+                yield unix(Path.of(uri.getPath()), performance, telemetry, interceptors);
             }
             default -> throw new IOException("unsupported MoonLightBridge transport: " + uri.getScheme());
         };
@@ -231,6 +255,13 @@ public final class MoonLightClient implements MoonLightChannel {
     public static MoonLightClient unix(
         Path path, MoonLightPerformanceOptions performance, MoonLightTelemetry telemetry
     ) throws IOException {
+        return unix(path, performance, telemetry, List.of());
+    }
+
+    private static MoonLightClient unix(
+        Path path, MoonLightPerformanceOptions performance, MoonLightTelemetry telemetry,
+        List<? extends MoonLightInterceptor> interceptors
+    ) throws IOException {
         SocketChannel channel = SocketChannel.open(StandardProtocolFamily.UNIX);
         try {
             channel.connect(UnixDomainSocketAddress.of(path));
@@ -239,7 +270,7 @@ public final class MoonLightClient implements MoonLightChannel {
                 Channels.newInputStream(channel),
                 Channels.newOutputStream(channel),
                 () -> { }
-            ), performance, telemetry);
+            ), performance, telemetry, interceptors);
         } catch (IOException | RuntimeException | Error error) {
             try { channel.close(); } catch (IOException suppressed) { error.addSuppressed(suppressed); }
             throw error;
@@ -256,7 +287,7 @@ public final class MoonLightClient implements MoonLightChannel {
      * @throws IOException when TLS or the protocol handshake fails
      */
     public static MoonLightClient tls(String host, int port, SSLContext context) throws IOException {
-        return openTls(host, port, context, MoonLightPerformanceOptions.automatic("tls"), MoonLightTelemetry.automatic());
+        return openTls(host, port, context, MoonLightPerformanceOptions.automatic("tls"), MoonLightTelemetry.automatic(), List.of());
     }
 
     /**
@@ -272,12 +303,12 @@ public final class MoonLightClient implements MoonLightChannel {
     public static MoonLightClient tls(
         String host, int port, SSLContext context, MoonLightPerformanceOptions performance
     ) throws IOException {
-        return openTls(host, port, context, performance, MoonLightTelemetry.automatic());
+        return openTls(host, port, context, performance, MoonLightTelemetry.automatic(), List.of());
     }
 
     private static MoonLightClient openTls(
         String host, int port, SSLContext context, MoonLightPerformanceOptions performance,
-        MoonLightTelemetry telemetry
+        MoonLightTelemetry telemetry, List<? extends MoonLightInterceptor> interceptors
     ) throws IOException {
         SSLSocket socket = (SSLSocket) context.getSocketFactory().createSocket();
         try {
@@ -294,7 +325,7 @@ public final class MoonLightClient implements MoonLightChannel {
                 socket.getInputStream(),
                 socket.getOutputStream(),
                 () -> socket.setSoTimeout(0)
-            ), performance, telemetry);
+            ), performance, telemetry, interceptors);
         } catch (IOException | RuntimeException | Error error) {
             try { socket.close(); } catch (IOException suppressed) { error.addSuppressed(suppressed); }
             throw error;
@@ -302,11 +333,13 @@ public final class MoonLightClient implements MoonLightChannel {
     }
 
     private MoonLightClient(
-        Connection transport, MoonLightPerformanceOptions performance, MoonLightTelemetry telemetry
+        Connection transport, MoonLightPerformanceOptions performance, MoonLightTelemetry telemetry,
+        List<? extends MoonLightInterceptor> interceptors
     ) throws IOException {
         connection = transport.endpoint;
         this.performance = performance;
         this.telemetry = java.util.Objects.requireNonNull(telemetry, "telemetry");
+        this.interceptors = List.copyOf(interceptors);
         decodedByteBudget = new MoonLightCompression.DecodedByteBudget(64 * 1024 * 1024);
         outgoing = new ArrayBlockingQueue<>(performance.outgoingQueueCapacity());
         bufferPool = new ByteArrayPool(performance.bufferPooling());
@@ -441,6 +474,29 @@ public final class MoonLightClient implements MoonLightChannel {
         }
 
         long requestId = allocateRequestId();
+        MoonLightCallContext callContext = new MoonLightCallContext(
+            methodId, requestId, deadline, policy, MoonLightMetadata.builder().build());
+        int enteredInterceptors = 0;
+        try {
+            for (MoonLightInterceptor interceptor : interceptors) {
+                enteredInterceptors++;
+                MoonLightCallContext next = java.util.Objects.requireNonNull(
+                    interceptor.beforeCall(callContext), "interceptor context");
+                if (next.methodId() != methodId || next.requestId() != requestId) {
+                    throw new IllegalArgumentException("interceptor cannot replace call identity");
+                }
+                callContext = next;
+            }
+            deadline = callContext.deadline();
+            timeoutMillis = deadline.toMillis();
+            if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("deadline must be between 1ms and 2147483647ms");
+            }
+        } catch (Throwable failure) {
+            inFlight.release();
+            notifyInterceptors(callContext, null, failure, enteredInterceptors);
+            return CompletableFuture.failedFuture(failure);
+        }
         MoonLightTelemetry.RequestObservation observation;
         try {
             observation = telemetry.startRequest(new MoonLightTelemetry.RequestInfo(methodId, requestId, body.length));
@@ -458,18 +514,22 @@ public final class MoonLightClient implements MoonLightChannel {
         pending.put(requestId, pendingRequest);
         try {
             enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
-                policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression());
+                policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression(),
+                callContext.metadata());
         } catch (IOException error) {
             future.completeExceptionally(error);
         }
 
         future.orTimeout(timeoutMillis, TimeUnit.MILLISECONDS);
         MoonLightTelemetry.RequestObservation completedObservation = observation;
+        MoonLightCallContext completedContext = callContext;
+        int completedInterceptors = enteredInterceptors;
         future.whenComplete((ignored, error) -> {
             pending.remove(requestId, pendingRequest);
             inFlight.release();
             try { completedObservation.finish(ignored == null ? 0 : ignored.length, error); }
             catch (RuntimeException ignoredTelemetryError) { }
+            notifyInterceptors(completedContext, ignored, error, completedInterceptors);
             if (error != null) {
                 LOGGER.log(System.Logger.Level.DEBUG,
                     "MoonLightBridge request failed; method={0}, request={1}, error={2}",
@@ -508,6 +568,29 @@ public final class MoonLightClient implements MoonLightChannel {
             throw new RejectedExecutionException("MoonLightBridge in-flight request limit reached");
         }
         long requestId = allocateRequestId();
+        MoonLightCallContext callContext = new MoonLightCallContext(
+            methodId, requestId, deadline, policy, MoonLightMetadata.builder().build());
+        int enteredInterceptors = 0;
+        try {
+            for (MoonLightInterceptor interceptor : interceptors) {
+                enteredInterceptors++;
+                MoonLightCallContext next = java.util.Objects.requireNonNull(
+                    interceptor.beforeCall(callContext), "interceptor context");
+                if (next.methodId() != methodId || next.requestId() != requestId) {
+                    throw new IllegalArgumentException("interceptor cannot replace call identity");
+                }
+                callContext = next;
+            }
+            deadline = callContext.deadline();
+            timeoutMillis = deadline.toMillis();
+            if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("deadline must be between 1ms and 2147483647ms");
+            }
+        } catch (Throwable failure) {
+            inFlight.release();
+            notifyInterceptors(callContext, null, failure, enteredInterceptors);
+            throw new CompletionException(failure);
+        }
         MoonLightTelemetry.RequestObservation observation;
         try {
             observation = telemetry.startRequest(new MoonLightTelemetry.RequestInfo(methodId, requestId, body.length));
@@ -524,6 +607,8 @@ public final class MoonLightClient implements MoonLightChannel {
         AtomicLong responseBytes = new AtomicLong();
         AtomicReference<MoonLightServerStream<byte[]>> reference = new AtomicReference<>();
         AtomicReference<ScheduledFuture<?>> deadlineTask = new AtomicReference<>();
+        MoonLightCallContext completedContext = callContext;
+        int completedInterceptors = enteredInterceptors;
         MoonLightServerStream<byte[]> stream = new MoonLightServerStream<>(
             count -> sendStreamCredit(requestId, count, reference.get()),
             () -> sendCancel(requestId),
@@ -534,6 +619,7 @@ public final class MoonLightClient implements MoonLightChannel {
                 inFlight.release();
                 try { completedObservation.finish(Math.toIntExact(Math.min(Integer.MAX_VALUE, responseBytes.get())), error); }
                 catch (RuntimeException ignored) { }
+                notifyInterceptors(completedContext, null, error, completedInterceptors);
             },
             callbackExecutor
         );
@@ -541,7 +627,8 @@ public final class MoonLightClient implements MoonLightChannel {
         streams.put(requestId, new StreamRequest(methodId, stream, responseBytes));
         try {
             enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
-                policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression());
+                policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression(),
+                callContext.metadata());
         } catch (IOException error) {
             stream.fail(error);
             return stream;
@@ -795,12 +882,13 @@ public final class MoonLightClient implements MoonLightChannel {
 
     private void enqueueRequestFrame(
         int methodId, long requestId, int timeoutMillis, MoonLightTraceContext traceContext,
-        byte[] body, RpcPolicy.Compression compression
+        byte[] body, RpcPolicy.Compression compression, MoonLightMetadata userMetadata
     )
         throws IOException {
         MoonLightMetadata.Builder metadata = MoonLightMetadata.builder()
             .putReserved(MoonLightMetadata.ReservedKey.DEADLINE_MILLIS,
                 ByteBuffer.allocate(Integer.BYTES).putInt(timeoutMillis).array());
+        userMetadata.copyInto(metadata);
         if (traceContext != null) {
             ByteBuffer trace = ByteBuffer.allocate(MoonLightTraceContext.WIRE_LENGTH);
             traceContext.writeTo(trace);
@@ -845,6 +933,19 @@ public final class MoonLightClient implements MoonLightChannel {
             bufferPool.release(encoded);
             outgoingRequestBytes.release(length);
             throw new OutgoingQueueFullException(performance.outgoingQueueCapacity());
+        }
+    }
+
+    private void notifyInterceptors(
+        MoonLightCallContext context,
+        byte[] response,
+        Throwable failure,
+        int entered
+    ) {
+        for (int index = entered - 1; index >= 0; index--) {
+            try {
+                interceptors.get(index).afterCall(context, response, failure);
+            } catch (Throwable ignored) { }
         }
     }
 

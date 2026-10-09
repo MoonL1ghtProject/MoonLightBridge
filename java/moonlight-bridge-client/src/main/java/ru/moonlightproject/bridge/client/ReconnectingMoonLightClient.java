@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.Serial;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.Consumer;
@@ -14,6 +15,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
     private final ReconnectPolicy policy;
     private final MoonLightPerformanceOptions performance;
     private final MoonLightTelemetry telemetry;
+    private final List<MoonLightInterceptor> interceptors;
     private final ScheduledExecutorService scheduler;
     private final AtomicReference<MoonLightClient> active = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -29,16 +31,18 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         ReconnectPolicy policy,
         MoonLightPerformanceOptions performance,
         MoonLightTelemetry telemetry,
+        List<? extends MoonLightInterceptor> interceptors,
         boolean connectImmediately
     ) throws IOException {
         this.endpoint = Objects.requireNonNull(endpoint);
         this.policy = Objects.requireNonNull(policy);
         this.performance = Objects.requireNonNull(performance);
         this.telemetry = Objects.requireNonNull(telemetry);
+        this.interceptors = List.copyOf(interceptors);
         this.scheduler = Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().daemon().name("moonlight-bridge-reconnect").factory());
         if (connectImmediately) {
-            install(MoonLightClient.connect(endpoint, performance, telemetry));
+            install(MoonLightClient.connect(endpoint, performance, telemetry, this.interceptors));
         } else {
             reconnectScheduled.set(true);
             scheduler.execute(this::tryReconnect);
@@ -54,7 +58,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
      */
     public static ReconnectingMoonLightClient connect(String endpoint) throws IOException {
         return new ReconnectingMoonLightClient(
-            endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), MoonLightTelemetry.automatic(), true);
+            endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), MoonLightTelemetry.automatic(), List.of(), true);
     }
 
     /**
@@ -67,7 +71,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
      */
     public static ReconnectingMoonLightClient connect(String endpoint, ReconnectPolicy policy) throws IOException {
         return new ReconnectingMoonLightClient(
-            endpoint, policy, automaticPerformance(endpoint), MoonLightTelemetry.automatic(), true);
+            endpoint, policy, automaticPerformance(endpoint), MoonLightTelemetry.automatic(), List.of(), true);
     }
 
     /**
@@ -86,7 +90,29 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         MoonLightPerformanceOptions performance,
         MoonLightTelemetry telemetry
     ) throws IOException {
-        return new ReconnectingMoonLightClient(endpoint, policy, performance, telemetry, true);
+        return new ReconnectingMoonLightClient(endpoint, policy, performance, telemetry, List.of(), true);
+    }
+
+    /**
+     * Connects immediately with an immutable interceptor chain retained across reconnects.
+     *
+     * @param endpoint complete transport endpoint
+     * @param policy reconnect backoff policy
+     * @param performance writer, batching, and buffer settings
+     * @param telemetry local instrumentation implementation
+     * @param interceptors call interceptors in registration order
+     * @return supervised client after its first successful handshake
+     * @throws IOException when the first connection cannot be established
+     */
+    public static ReconnectingMoonLightClient connect(
+        String endpoint,
+        ReconnectPolicy policy,
+        MoonLightPerformanceOptions performance,
+        MoonLightTelemetry telemetry,
+        List<? extends MoonLightInterceptor> interceptors
+    ) throws IOException {
+        return new ReconnectingMoonLightClient(
+            endpoint, policy, performance, telemetry, interceptors, true);
     }
 
     /**
@@ -99,7 +125,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
      */
     public static ReconnectingMoonLightClient start(String endpoint) throws IOException {
         return new ReconnectingMoonLightClient(
-            endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), deferredAutomaticTelemetry(), false);
+            endpoint, ReconnectPolicy.defaults(), automaticPerformance(endpoint), deferredAutomaticTelemetry(), List.of(), false);
     }
 
     /**
@@ -112,7 +138,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
      */
     public static ReconnectingMoonLightClient start(String endpoint, ReconnectPolicy policy) throws IOException {
         return new ReconnectingMoonLightClient(
-            endpoint, policy, automaticPerformance(endpoint), deferredAutomaticTelemetry(), false);
+            endpoint, policy, automaticPerformance(endpoint), deferredAutomaticTelemetry(), List.of(), false);
     }
 
     private static MoonLightTelemetry deferredAutomaticTelemetry() {
@@ -153,7 +179,29 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
         MoonLightPerformanceOptions performance,
         MoonLightTelemetry telemetry
     ) throws IOException {
-        return new ReconnectingMoonLightClient(endpoint, policy, performance, telemetry, false);
+        return new ReconnectingMoonLightClient(endpoint, policy, performance, telemetry, List.of(), false);
+    }
+
+    /**
+     * Starts asynchronous supervision with an interceptor chain retained across reconnects.
+     *
+     * @param endpoint complete transport endpoint
+     * @param policy reconnect backoff policy
+     * @param performance writer, batching, and buffer settings
+     * @param telemetry local instrumentation implementation
+     * @param interceptors call interceptors in registration order
+     * @return client whose supervisor connects in the background
+     * @throws IOException when the endpoint configuration is invalid
+     */
+    public static ReconnectingMoonLightClient start(
+        String endpoint,
+        ReconnectPolicy policy,
+        MoonLightPerformanceOptions performance,
+        MoonLightTelemetry telemetry,
+        List<? extends MoonLightInterceptor> interceptors
+    ) throws IOException {
+        return new ReconnectingMoonLightClient(
+            endpoint, policy, performance, telemetry, interceptors, false);
     }
 
     /** Returns whether a physical connection is currently installed.
@@ -276,7 +324,7 @@ public final class ReconnectingMoonLightClient implements MoonLightChannel {
     private void tryReconnect() {
         reconnectScheduled.set(false);
         if (closed.get() || active.get() != null) return;
-        try { install(MoonLightClient.connect(endpoint, performance, telemetry)); }
+        try { install(MoonLightClient.connect(endpoint, performance, telemetry, interceptors)); }
         catch (IOException | RuntimeException error) {
             lastFailure.set(error);
             scheduleReconnect();

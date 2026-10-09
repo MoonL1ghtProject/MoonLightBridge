@@ -50,6 +50,10 @@ public final class MoonLightMetadata {
         return value == null ? null : value.clone();
     }
 
+    void copyInto(Builder builder) {
+        entries.forEach((key, value) -> builder.put(key, value));
+    }
+
     /**
      * Encodes the canonical metadata block, including its four-byte length prefix.
      *

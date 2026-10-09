@@ -34,6 +34,11 @@ use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 use tracing::Instrument;
 
 pub mod idempotency;
+mod middleware;
+use middleware::CancellationGuard;
+pub use middleware::{
+    Middleware, MiddlewareFuture, Next, PeerIdentity, RequestCancellation, RequestContext,
+};
 /// Helpers for loading mutual-TLS server configuration from PEM files.
 pub mod tls;
 
@@ -73,7 +78,7 @@ use std::path::Path;
 use tokio::net::UnixListener;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>, HandlerError>> + Send>>;
-type Handler = Arc<dyn Fn(Vec<u8>) -> HandlerFuture + Send + Sync>;
+pub(crate) type Handler = Arc<dyn Fn(Vec<u8>) -> HandlerFuture + Send + Sync>;
 /// Type-erased asynchronous sequence returned by a server-streaming handler.
 pub type ServerStream<T> = Pin<Box<dyn Stream<Item = Result<T, HandlerError>> + Send + 'static>>;
 /// Maps successful stream items while preserving handler failures.
@@ -436,6 +441,8 @@ impl HandlerError {
 pub struct Router {
     handlers: Arc<HashMap<u32, Handler>>,
     stream_handlers: Arc<HashMap<u32, StreamHandler>>,
+    required_scopes: Arc<HashMap<u32, &'static [&'static str]>>,
+    middleware: Arc<[Arc<dyn Middleware>]>,
     telemetry: Option<Arc<dyn Telemetry>>,
 }
 
@@ -443,6 +450,8 @@ pub struct Router {
 pub struct RouterBuilder {
     handlers: HashMap<u32, Handler>,
     stream_handlers: HashMap<u32, StreamHandler>,
+    required_scopes: HashMap<u32, &'static [&'static str]>,
+    middleware: Vec<Arc<dyn Middleware>>,
     telemetry: Option<Arc<dyn Telemetry>>,
 }
 
@@ -459,20 +468,42 @@ impl Router {
         RouterBuilder {
             handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
+            required_scopes: HashMap::new(),
+            middleware: Vec::new(),
             telemetry: None,
         }
     }
 
+    #[cfg(test)]
     async fn dispatch(
+        &self,
+        frame: Frame,
+        max_response_body_len: u32,
+        max_metadata_len: u32,
+        compression: RequestCompression<'_>,
+    ) -> Frame {
+        self.dispatch_with_peer(
+            frame,
+            max_response_body_len,
+            max_metadata_len,
+            compression,
+            None,
+        )
+        .await
+    }
+
+    async fn dispatch_with_peer(
         &self,
         mut frame: Frame,
         max_response_body_len: u32,
         max_metadata_len: u32,
         compression: RequestCompression<'_>,
+        peer_identity: Option<PeerIdentity>,
     ) -> Frame {
         let ParsedRequest {
             deadline,
             trace_context,
+            metadata,
             payload,
             _decoded_permit,
         } = match request_payload(&mut frame, max_metadata_len, compression) {
@@ -501,20 +532,45 @@ impl Router {
             );
             return error_frame(&frame, ErrorCode::UnknownMethod, "method is not registered");
         };
+        let absolute_deadline = deadline.map(|duration| tokio::time::Instant::now() + duration);
+        let cancellation = RequestCancellation::new();
+        let context = RequestContext::new(
+            frame.method_id,
+            frame.request_id,
+            absolute_deadline,
+            metadata,
+            self.required_scopes
+                .get(&frame.method_id)
+                .copied()
+                .unwrap_or(&[]),
+            peer_identity,
+            cancellation.clone(),
+        );
         let handler = handler.clone();
+        let middleware = self.middleware.clone();
         let collect_stages = observation.is_some();
         let instrumented = async move {
+            let invocation = async move {
+                let mut cancellation_guard = CancellationGuard::new(cancellation);
+                let result = if middleware.is_empty() {
+                    handler(payload).await
+                } else {
+                    Next::root(middleware, handler).run(context, payload).await
+                };
+                cancellation_guard.complete();
+                result
+            };
             if collect_stages {
                 FUNCTION_STAGES
                     .scope(RefCell::new(Vec::new()), async move {
-                        let result = handler(payload).await;
+                        let result = invocation.await;
                         let stages = FUNCTION_STAGES
                             .with(|stages| std::mem::take(&mut *stages.borrow_mut()));
                         (result, stages)
                     })
                     .await
             } else {
-                (handler(payload).await, Vec::new())
+                (invocation.await, Vec::new())
             }
         };
         let (result, stages) = match deadline {
@@ -617,10 +673,12 @@ impl Router {
         compression: RequestCompression<'_>,
         credits: Arc<Semaphore>,
         responses: mpsc::Sender<Frame>,
+        peer_identity: Option<PeerIdentity>,
     ) {
         let ParsedRequest {
             deadline,
             trace_context,
+            metadata,
             payload,
             _decoded_permit,
         } = match request_payload(&mut frame, max_metadata_len, compression) {
@@ -654,45 +712,44 @@ impl Router {
                 .await;
             return;
         };
-        let expires = deadline.map(|duration| tokio::time::Instant::now() + duration);
-        let open = handler(payload);
-        let opened = match expires {
-            Some(at) => match tokio::time::timeout_at(at, open).await {
-                Ok(result) => result,
-                Err(_) => {
-                    finish_observation(
-                        observation,
-                        RequestOutcome::Error {
-                            code: ErrorCode::DeadlineExceeded,
-                        },
-                    );
+        let cancellation = RequestCancellation::new();
+        let context = RequestContext::new(
+            frame.method_id,
+            frame.request_id,
+            deadline.map(|duration| tokio::time::Instant::now() + duration),
+            metadata,
+            self.required_scopes
+                .get(&frame.method_id)
+                .copied()
+                .unwrap_or(&[]),
+            peer_identity,
+            cancellation.clone(),
+        );
+        let payload = if self.middleware.is_empty() {
+            payload
+        } else {
+            let identity: Handler = Arc::new(|body| Box::pin(async move { Ok(body) }));
+            match Next::root(self.middleware.clone(), identity)
+                .run(context, payload)
+                .await
+            {
+                Ok(payload) => payload,
+                Err(error) => {
+                    finish_observation(observation, RequestOutcome::Error { code: error.code });
                     let _ = responses
-                        .send(error_frame(
-                            &frame,
-                            ErrorCode::DeadlineExceeded,
-                            "request deadline exceeded",
-                        ))
+                        .send(error_frame(&frame, error.code, &error.message))
                         .await;
                     return;
                 }
-            },
-            None => open.await,
-        };
-        let mut stream = match opened {
-            Ok(stream) => stream,
-            Err(error) => {
-                finish_observation(observation, RequestOutcome::Error { code: error.code });
-                let _ = responses
-                    .send(error_frame(&frame, error.code, &error.message))
-                    .await;
-                return;
             }
         };
-        let mut response_bytes = 0usize;
-        loop {
-            let item = match expires {
-                Some(at) => match tokio::time::timeout_at(at, stream.next()).await {
-                    Ok(item) => item,
+        let mut cancellation_guard = CancellationGuard::new(cancellation);
+        async {
+            let expires = deadline.map(|duration| tokio::time::Instant::now() + duration);
+            let open = handler(payload);
+            let opened = match expires {
+                Some(at) => match tokio::time::timeout_at(at, open).await {
+                    Ok(result) => result,
                     Err(_) => {
                         finish_observation(
                             observation,
@@ -710,93 +767,136 @@ impl Router {
                         return;
                     }
                 },
-                None => stream.next().await,
+                None => open.await,
             };
-            match item {
-                Some(Ok(body)) if body.len() <= max_response_body_len as usize => {
-                    let credit = credits.acquire();
-                    let permit = match expires {
-                        Some(at) => match tokio::time::timeout_at(at, credit).await {
-                            Ok(Ok(permit)) => permit,
-                            Ok(Err(_)) => return,
-                            Err(_) => {
-                                finish_observation(
-                                    observation,
-                                    RequestOutcome::Error {
-                                        code: ErrorCode::DeadlineExceeded,
-                                    },
-                                );
-                                let _ = responses
-                                    .send(error_frame(
-                                        &frame,
-                                        ErrorCode::DeadlineExceeded,
-                                        "request deadline exceeded",
-                                    ))
-                                    .await;
-                                return;
-                            }
-                        },
-                        None => match credit.await {
-                            Ok(permit) => permit,
-                            Err(_) => return,
-                        },
-                    };
-                    permit.forget();
-                    response_bytes += body.len();
-                    if responses
-                        .send(Frame::new(
-                            FrameKind::StreamItem,
-                            frame.method_id,
-                            frame.request_id,
-                            body,
-                        ))
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                Some(Ok(_)) => {
-                    finish_observation(
-                        observation,
-                        RequestOutcome::Error {
-                            code: ErrorCode::ResourceExhausted,
-                        },
-                    );
-                    let _ = responses
-                        .send(error_frame(
-                            &frame,
-                            ErrorCode::ResourceExhausted,
-                            "stream item exceeds negotiated body limit",
-                        ))
-                        .await;
-                    return;
-                }
-                Some(Err(error)) => {
+            let mut stream = match opened {
+                Ok(stream) => stream,
+                Err(error) => {
                     finish_observation(observation, RequestOutcome::Error { code: error.code });
                     let _ = responses
                         .send(error_frame(&frame, error.code, &error.message))
                         .await;
                     return;
                 }
-                None => {
-                    finish_observation(observation, RequestOutcome::Success { response_bytes });
-                    let _ = responses
-                        .send(Frame::new(
-                            FrameKind::StreamEnd,
-                            frame.method_id,
-                            frame.request_id,
-                            Vec::new(),
-                        ))
-                        .await;
-                    return;
+            };
+            let mut response_bytes = 0usize;
+            loop {
+                let item = match expires {
+                    Some(at) => match tokio::time::timeout_at(at, stream.next()).await {
+                        Ok(item) => item,
+                        Err(_) => {
+                            finish_observation(
+                                observation,
+                                RequestOutcome::Error {
+                                    code: ErrorCode::DeadlineExceeded,
+                                },
+                            );
+                            let _ = responses
+                                .send(error_frame(
+                                    &frame,
+                                    ErrorCode::DeadlineExceeded,
+                                    "request deadline exceeded",
+                                ))
+                                .await;
+                            return;
+                        }
+                    },
+                    None => stream.next().await,
+                };
+                match item {
+                    Some(Ok(body)) if body.len() <= max_response_body_len as usize => {
+                        let credit = credits.acquire();
+                        let permit = match expires {
+                            Some(at) => match tokio::time::timeout_at(at, credit).await {
+                                Ok(Ok(permit)) => permit,
+                                Ok(Err(_)) => return,
+                                Err(_) => {
+                                    finish_observation(
+                                        observation,
+                                        RequestOutcome::Error {
+                                            code: ErrorCode::DeadlineExceeded,
+                                        },
+                                    );
+                                    let _ = responses
+                                        .send(error_frame(
+                                            &frame,
+                                            ErrorCode::DeadlineExceeded,
+                                            "request deadline exceeded",
+                                        ))
+                                        .await;
+                                    return;
+                                }
+                            },
+                            None => match credit.await {
+                                Ok(permit) => permit,
+                                Err(_) => return,
+                            },
+                        };
+                        permit.forget();
+                        response_bytes += body.len();
+                        if responses
+                            .send(Frame::new(
+                                FrameKind::StreamItem,
+                                frame.method_id,
+                                frame.request_id,
+                                body,
+                            ))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Some(Ok(_)) => {
+                        finish_observation(
+                            observation,
+                            RequestOutcome::Error {
+                                code: ErrorCode::ResourceExhausted,
+                            },
+                        );
+                        let _ = responses
+                            .send(error_frame(
+                                &frame,
+                                ErrorCode::ResourceExhausted,
+                                "stream item exceeds negotiated body limit",
+                            ))
+                            .await;
+                        return;
+                    }
+                    Some(Err(error)) => {
+                        finish_observation(observation, RequestOutcome::Error { code: error.code });
+                        let _ = responses
+                            .send(error_frame(&frame, error.code, &error.message))
+                            .await;
+                        return;
+                    }
+                    None => {
+                        finish_observation(observation, RequestOutcome::Success { response_bytes });
+                        let _ = responses
+                            .send(Frame::new(
+                                FrameKind::StreamEnd,
+                                frame.method_id,
+                                frame.request_id,
+                                Vec::new(),
+                            ))
+                            .await;
+                        return;
+                    }
                 }
             }
         }
+        .await;
+        cancellation_guard.complete();
     }
 }
 
 impl RouterBuilder {
+    /// Appends a middleware layer. Layers wrap handlers in registration order.
+    pub fn layer(mut self, middleware: Arc<dyn Middleware>) -> Self {
+        self.middleware.push(middleware);
+        self
+    }
+
     /// Installs the telemetry implementation used for handled requests.
     pub fn telemetry(mut self, telemetry: Arc<dyn Telemetry>) -> Self {
         self.telemetry = Some(telemetry);
@@ -825,6 +925,32 @@ impl RouterBuilder {
             previous.is_none(),
             "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
         );
+        self
+    }
+
+    /// Registers a handler and exposes generated authorization scopes to middleware.
+    pub fn route_scoped<F, Fut>(
+        mut self,
+        method_id: u32,
+        required_scopes: &'static [&'static str],
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<u8>, HandlerError>> + Send + 'static,
+    {
+        assert!(
+            !self.stream_handlers.contains_key(&method_id),
+            "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
+        );
+        let previous = self
+            .handlers
+            .insert(method_id, Arc::new(move |body| Box::pin(handler(body))));
+        assert!(
+            previous.is_none(),
+            "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
+        );
+        self.required_scopes.insert(method_id, required_scopes);
         self
     }
 
@@ -859,11 +985,44 @@ impl RouterBuilder {
         self
     }
 
+    /// Registers a server-streaming handler and exposes generated scopes to middleware.
+    pub fn route_stream_scoped<F, Fut, S>(
+        mut self,
+        method_id: u32,
+        required_scopes: &'static [&'static str],
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<S, HandlerError>> + Send + 'static,
+        S: Stream<Item = Result<Vec<u8>, HandlerError>> + Send + 'static,
+    {
+        assert!(
+            !self.handlers.contains_key(&method_id)
+                && !self.stream_handlers.contains_key(&method_id),
+            "duplicate MoonLightBridge method ID registered: 0x{method_id:08X}"
+        );
+        self.stream_handlers.insert(
+            method_id,
+            Arc::new(move |body| {
+                let future = handler(body);
+                Box::pin(async move {
+                    let stream = future.await?;
+                    Ok(Box::pin(stream) as RawServerStream)
+                })
+            }),
+        );
+        self.required_scopes.insert(method_id, required_scopes);
+        self
+    }
+
     /// Freezes handler registration into a cloneable router.
     pub fn build(self) -> Router {
         Router {
             handlers: Arc::new(self.handlers),
             stream_handlers: Arc::new(self.stream_handlers),
+            required_scopes: Arc::new(self.required_scopes),
+            middleware: self.middleware.into(),
             telemetry: self.telemetry,
         }
     }
@@ -1068,6 +1227,7 @@ impl Server {
                     if let Err(error) = serve_connection(
                         stream,
                         router,
+                        None,
                         settings,
                         hello_timeout,
                         events,
@@ -1103,9 +1263,18 @@ impl Server {
                     let handshake = timeout(Duration::from_secs(10), acceptor.accept(stream)).await;
                     match handshake {
                         Ok(Ok(stream)) => {
+                            let peer_identity = stream
+                                .get_ref()
+                                .1
+                                .peer_certificates()
+                                .and_then(|certificates| certificates.first())
+                                .map(|certificate| {
+                                    PeerIdentity::tls_certificate(certificate.as_ref().to_vec())
+                                });
                             if let Err(error) = serve_connection(
                                 stream,
                                 router,
+                                peer_identity,
                                 settings,
                                 hello_timeout,
                                 events,
@@ -1146,6 +1315,7 @@ impl Server {
                     if let Err(error) = serve_connection(
                         stream,
                         router,
+                        None,
                         settings,
                         hello_timeout,
                         events,
@@ -1169,6 +1339,7 @@ impl Server {
 async fn serve_connection<S>(
     mut stream: S,
     router: Router,
+    peer_identity: Option<PeerIdentity>,
     server: PeerSettings,
     hello_timeout: Duration,
     events: EventHub,
@@ -1384,6 +1555,7 @@ where
                 let active_for_task = active.clone();
                 let request_id = frame.request_id;
                 let runtime_for_task = runtime.clone();
+                let peer_identity = peer_identity.clone();
                 let max_decoded_body_len = negotiated.max_decoded_body_len;
                 let streaming = router.is_streaming(frame.method_id);
                 if streaming
@@ -1432,12 +1604,13 @@ where
                                 },
                                 credits,
                                 responses_tx.clone(),
+                                peer_identity,
                             )
                             .await;
                     } else {
                         let response = fit_outbound_frame(
                             router
-                                .dispatch(
+                                .dispatch_with_peer(
                                     frame,
                                     max_decoded_body_len,
                                     negotiated.max_metadata_len,
@@ -1446,6 +1619,7 @@ where
                                         policy: connection_compression_policy,
                                         budget: &runtime_for_task.decoded_byte_budget,
                                     },
+                                    peer_identity,
                                 )
                                 .await,
                             max_decoded_body_len,
@@ -1584,6 +1758,7 @@ where
 struct ParsedRequest {
     deadline: Option<Duration>,
     trace_context: Option<TraceContext>,
+    metadata: Metadata,
     payload: Vec<u8>,
     _decoded_permit: Option<DecodedBytePermit>,
 }
@@ -1688,6 +1863,7 @@ fn request_payload(
     Ok(ParsedRequest {
         deadline,
         trace_context,
+        metadata,
         payload,
         _decoded_permit: decoded_permit,
     })
@@ -1871,6 +2047,274 @@ mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    struct TestMiddleware {
+        name: &'static str,
+        events: Arc<StdMutex<Vec<String>>>,
+    }
+
+    impl Middleware for TestMiddleware {
+        fn call(&self, context: RequestContext, body: Vec<u8>, next: Next) -> MiddlewareFuture {
+            let name = self.name;
+            let events = self.events.clone();
+            Box::pin(async move {
+                events.lock().unwrap().push(format!("{name}:before"));
+                let result = next.run(context, body).await;
+                events.lock().unwrap().push(format!("{name}:after"));
+                result
+            })
+        }
+    }
+
+    fn test_compression() -> DecodedByteBudget {
+        DecodedByteBudget::new(1024 * 1024).unwrap()
+    }
+
+    async fn dispatch_test(router: &Router, frame: Frame) -> Frame {
+        let budget = test_compression();
+        router
+            .dispatch(
+                frame,
+                DEFAULT_MAX_BODY_LEN,
+                MetadataLimits::default().max_bytes,
+                RequestCompression {
+                    codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE
+                        | moonlight_bridge_protocol::COMPRESSION_CODEC_ZSTD,
+                    policy: CompressionPolicy::default(),
+                    budget: &budget,
+                },
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn middleware_runs_in_registration_order_around_handler() {
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let handler_events = events.clone();
+        let router = Router::builder()
+            .layer(Arc::new(TestMiddleware {
+                name: "outer",
+                events: events.clone(),
+            }))
+            .layer(Arc::new(TestMiddleware {
+                name: "inner",
+                events: events.clone(),
+            }))
+            .route(1, move |body| {
+                let events = handler_events.clone();
+                async move {
+                    events.lock().unwrap().push("handler".to_owned());
+                    Ok(body)
+                }
+            })
+            .build();
+
+        let response = dispatch_test(
+            &router,
+            Frame::new(FrameKind::Request, 1, 7, b"body".to_vec()),
+        )
+        .await;
+
+        assert_eq!(response.kind, FrameKind::Response);
+        assert_eq!(response.body, b"body");
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "outer:before",
+                "inner:before",
+                "handler",
+                "inner:after",
+                "outer:after"
+            ]
+        );
+    }
+
+    struct RejectMiddleware;
+
+    impl Middleware for RejectMiddleware {
+        fn call(&self, _context: RequestContext, _body: Vec<u8>, _next: Next) -> MiddlewareFuture {
+            Box::pin(async {
+                Err(HandlerError::new(
+                    ErrorCode::PermissionDenied,
+                    "scope denied",
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn middleware_short_circuit_does_not_invoke_handler() {
+        let invoked = Arc::new(AtomicBool::new(false));
+        let handler_invoked = invoked.clone();
+        let router = Router::builder()
+            .layer(Arc::new(RejectMiddleware))
+            .route(1, move |_| {
+                handler_invoked.store(true, Ordering::SeqCst);
+                async { Ok(Vec::new()) }
+            })
+            .build();
+
+        let response = dispatch_test(&router, Frame::new(FrameKind::Request, 1, 8, vec![])).await;
+
+        assert_eq!(response.kind, FrameKind::Error);
+        assert_eq!(
+            ErrorCode::try_from(u16::from_be_bytes(response.body[..2].try_into().unwrap()))
+                .unwrap(),
+            ErrorCode::PermissionDenied
+        );
+        assert!(!invoked.load(Ordering::SeqCst));
+    }
+
+    struct DoubleNextMiddleware;
+
+    impl Middleware for DoubleNextMiddleware {
+        fn call(&self, context: RequestContext, body: Vec<u8>, next: Next) -> MiddlewareFuture {
+            Box::pin(async move {
+                let duplicate = next.clone();
+                let first = next.run(context.clone(), body.clone()).await;
+                assert!(first.is_ok());
+                duplicate.run(context, body).await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn next_rejects_a_second_invocation_without_repeating_handler() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let handler_calls = calls.clone();
+        let router = Router::builder()
+            .layer(Arc::new(DoubleNextMiddleware))
+            .route(1, move |_| {
+                handler_calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok(Vec::new()) }
+            })
+            .build();
+
+        let response = dispatch_test(&router, Frame::new(FrameKind::Request, 1, 9, vec![])).await;
+
+        assert_eq!(response.kind, FrameKind::Error);
+        assert_eq!(
+            ErrorCode::try_from(u16::from_be_bytes(response.body[..2].try_into().unwrap()))
+                .unwrap(),
+            ErrorCode::Internal
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    struct ContextCapture(Arc<StdMutex<Option<RequestContext>>>);
+
+    impl Middleware for ContextCapture {
+        fn call(&self, context: RequestContext, body: Vec<u8>, next: Next) -> MiddlewareFuture {
+            *self.0.lock().unwrap() = Some(context.clone());
+            next.run(context, body)
+        }
+    }
+
+    #[tokio::test]
+    async fn middleware_context_exposes_deadline_reserved_metadata_scopes_and_tls_peer() {
+        let captured = Arc::new(StdMutex::new(None));
+        let router = Router::builder()
+            .layer(Arc::new(ContextCapture(captured.clone())))
+            .route_scoped(1, &["echo.invoke"], |body| async move { Ok(body) })
+            .build();
+        let mut metadata = Metadata::new();
+        metadata
+            .insert_reserved(
+                ReservedMetadataKey::DeadlineMillis,
+                1_000u32.to_be_bytes().to_vec(),
+            )
+            .unwrap();
+        metadata
+            .insert_reserved(ReservedMetadataKey::Authorization, b"opaque".to_vec())
+            .unwrap();
+        let mut body = Vec::new();
+        metadata.encode_prefix(&mut body).unwrap();
+        body.extend_from_slice(b"payload");
+        let budget = test_compression();
+        let peer = PeerIdentity::tls_certificate(vec![1, 2, 3]);
+
+        let response = router
+            .dispatch_with_peer(
+                Frame::new(FrameKind::Request, 1, 10, body).with_flags(FLAG_HAS_METADATA),
+                DEFAULT_MAX_BODY_LEN,
+                MetadataLimits::default().max_bytes,
+                RequestCompression {
+                    codecs: moonlight_bridge_protocol::COMPRESSION_CODEC_NONE,
+                    policy: CompressionPolicy::default(),
+                    budget: &budget,
+                },
+                Some(peer.clone()),
+            )
+            .await;
+
+        assert_eq!(response.body, b"payload");
+        let context = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(context.method_id(), 1);
+        assert_eq!(context.request_id(), 10);
+        assert!(context.deadline().unwrap() > tokio::time::Instant::now());
+        assert_eq!(context.required_scopes(), &["echo.invoke"]);
+        assert_eq!(context.peer_identity(), Some(&peer));
+        assert_eq!(
+            context
+                .metadata()
+                .get(&MetadataKey::Reserved(ReservedMetadataKey::Authorization)),
+            Some(b"opaque".as_slice())
+        );
+    }
+
+    struct PanicMiddleware;
+
+    impl Middleware for PanicMiddleware {
+        fn call(&self, _context: RequestContext, _body: Vec<u8>, _next: Next) -> MiddlewareFuture {
+            Box::pin(async { panic!("middleware panic must be isolated") })
+        }
+    }
+
+    #[tokio::test]
+    async fn middleware_panic_becomes_one_internal_error() {
+        let router = Router::builder()
+            .layer(Arc::new(PanicMiddleware))
+            .route(1, |_| async { Ok(Vec::new()) })
+            .build();
+
+        let response = dispatch_test(&router, Frame::new(FrameKind::Request, 1, 11, vec![])).await;
+
+        assert_eq!(response.kind, FrameKind::Error);
+        assert_eq!(
+            ErrorCode::try_from(u16::from_be_bytes(response.body[..2].try_into().unwrap()))
+                .unwrap(),
+            ErrorCode::Internal
+        );
+    }
+
+    struct CancellationCapture(StdMutex<Option<oneshot::Sender<RequestCancellation>>>);
+
+    impl Middleware for CancellationCapture {
+        fn call(&self, context: RequestContext, _body: Vec<u8>, _next: Next) -> MiddlewareFuture {
+            if let Some(sender) = self.0.lock().unwrap().take() {
+                let _ = sender.send(context.cancellation().clone());
+            }
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn middleware_cancellation_signal_is_set_when_dispatch_is_aborted() {
+        let (sender, receiver) = oneshot::channel();
+        let router = Router::builder()
+            .layer(Arc::new(CancellationCapture(StdMutex::new(Some(sender)))))
+            .route(1, |_| async { Ok(Vec::new()) })
+            .build();
+        let task = tokio::spawn(async move {
+            dispatch_test(&router, Frame::new(FrameKind::Request, 1, 12, vec![])).await
+        });
+        let cancellation = receiver.await.unwrap();
+
+        task.abort();
+        let _ = task.await;
+
+        assert!(cancellation.is_cancelled());
+    }
+
     async fn serve_test_connection<S>(
         stream: S,
         router: Router,
@@ -1889,6 +2333,7 @@ mod tests {
         serve_connection(
             stream,
             router,
+            None,
             settings,
             hello_timeout,
             events,

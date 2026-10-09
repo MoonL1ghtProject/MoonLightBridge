@@ -28,13 +28,14 @@ out of order. The optional Paper/Folia adapter keeps Minecraft world access on t
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.4.0"
+moonlight-bridge-server = "0.5.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 Rust 1.88 or newer is required. Applications normally also use
 [`moonlight-bridge-codegen`](https://crates.io/crates/moonlight-bridge-codegen) as a build dependency
-to generate typed services from the same `.proto` contract as the Java plugin.
+to generate typed services from an annotated Rust contract, handwritten `.proto`, or both. Every
+frontend is normalized to the same Protobuf descriptor used by the Java plugin.
 
 ## Quick start
 

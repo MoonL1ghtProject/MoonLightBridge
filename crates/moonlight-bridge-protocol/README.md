@@ -57,6 +57,7 @@ minimum limits and feature intersection during handshake; runtimes must use nego
 | `Goodbye` | Graceful close |
 | `Health` / `HealthStatus` | Built-in readiness |
 | `Event` | One-way server-to-client event |
+| `StreamItem` / `StreamEnd` / `StreamCredit` | Credit-controlled server streaming |
 
 Request ID zero is reserved for connection-level frames and events. REQUEST/PING IDs must be
 non-zero; duplicate active IDs are protocol errors at the runtime layer.
@@ -101,6 +102,9 @@ and opaque value. Runtime keys include deadline, trace context, idempotency, aut
 compression, retry, event, content-type, and diagnostic fields. Decoders reject duplicate singleton
 keys, non-canonical order, unknown critical keys, malformed lengths, and configured count/byte-limit
 violations before copying values. Transport runtimes remove the metadata prefix before dispatch.
+
+Diagnostic correlation belongs to the application that owns the connection. The protocol has no
+anonymous analytics channel and does not select an observability destination.
 
 Trace context is vendor-neutral wire data. This crate does not initialize or depend on an
 observability SDK.

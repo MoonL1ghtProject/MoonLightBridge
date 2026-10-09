@@ -36,6 +36,10 @@ Use `whenCompleteOnGlobal` for console/server-wide state, `whenCompleteAt` for
 location-owned state, and `whenCompleteFor` for players/entities/command
 senders. Call `bridge.close()` from `onDisable`.
 
+For controlled maintenance, initiate `bridge.drain(timeout)` before shutdown. New calls are
+rejected while already accepted unary and streaming work receives a bounded opportunity to finish.
+The Paper example exposes unary, batch, typed-event, server-streaming, and drain commands.
+
 Use `bridge.health(timeout)`, `bridge.isConnected()`,
 `bridge.pendingRequests()`, and `bridge.lastFailure()` for readiness. Generated
 `*Events` helpers subscribe to typed backend events and subscriptions are
@@ -49,3 +53,6 @@ that does not touch Bukkit state can remain on the original completion stage.
 The plugin must include `folia-supported: true` in `plugin.yml` and shade
 `moonlight-bridge-paper` with merged `META-INF/services` resources. The example build also
 relocates bundled dependencies to prevent classpath conflicts with server forks.
+
+Contracts may be handwritten Protobuf or code-first Java/Kotlin. Both generate the same client API;
+the Paper adapter does not require a special schema format. See [codegen.md](codegen.md).

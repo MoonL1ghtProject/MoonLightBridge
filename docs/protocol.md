@@ -61,8 +61,8 @@ singletons, non-canonical order, unknown critical keys, invalid user names, and 
 are rejected.
 
 Reserved keys carry deadlines, trace context, idempotency and authorization data, compression
-state, retry identity, event cursors, content type, and anonymous diagnostic correlation. Payloads
-and authorization values are never telemetry fields.
+state, retry identity, event cursors, content type, and application-owned diagnostic correlation.
+Payloads and authorization values are never telemetry fields.
 
 ## RPC policies
 

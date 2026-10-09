@@ -1,6 +1,8 @@
 # Observability
 
-MoonLightBridge provides opt-in adapters for both sides of a Java-to-Rust call. Java client spans
+MoonLightBridge provides opt-in adapters for both sides of a Java-to-Rust call. All data belongs to
+the application developer: these adapters do not send anonymous product analytics or select a
+third-party destination. Java client spans
 propagate trace and parent span identifiers through protocol metadata; the Rust server adapter
 continues the same trace. Request IDs, method IDs, sizes, status, exceptions, and backend stage
 timing stay available in traces for service developers.
@@ -42,6 +44,6 @@ plugin-owned server. The adapters never bind ports during class loading or const
 
 ## Runnable dashboard
 
-[`examples/observability`](../examples/observability/README.md) contains a shared Protobuf schema,
-Rust service, Java traffic generator, Prometheus scrape configuration, Tempo trace storage, and a
-provisioned Grafana dashboard.
+[`examples/observability`](../examples/observability/README.md) generates the shared Protobuf
+contract from annotated Rust source, then connects the Rust service and Java traffic generator to
+Prometheus, Tempo, and a provisioned Grafana dashboard.

@@ -2,8 +2,8 @@
 
 This example is a normal Paper plugin with MoonLightBridge embedded into its
 shaded JAR. The server does not need a separate MoonLightBridge plugin. Its Rust
-backend implements the generated `EchoService` and demonstrates one request as
-well as a batch call.
+backend implements the generated `EchoService` and demonstrates unary and batch calls, typed
+events, credit-controlled server streaming, and graceful drain.
 
 ## Java and Paper compatibility
 
@@ -28,10 +28,10 @@ Run the complete Java-to-Rust smoke test:
 ./scripts/test-paper-example.sh
 ```
 
-It verifies a generated unary RPC and a 32-request batch, then creates:
+It verifies unary, batch, typed event, server-streaming, and drain behavior, then creates:
 
 ```text
-examples/paper-test-plugin/build/libs/paper-test-plugin-0.4.0.jar
+examples/paper-test-plugin/build/libs/paper-test-plugin-0.5.0.jar
 ```
 
 To run it on Paper:
@@ -46,7 +46,11 @@ Copy the resulting JAR into `plugins/`, start Paper, and use:
 ```text
 /moonlighttest Hello Rust
 /moonlightbatch 64 Hello batch
+/moonlightstream Hello stream
 ```
+
+The backend publishes a typed event after the unary smoke request, and the plugin logs subscribed
+events automatically. Closing the Paper adapter performs a bounded graceful drain.
 
 Command output reports network/backend `RPC` time separately from `callback`
 time. The callback value includes waiting for the next Paper/Folia scheduler

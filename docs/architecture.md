@@ -22,12 +22,15 @@ RPC per machine or Minecraft event.
 - A fixed binary envelope with opaque payloads.
 - Multiplexing from the first implementation.
 - Bounded payloads and explicit protocol errors.
-- Protobuf schema/codegen after lifecycle semantics are stable.
-- RPC bindings are generated from a standard Protobuf descriptor set rather
-  than parsing `.proto` source independently in each language.
+- Every frontend—Java annotations, Kotlin/KSP, Rust attributes, or handwritten `.proto`—first
+  produces a standard Protobuf descriptor. RPC bindings consume that one representation.
+- Code-first declarations are ordinary language source; there is no MoonLightBridge-specific
+  manifest or schema language.
 - JNI and shared memory are out of scope until profiling justifies them.
 - Multiple backends are explicit named channels; service clients never silently choose a route.
 - Server streams use demand credits on the wire so backpressure remains bounded end to end.
+- Metrics and traces are opt-in, application-owned, and propagated across the Java-to-Rust
+  boundary; the observability adapters do not own exporters or anonymous analytics.
 
 ## Reconnect safety
 

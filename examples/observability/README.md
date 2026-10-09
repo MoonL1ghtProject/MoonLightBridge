@@ -1,10 +1,11 @@
 # MoonLightBridge observability example
 
-This example shares one standard Protobuf contract from
-`proto/monitoring.proto` between a Rust service and a Java client, exports aggregate
-metrics from both runtimes to Prometheus, and propagates one OpenTelemetry trace across the Java to
-Rust RPC boundary. Grafana starts with Prometheus and Tempo data sources plus a provisioned
-MoonLightBridge dashboard.
+The Rust service declares its contract in
+[`examples/observability-backend/src/contract.rs`](../observability-backend/src/contract.rs).
+The build generates a standard Protobuf schema, Rust bindings, Java messages, and the typed Java
+client from that source. It exports aggregate metrics from both runtimes to Prometheus and
+propagates one OpenTelemetry trace across the Java-to-Rust RPC boundary. Grafana starts with
+Prometheus and Tempo data sources plus a provisioned MoonLightBridge dashboard.
 
 From the repository root, start monitoring:
 
@@ -33,4 +34,8 @@ server child span. The shared trace includes `rpc.request_id`, method ID, sizes,
 Rust handler stages. Prometheus is available directly at <http://localhost:9090>.
 
 The applications own their metrics endpoints and OTLP lifecycle. Adding an observability module by
-itself never opens a port.
+itself never opens a port or sends anonymous product statistics. Stop the local stack with:
+
+```bash
+docker compose -f examples/observability/docker-compose.yml down
+```

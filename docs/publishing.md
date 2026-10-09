@@ -17,16 +17,21 @@ Maven coordinates use the `ru.moonlightproject` group:
 - `moonlight-bridge-paper` — Paper/Folia adapter over the universal runtime;
 - `moonlight-bridge-client` — low-level transport and asynchronous RPC SPI;
 - `moonlight-bridge-framework` — compatibility aggregate for 0.1.x consumers;
-- `moonlight-bridge-gradle-plugin` and the `ru.moonlightproject.bridge` marker.
+- `moonlight-bridge-gradle-plugin` and the `ru.moonlightproject.bridge` marker;
+- `moonlight-bridge-code-first` — Java annotation processor and Kotlin KSP provider;
+- `moonlight-bridge-otel` and `moonlight-bridge-micrometer` — optional application-owned
+  observability adapters.
 
 Private implementation code is bundled and relocated inside the universal runtime. It is not a
 separate Maven coordinate, a supported consumer entry point, or a GitHub Release artifact.
 
 crates.io receives these packages in dependency order:
 
-1. `moonlight-bridge-protocol`;
-2. `moonlight-bridge-codegen`;
-3. `moonlight-bridge-server`;
+1. `moonlight-bridge-contract`;
+2. `moonlight-bridge-protocol`;
+3. `moonlight-bridge-codegen`;
+4. `moonlight-bridge-server`;
+5. `moonlight-bridge-observability`.
 
 Examples and generated example APIs have `publish = false` and are never uploaded.
 
@@ -56,12 +61,13 @@ Set the same version in `Cargo.toml`, `gradle.properties`, and every versioned l
 dependency. Then run:
 
 ```bash
-./scripts/check-release-version.sh 0.4.0
+release_version=0.5.0
+./scripts/check-release-version.sh "$release_version"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 ./gradlew check
-./scripts/package-release.sh 0.4.0
+./scripts/package-release.sh "$release_version"
 ```
 
 `package-release.sh` performs a complete Cargo package verification for independent
@@ -77,8 +83,9 @@ contain sources, Javadoc, license, developer, SCM and issue-tracker metadata.
 Commit the version, merge it to `main`, then create and push the exact tag:
 
 ```bash
-git tag -s v0.4.0 -m "MoonLightBridge 0.4.0"
-git push origin v0.4.0
+release_version=0.5.0
+git tag -s "v$release_version" -m "MoonLightBridge $release_version"
+git push origin "v$release_version"
 ```
 
 Only tags shaped like `vMAJOR.MINOR.PATCH` start `.github/workflows/release.yml`. The

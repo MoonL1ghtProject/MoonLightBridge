@@ -87,10 +87,17 @@ private network address. See the [deployment guide](deployment-pterodactyl.md).
 - `ping(timeout)` checks transport liveness.
 - `health(timeout)` returns backend readiness, uptime, connections, requests, and limits.
 - `warmUp(operation)` runs an asynchronous codec/JIT warm-up after the first connection.
-- `close()` stops reconnects, closes the socket, and fails pending work.
+- `drain(timeout)` sends `GOODBYE`, rejects new work, and lets accepted calls finish up to the
+  deadline.
+- `close()` stops reconnects, closes the socket, and fails pending work immediately.
 
 Application code does not initialize or configure the framework's internal telemetry provider.
 Payload bodies are never attached to operational events.
+
+For application-owned monitoring, pass `moonlight-bridge-micrometer` and
+`moonlight-bridge-otel` adapters to the low-level connection or facade configuration. Trace
+context is propagated in protocol metadata so a Java/Paper client span and Rust handler stages
+appear as one trace. See [observability.md](observability.md).
 
 ## Deadlines, batches, and errors
 
@@ -114,6 +121,11 @@ to fill a batch. Prefer a domain-level batch RPC when Rust can process a group m
 Transport failures complete futures exceptionally. A backend `HandlerError` becomes
 `MoonLightRemoteException` with a stable transport `ErrorCode`. Model business failures in Protobuf
 instead of parsing diagnostic error text.
+
+`MoonLightInterceptor` can add validated metadata or reject a call before it is queued.
+Server middleware receives the matching request context, including deadline, trace context,
+idempotency key, authorization scopes, retry identity, and user metadata. Keep interceptors
+non-blocking because they execute on the request path.
 
 ## Server events
 

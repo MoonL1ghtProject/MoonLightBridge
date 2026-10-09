@@ -13,10 +13,10 @@ Use the checked-in Gradle wrapper instead of relying on a system Gradle version.
 
 | Path | Purpose |
 |---|---|
-| `crates/` | Rust protocol, server, schema generator, and generated example API |
-| `java/` | Java transport, universal runtime, Paper/Folia facade, and Gradle plugin |
-| `proto/` | Shared protobuf contract and compatibility lock |
-| `examples/` | Example Rust backends and shaded Paper plugins |
+| `crates/` | Rust protocol, server, code-first attributes, schema generator, and observability |
+| `java/` | Java transport, code-first/KSP processors, observability, Paper/Folia, and Gradle plugin |
+| `proto/` | Handwritten Protobuf examples, shared options, and compatibility lock |
+| `examples/` | Rust/Java/Kotlin contracts, backends, Paper plugins, and monitoring stack |
 | `scripts/` | End-to-end integration, example, performance, and release runners |
 | `docs/` | Protocol, deployment, performance, security, and SDK documentation |
 
@@ -33,7 +33,7 @@ cargo test --workspace
 Compile and test all Java modules and example plugins:
 
 ```bash
-./gradlew --no-daemon test
+./gradlew --no-daemon check
 ```
 
 ## End-to-end checks
@@ -64,8 +64,8 @@ directory.
 ## Generated files and repository hygiene
 
 Cargo and Gradle outputs, IDE state, Qodana local results, JVM crash dumps,
-profiles, and test logs are ignored. Generated Java/Rust bindings are produced
-from `proto/` during the build and are not committed. The Gradle wrapper JAR and
+profiles, and test logs are ignored. Generated Protobuf/Java/Rust bindings are produced from
+code-first sources and/or `proto/` during the build and are not committed. The Gradle wrapper JAR and
 `Cargo.lock` are intentionally tracked for reproducible builds.
 
 Do not commit authentication tokens, Qodana tokens, TLS private keys, generated
@@ -74,11 +74,14 @@ implementation detail and must not become a public dependency or documented API.
 
 ## Continuous integration
 
-The Qodana workflow has two independent jobs:
+Pull requests run independent workers for:
 
+- the complete Gradle `check` lifecycle, including Java, Kotlin/KSP, Gradle plugin, code-first
+  parity, Javadoc, and examples;
 - native Qodana Community for JVM with its report uploaded to Qodana Cloud and
   retained as a GitHub artifact;
-- Rust formatting, Clippy with warnings denied, and the complete Rust test suite.
+- Rust formatting, Clippy with warnings denied, Rustdoc, and the complete Rust test suite;
+- dependency audit and TCP/Unix/mTLS/reconnect integration tests.
 
 `QODANA_TOKEN` is configured as a GitHub Actions secret and must never be placed
 in workflow YAML or source files.

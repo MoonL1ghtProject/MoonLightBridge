@@ -126,6 +126,17 @@ struct ConnectionResources {
     _admission: OwnedSemaphorePermit,
 }
 
+struct ConnectionConfig {
+    server: PeerSettings,
+    hello_timeout: Duration,
+    events: EventHub,
+}
+
+struct StreamDelivery {
+    credits: Arc<Semaphore>,
+    responses: mpsc::Sender<Frame>,
+}
+
 type ActiveRequests = Arc<Mutex<HashMap<u64, ActiveRequest>>>;
 
 #[derive(Clone)]
@@ -679,10 +690,10 @@ impl Router {
         max_response_body_len: u32,
         max_metadata_len: u32,
         compression: RequestCompression<'_>,
-        credits: Arc<Semaphore>,
-        responses: mpsc::Sender<Frame>,
+        delivery: StreamDelivery,
         peer_identity: Option<PeerIdentity>,
     ) {
+        let StreamDelivery { credits, responses } = delivery;
         let ParsedRequest {
             deadline,
             trace_context,
@@ -1257,9 +1268,11 @@ impl Server {
                         stream,
                         router,
                         None,
-                        settings,
-                        hello_timeout,
-                        events,
+                        ConnectionConfig {
+                            server: settings,
+                            hello_timeout,
+                            events,
+                        },
                         runtime,
                         ConnectionResources {
                             limits,
@@ -1310,9 +1323,11 @@ impl Server {
                                 stream,
                                 router,
                                 peer_identity,
-                                settings,
-                                hello_timeout,
-                                events,
+                                ConnectionConfig {
+                                    server: settings,
+                                    hello_timeout,
+                                    events,
+                                },
                                 runtime,
                                 ConnectionResources {
                                     limits,
@@ -1357,9 +1372,11 @@ impl Server {
                         stream,
                         router,
                         None,
-                        settings,
-                        hello_timeout,
-                        events,
+                        ConnectionConfig {
+                            server: settings,
+                            hello_timeout,
+                            events,
+                        },
                         runtime,
                         ConnectionResources {
                             limits,
@@ -1381,15 +1398,18 @@ async fn serve_connection<S>(
     mut stream: S,
     router: Router,
     peer_identity: Option<PeerIdentity>,
-    server: PeerSettings,
-    hello_timeout: Duration,
-    events: EventHub,
+    config: ConnectionConfig,
     runtime: Arc<RuntimeState>,
     resources: ConnectionResources,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let ConnectionConfig {
+        server,
+        hello_timeout,
+        events,
+    } = config;
     let ConnectionResources {
         limits,
         request_bytes,
@@ -1698,8 +1718,10 @@ where
                                     policy: connection_compression_policy,
                                     budget: &runtime_for_task.decoded_byte_budget,
                                 },
-                                credits,
-                                responses_tx.clone(),
+                                StreamDelivery {
+                                    credits,
+                                    responses: responses_tx.clone(),
+                                },
                                 peer_identity,
                             )
                             .await;
@@ -2602,9 +2624,11 @@ mod tests {
             stream,
             router,
             None,
-            settings,
-            hello_timeout,
-            events,
+            ConnectionConfig {
+                server: settings,
+                hello_timeout,
+                events,
+            },
             runtime,
             ConnectionResources {
                 limits,

@@ -15,6 +15,7 @@ cargo package --locked --allow-dirty --package moonlight-bridge-contract
 cargo package --locked --allow-dirty --package moonlight-bridge-protocol
 cargo package --locked --allow-dirty --package moonlight-bridge-codegen
 cargo package --locked --allow-dirty --package moonlight-bridge-server --list >/dev/null
+cargo package --locked --allow-dirty --package moonlight-bridge-observability --list >/dev/null
 
 ./gradlew prepareJavaRelease
 

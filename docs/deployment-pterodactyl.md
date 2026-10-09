@@ -74,14 +74,13 @@ mTLS: Java validates the backend certificate and hostname, while Rust validates
 a client certificate against its configured client CA. Plain `tcp://` must
 remain on a trusted private network.
 
-Reconnect never replays an interrupted request. Its result is unknown: the
-backend may have committed a mutation just before the connection disappeared.
-Generated APIs will later permit retries only for read-only methods or mutations
-carrying an idempotency key.
+Reconnect never replays an interrupted physical request. Its result is unknown: the backend may
+have committed a mutation just before the connection disappeared. Generated policy permits logical
+retries only for explicitly read-only/idempotent methods or mutations carrying an idempotency key.
 
 ## Configuration recommendation
 
-The eventual Paper SDK should read one value and avoid environment detection:
+The Paper application should read one value and avoid environment detection:
 
 ```text
 MOONLIGHT_BRIDGE_ENDPOINT=unix:/home/container/.moonlight-bridge/backend.sock

@@ -61,6 +61,11 @@ This prevents accidental replay of non-idempotent economy and inventory writes.
 
 ## Telemetry privacy and runtime policy
 
+Application observability is opt-in. The Micrometer, Prometheus, OpenTelemetry, and OTLP adapters
+send only to registries/exporters selected by the service developer; they do not configure
+anonymous analytics or a shared destination. Trace propagation carries identifiers and bounded
+RPC attributes, never request/response bodies or authorization values.
+
 The embedded Java provider reports constant framework diagnostics and stable error codes.
 It does not attach application exception messages, causes or stack traces to error events
 or request/function spans. Do not put secrets in method names or telemetry stage names.

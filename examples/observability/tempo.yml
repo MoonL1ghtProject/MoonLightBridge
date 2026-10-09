@@ -15,7 +15,3 @@ storage:
       path: /tmp/tempo/wal
     local:
       path: /tmp/tempo/blocks
-
-compactor:
-  compaction:
-    block_retention: 1h

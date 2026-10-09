@@ -13,6 +13,25 @@ From the repository root, start monitoring:
 docker compose -f examples/observability/docker-compose.yml up -d
 ```
 
+On Linux with UFW enabled, allow Prometheus to scrape the two host-side metrics endpoints. Docker's
+`host.docker.internal` address is not necessarily the gateway of the Compose network, so derive all
+three values from the running stack:
+
+```bash
+OBS_NETWORK=observability_default
+OBS_NETWORK_ID=$(sudo docker network inspect -f '{{.Id}}' "$OBS_NETWORK")
+OBS_BRIDGE="br-${OBS_NETWORK_ID:0:12}"
+OBS_SUBNET=$(sudo docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$OBS_NETWORK")
+OBS_HOST_GATEWAY=$(sudo docker compose \
+  -f examples/observability/docker-compose.yml \
+  exec -T prometheus awk '$2 == "host.docker.internal" { print $1 }' /etc/hosts </dev/null)
+
+sudo ufw allow in on "$OBS_BRIDGE" from "$OBS_SUBNET" \
+  to "$OBS_HOST_GATEWAY" port 9898 proto tcp
+sudo ufw allow in on "$OBS_BRIDGE" from "$OBS_SUBNET" \
+  to "$OBS_HOST_GATEWAY" port 9899 proto tcp
+```
+
 Start the Rust backend with Prometheus metrics and OTLP traces:
 
 ```bash
@@ -25,6 +44,13 @@ In another terminal, start the Java traffic generator:
 ```bash
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces \
   ./gradlew :examples:observability-client:run
+```
+
+Confirm that both scrape targets return `1` before opening Grafana:
+
+```bash
+curl --noproxy '*' -s \
+  'http://127.0.0.1:9090/api/v1/query?query=up'
 ```
 
 Open Grafana at <http://localhost:3000> and sign in with `admin` / `admin`. The

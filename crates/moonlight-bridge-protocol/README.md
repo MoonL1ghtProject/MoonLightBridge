@@ -102,6 +102,8 @@ and opaque value. Runtime keys include deadline, trace context, idempotency, aut
 compression, retry, event, content-type, and diagnostic fields. Decoders reject duplicate singleton
 keys, non-canonical order, unknown critical keys, malformed lengths, and configured count/byte-limit
 violations before copying values. Transport runtimes remove the metadata prefix before dispatch.
+`Metadata::validate` exposes a fully checked borrowed view for allocation-free runtime inspection;
+`ValidatedMetadata::into_metadata` materializes owned entries only when middleware needs them.
 
 Diagnostic correlation belongs to the application that owns the connection. The protocol has no
 anonymous analytics channel and does not select an observability destination.

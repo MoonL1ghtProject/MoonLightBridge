@@ -41,6 +41,15 @@ fn metadata_encodes_reserved_keys_before_user_keys_in_canonical_order() {
 
     let payload = b"payload";
     encoded.extend_from_slice(payload);
+    let (validated, validated_remainder) =
+        Metadata::validate(&encoded, MetadataLimits::default()).unwrap();
+    assert_eq!(validated_remainder, payload);
+    assert_eq!(
+        validated.get_reserved(ReservedMetadataKey::DeadlineMillis),
+        Some(100_u32.to_be_bytes().as_slice())
+    );
+    assert_eq!(validated.reserved_entries().count(), 1);
+    assert_eq!(validated.clone().into_metadata().unwrap(), metadata);
     let (decoded, remainder) = Metadata::decode(&encoded, MetadataLimits::default()).unwrap();
     assert_eq!(remainder, payload);
     assert_eq!(

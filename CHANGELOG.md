@@ -13,7 +13,7 @@ user-visible framework changes; low-level refactors stay in the Git history.
   compression preferences, and deterministic trace sampling.
 - Added client/server interceptor chains, request contexts, and graceful connection draining.
 - Added code-first Protobuf generation from annotated Java, native Kotlin/KSP declarations, and
-  Rust source attributes while retaining optional handwrittenc `.proto` input.
+  Rust source attributes while retaining optional handwritten `.proto` input.
 - Preserved schema field/enum numbers and emitted reservations for removed code-first members using
   the compatibility lock; verified equivalent Java, Kotlin, and Rust contracts as descriptors.
 - Added application-owned Micrometer/Prometheus metrics and OpenTelemetry/OTLP trace propagation so
@@ -25,6 +25,8 @@ user-visible framework changes; low-level refactors stay in the Git history.
   cover unary, batch, event, server-streaming, and drain behavior.
 - Reduced protocol-v2 Java request-path allocations by encoding runtime metadata directly into the
   pooled frame and bypassing interceptor context construction when no interceptors are registered.
+- Added allocation-free borrowed Rust metadata validation and deferred owned request contexts until
+  middleware actually needs them.
 
 Wire protocol v2 has no v1 fallback. Deploy compatible 0.5 clients and servers together. Public
 0.5.0 artifacts are not available until the corresponding release tag is published.

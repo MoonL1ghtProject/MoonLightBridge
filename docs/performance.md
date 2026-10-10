@@ -88,24 +88,29 @@ semantic problems of one all-or-nothing mega-request.
 ## Local baseline
 
 Measured on the development machine with a release Rust backend, JDK 24, a
-32-byte payload, 1,000 warm-up calls, 2,000 sequential samples and 25,600
-pipelined requests per run. Each value is the median of three complete runs:
+32-byte payload, 5,000 sequential warm-up calls and 5,000 latency samples.
+The pipelined path uses batches of 128, 40 warm-up batches and five measured
+windows of 25,600 requests. Each table value is the median of three complete
+JVM runs; throughput within each run is itself the median of five windows:
 
 | Version | Transport | p50 | p95 | p99 | Pipelined throughput |
 |---|---|---:|---:|---:|---:|
-| v0.4.0, protocol v1 | TCP loopback | 92.8 µs | 129.7 µs | 178.8 µs | 137,424 req/s |
-| v0.5 before metadata fast path | TCP loopback | 108.6 µs | 151.9 µs | 187.1 µs | 112,711 req/s |
-| v0.5 optimized | TCP loopback | 102.8 µs | 148.0 µs | 171.0 µs | 124,463 req/s |
-| v0.4.0, protocol v1 | Unix socket | 75.4 µs | 108.8 µs | 128.1 µs | 143,360 req/s |
-| v0.5 before metadata fast path | Unix socket | 84.9 µs | 115.3 µs | 153.6 µs | 119,447 req/s |
-| v0.5 optimized | Unix socket | 76.4 µs | 100.5 µs | 121.3 µs | 132,301 req/s |
+| v0.4.0, protocol v1 | TCP loopback | 83.5 µs | 114.6 µs | 135.1 µs | 145,330 req/s |
+| v0.5 Java fast path only | TCP loopback | 81.0 µs | 135.0 µs | 210.5 µs | 127,485 req/s |
+| v0.5 Java + borrowed Rust metadata | TCP loopback | 70.1 µs | 90.5 µs | 108.5 µs | 137,500 req/s |
+| v0.4.0, protocol v1 | Unix socket | 58.1 µs | 73.6 µs | 92.8 µs | 179,668 req/s |
+| v0.5 Java fast path only | Unix socket | 64.1 µs | 85.6 µs | 117.2 µs | 151,404 req/s |
+| v0.5 Java + borrowed Rust metadata | Unix socket | 61.1 µs | 84.3 µs | 99.9 µs | 164,852 req/s |
 
-The v0.5 fast path reuses empty metadata, skips interceptor context creation when
+The Java fast path reuses empty metadata, skips interceptor context creation when
 there are no interceptors, writes mandatory protocol-v2 metadata directly into
-the pooled frame, and reuses the virtual-thread factory. Compared with the
-pre-optimization v0.5 median, pipelined throughput improved by about 10% on TCP
-and 11% on Unix sockets. The remaining throughput difference from v0.4 includes
-the mandatory bounded metadata encoding and decoding added by protocol v2.
+the pooled frame, and reuses the virtual-thread factory. The Rust fast path fully
+validates the metadata block through a borrowed view and materializes owned
+metadata only when middleware needs it. Compared with the Java-only result, the
+combined path improved median throughput by 7.9% on TCP and 8.9% on Unix sockets.
+TCP p50/p95/p99 latency is lower than v0.4; Unix p50 remains within 3 µs. The
+remaining throughput difference from v0.4 is 5-8% and includes protocol-v2's
+mandatory metadata validation and server-side deadline enforcement.
 
 This benchmark uses `moonlight-bridge-client` without the bundled runtime
 instrumentation, so it is a transport baseline rather than a production-plugin simulation.

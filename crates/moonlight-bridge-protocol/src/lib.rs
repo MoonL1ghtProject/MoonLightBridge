@@ -9,7 +9,7 @@ pub use compression::{
     CompressedPayload, CompressionCodec, CompressionError, CompressionPolicy, DecodedByteBudget,
     DecodedBytePermit,
 };
-pub use metadata::{Metadata, MetadataKey, MetadataLimits, ReservedMetadataKey};
+pub use metadata::{Metadata, MetadataKey, MetadataLimits, ReservedMetadataKey, ValidatedMetadata};
 
 /// ASCII `MLBR`, the MoonLightBridge wire signature.
 pub const MAGIC: u32 = 0x4D4C_4252;

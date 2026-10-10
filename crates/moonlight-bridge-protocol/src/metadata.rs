@@ -98,6 +98,15 @@ pub struct Metadata {
     entries: BTreeMap<MetadataKey, Vec<u8>>,
 }
 
+/// A fully validated metadata block that still borrows its wire buffer.
+///
+/// Reserved values can be inspected without allocating. Convert it into
+/// [`Metadata`] only when an owned block is required by application middleware.
+#[derive(Debug, Clone)]
+pub struct ValidatedMetadata<'a> {
+    block: &'a [u8],
+}
+
 impl Metadata {
     /// Creates an empty metadata block.
     pub fn new() -> Self {
@@ -182,6 +191,18 @@ impl Metadata {
 
     /// Decodes a bounded metadata prefix and returns the remaining application payload.
     pub fn decode(input: &[u8], limits: MetadataLimits) -> Result<(Self, &[u8]), ProtocolError> {
+        let (validated, payload) = Self::validate(input, limits)?;
+        Ok((validated.into_metadata()?, payload))
+    }
+
+    /// Validates a bounded metadata prefix without allocating entry keys or values.
+    ///
+    /// The returned view borrows `input`; callers that need to retain metadata can
+    /// materialize it with [`ValidatedMetadata::into_metadata`].
+    pub fn validate(
+        input: &[u8],
+        limits: MetadataLimits,
+    ) -> Result<(ValidatedMetadata<'_>, &[u8]), ProtocolError> {
         let length_bytes = input.get(..4).ok_or(ProtocolError::InvalidMetadataLength {
             announced: 0,
             available: input.len(),
@@ -202,8 +223,7 @@ impl Metadata {
         let block = &input[4..4 + block_len];
         let mut position = 0_usize;
         let mut count = 0_u16;
-        let mut metadata = Self::new();
-        let mut previous_order: Option<(u16, Vec<u8>)> = None;
+        let mut previous_order: Option<(u16, &[u8])> = None;
 
         while position < block.len() {
             count = count
@@ -212,40 +232,15 @@ impl Metadata {
             if count > limits.max_entries {
                 return Err(ProtocolError::TooManyMetadataEntries(count));
             }
-            let header_end = position
-                .checked_add(ENTRY_HEADER_LEN)
-                .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
-            let header = block
-                .get(position..header_end)
-                .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
-            let tagged_id = u16::from_be_bytes(header[0..2].try_into().unwrap());
-            let critical = tagged_id & CRITICAL_BIT != 0;
-            let key_id = tagged_id & KEY_MASK;
-            let name_len = usize::from(header[2]);
-            let value_len_u32 = u32::from_be_bytes(header[3..7].try_into().unwrap());
-            let value_len = usize::try_from(value_len_u32)
-                .map_err(|_| ProtocolError::InvalidMetadataEntryLength)?;
-            let name_start = header_end;
-            let value_start = name_start
-                .checked_add(name_len)
-                .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
-            let entry_end = value_start
-                .checked_add(value_len)
-                .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
-            let name_bytes = block
-                .get(name_start..value_start)
-                .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
-            let value = block
-                .get(value_start..entry_end)
-                .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
-            if value_len_u32 > limits.max_value_bytes {
-                return Err(ProtocolError::MetadataValueTooLarge(value_len_u32));
+            let entry = raw_entry(block, position)?;
+            if entry.value_len > limits.max_value_bytes {
+                return Err(ProtocolError::MetadataValueTooLarge(entry.value_len));
             }
 
             if let Some((previous_id, previous_name)) = &previous_order {
                 let order = previous_id
-                    .cmp(&key_id)
-                    .then_with(|| previous_name.as_slice().cmp(name_bytes));
+                    .cmp(&entry.key_id)
+                    .then_with(|| (*previous_name).cmp(entry.name));
                 if order.is_ge() {
                     return Err(if order.is_eq() {
                         ProtocolError::DuplicateMetadataKey
@@ -254,34 +249,127 @@ impl Metadata {
                     });
                 }
             }
-            previous_order = Some((key_id, name_bytes.to_vec()));
+            previous_order = Some((entry.key_id, entry.name));
 
-            let key = if key_id == USER_KEY_ID {
-                let name = std::str::from_utf8(name_bytes)
+            if entry.key_id == USER_KEY_ID {
+                let name = std::str::from_utf8(entry.name)
                     .map_err(|_| ProtocolError::InvalidUserMetadataKey)?;
                 validate_user_key(name)?;
-                Some(MetadataKey::User(name.to_owned()))
             } else {
-                if !name_bytes.is_empty() {
+                if !entry.name.is_empty() {
                     return Err(ProtocolError::InvalidUserMetadataKey);
                 }
-                match ReservedMetadataKey::try_from(key_id) {
-                    Ok(key) => Some(MetadataKey::Reserved(key)),
-                    Err(()) if critical => {
-                        return Err(ProtocolError::UnknownCriticalMetadataKey(key_id));
+                match ReservedMetadataKey::try_from(entry.key_id) {
+                    Ok(_) => {}
+                    Err(()) if entry.critical => {
+                        return Err(ProtocolError::UnknownCriticalMetadataKey(entry.key_id));
                     }
-                    Err(()) => None,
+                    Err(()) => {}
                 }
-            };
-
-            if let Some(key) = key {
-                metadata.insert(key, value.to_vec())?;
             }
-            position = entry_end;
+            position = entry.end;
         }
 
-        Ok((metadata, &input[4 + block_len..]))
+        Ok((ValidatedMetadata { block }, &input[4 + block_len..]))
     }
+}
+
+impl ValidatedMetadata<'_> {
+    /// Iterates over known runtime-owned values without allocating.
+    pub fn reserved_entries(&self) -> impl Iterator<Item = (ReservedMetadataKey, &[u8])> + '_ {
+        let mut position = 0;
+        std::iter::from_fn(move || {
+            while position < self.block.len() {
+                let entry = raw_entry(self.block, position).ok()?;
+                position = entry.end;
+                if let Ok(key) = ReservedMetadataKey::try_from(entry.key_id) {
+                    return Some((key, entry.value));
+                }
+            }
+            None
+        })
+    }
+
+    /// Returns one borrowed runtime-owned value without materializing the block.
+    pub fn get_reserved(&self, key: ReservedMetadataKey) -> Option<&[u8]> {
+        let wanted = key as u16;
+        let mut position = 0;
+        while position < self.block.len() {
+            let entry = raw_entry(self.block, position).ok()?;
+            if entry.key_id == wanted {
+                return Some(entry.value);
+            }
+            if entry.key_id > wanted {
+                return None;
+            }
+            position = entry.end;
+        }
+        None
+    }
+
+    /// Copies the validated entries into an owned metadata block.
+    pub fn into_metadata(self) -> Result<Metadata, ProtocolError> {
+        let mut metadata = Metadata::new();
+        let mut position = 0;
+        while position < self.block.len() {
+            let entry = raw_entry(self.block, position)?;
+            let key = if entry.key_id == USER_KEY_ID {
+                let name = std::str::from_utf8(entry.name)
+                    .map_err(|_| ProtocolError::InvalidUserMetadataKey)?;
+                Some(MetadataKey::User(name.to_owned()))
+            } else {
+                ReservedMetadataKey::try_from(entry.key_id)
+                    .ok()
+                    .map(MetadataKey::Reserved)
+            };
+            if let Some(key) = key {
+                metadata.insert(key, entry.value.to_vec())?;
+            }
+            position = entry.end;
+        }
+        Ok(metadata)
+    }
+}
+
+struct RawEntry<'a> {
+    key_id: u16,
+    critical: bool,
+    name: &'a [u8],
+    value: &'a [u8],
+    value_len: u32,
+    end: usize,
+}
+
+fn raw_entry(block: &[u8], position: usize) -> Result<RawEntry<'_>, ProtocolError> {
+    let header_end = position
+        .checked_add(ENTRY_HEADER_LEN)
+        .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
+    let header = block
+        .get(position..header_end)
+        .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
+    let tagged_id = u16::from_be_bytes(header[0..2].try_into().unwrap());
+    let name_len = usize::from(header[2]);
+    let value_len = u32::from_be_bytes(header[3..7].try_into().unwrap());
+    let value_len_usize =
+        usize::try_from(value_len).map_err(|_| ProtocolError::InvalidMetadataEntryLength)?;
+    let value_start = header_end
+        .checked_add(name_len)
+        .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
+    let end = value_start
+        .checked_add(value_len_usize)
+        .ok_or(ProtocolError::InvalidMetadataEntryLength)?;
+    Ok(RawEntry {
+        key_id: tagged_id & KEY_MASK,
+        critical: tagged_id & CRITICAL_BIT != 0,
+        name: block
+            .get(header_end..value_start)
+            .ok_or(ProtocolError::InvalidMetadataEntryLength)?,
+        value: block
+            .get(value_start..end)
+            .ok_or(ProtocolError::InvalidMetadataEntryLength)?,
+        value_len,
+        end,
+    })
 }
 
 fn validate_user_key(name: &str) -> Result<(), ProtocolError> {

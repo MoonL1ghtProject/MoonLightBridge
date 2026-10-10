@@ -5,12 +5,13 @@ use futures_util::StreamExt;
 pub use moonlight_bridge_protocol::ErrorCode;
 use moonlight_bridge_protocol::{
     COMPRESSION_CODEC_ZSTD, CompressionCodec, CompressionPolicy, DecodedByteBudget,
-    DecodedBytePermit, FLAG_HAS_METADATA, Frame, FrameKind, HEADER_LEN, Metadata, MetadataKey,
-    MetadataLimits, PeerSettingsV2 as PeerSettings, ReservedMetadataKey, TRACE_CONTEXT_LEN,
-    TraceContext,
+    DecodedBytePermit, FLAG_HAS_METADATA, Frame, FrameKind, HEADER_LEN, Metadata, MetadataLimits,
+    PeerSettingsV2 as PeerSettings, ReservedMetadataKey, TRACE_CONTEXT_LEN, TraceContext,
 };
 #[cfg(test)]
-use moonlight_bridge_protocol::{DEFAULT_MAX_BODY_LEN, DEFAULT_MAX_IN_FLIGHT, SERVER_FEATURES};
+use moonlight_bridge_protocol::{
+    DEFAULT_MAX_BODY_LEN, DEFAULT_MAX_IN_FLIGHT, MetadataKey, SERVER_FEATURES,
+};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -541,7 +542,12 @@ impl Router {
             metadata,
             payload,
             _decoded_permit,
-        } = match request_payload(&mut frame, max_metadata_len, compression) {
+        } = match request_payload(
+            &mut frame,
+            max_metadata_len,
+            compression,
+            !self.middleware.is_empty(),
+        ) {
             Ok(parts) => parts,
             Err((code, message)) => return error_frame(&frame, code, message),
         };
@@ -568,30 +574,30 @@ impl Router {
             );
             return error_frame(&frame, ErrorCode::UnknownMethod, "method is not registered");
         };
-        let absolute_deadline = deadline.map(|duration| tokio::time::Instant::now() + duration);
         let cancellation = RequestCancellation::new();
-        let context = RequestContext::new(
-            frame.method_id,
-            frame.request_id,
-            absolute_deadline,
-            metadata,
-            self.required_scopes
-                .get(&frame.method_id)
-                .copied()
-                .unwrap_or(&[]),
-            peer_identity,
-            cancellation.clone(),
-        );
+        let context = metadata.map(|metadata| {
+            RequestContext::new(
+                frame.method_id,
+                frame.request_id,
+                deadline.map(|duration| tokio::time::Instant::now() + duration),
+                metadata,
+                self.required_scopes
+                    .get(&frame.method_id)
+                    .copied()
+                    .unwrap_or(&[]),
+                peer_identity,
+                cancellation.clone(),
+            )
+        });
         let handler = handler.clone();
         let middleware = self.middleware.clone();
         let collect_stages = observation.is_some();
         let instrumented = async move {
             let invocation = async move {
                 let mut cancellation_guard = CancellationGuard::new(cancellation);
-                let result = if middleware.is_empty() {
-                    handler(payload).await
-                } else {
-                    Next::root(middleware, handler).run(context, payload).await
+                let result = match context {
+                    Some(context) => Next::root(middleware, handler).run(context, payload).await,
+                    None => handler(payload).await,
                 };
                 cancellation_guard.complete();
                 result
@@ -717,7 +723,12 @@ impl Router {
             metadata,
             payload,
             _decoded_permit,
-        } = match request_payload(&mut frame, max_metadata_len, compression) {
+        } = match request_payload(
+            &mut frame,
+            max_metadata_len,
+            compression,
+            !self.middleware.is_empty(),
+        ) {
             Ok(parts) => parts,
             Err((code, message)) => {
                 let _ = responses.send(error_frame(&frame, code, message)).await;
@@ -750,21 +761,21 @@ impl Router {
             return;
         };
         let cancellation = RequestCancellation::new();
-        let context = RequestContext::new(
-            frame.method_id,
-            frame.request_id,
-            deadline.map(|duration| tokio::time::Instant::now() + duration),
-            metadata,
-            self.required_scopes
-                .get(&frame.method_id)
-                .copied()
-                .unwrap_or(&[]),
-            peer_identity,
-            cancellation.clone(),
-        );
-        let payload = if self.middleware.is_empty() {
-            payload
-        } else {
+        let context = metadata.map(|metadata| {
+            RequestContext::new(
+                frame.method_id,
+                frame.request_id,
+                deadline.map(|duration| tokio::time::Instant::now() + duration),
+                metadata,
+                self.required_scopes
+                    .get(&frame.method_id)
+                    .copied()
+                    .unwrap_or(&[]),
+                peer_identity,
+                cancellation.clone(),
+            )
+        });
+        let payload = if let Some(context) = context {
             let identity: Handler = Arc::new(|body| Box::pin(async move { Ok(body) }));
             match Next::root(self.middleware.clone(), identity)
                 .run(context, payload)
@@ -779,6 +790,8 @@ impl Router {
                     return;
                 }
             }
+        } else {
+            payload
         };
         let mut cancellation_guard = CancellationGuard::new(cancellation);
         async {
@@ -1915,7 +1928,7 @@ where
 struct ParsedRequest {
     deadline: Option<Duration>,
     trace_context: Option<TraceContext>,
-    metadata: Metadata,
+    metadata: Option<Metadata>,
     payload: Vec<u8>,
     _decoded_permit: Option<DecodedBytePermit>,
 }
@@ -1924,97 +1937,121 @@ fn request_payload(
     frame: &mut Frame,
     max_metadata_len: u32,
     compression: RequestCompression<'_>,
+    retain_metadata: bool,
 ) -> Result<ParsedRequest, (ErrorCode, &'static str)> {
-    let (metadata, payload_offset) = if frame.flags & FLAG_HAS_METADATA != 0 {
-        let limits = MetadataLimits {
-            max_bytes: max_metadata_len,
-            ..MetadataLimits::default()
-        };
-        let (metadata, payload) = Metadata::decode(&frame.body, limits)
-            .map_err(|_| (ErrorCode::InvalidRequest, "invalid request metadata"))?;
-        (metadata, frame.body.len() - payload.len())
-    } else {
-        (Metadata::new(), 0)
-    };
-    let deadline = if let Some(value) =
-        metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::DeadlineMillis))
-    {
-        let bytes: [u8; 4] = value.try_into().map_err(|_| {
+    let (deadline, trace_context, compression_metadata, metadata, payload_offset) =
+        if frame.flags & FLAG_HAS_METADATA != 0 {
+            let limits = MetadataLimits {
+                max_bytes: max_metadata_len,
+                ..MetadataLimits::default()
+            };
+            let (validated, payload) = Metadata::validate(&frame.body, limits)
+                .map_err(|_| (ErrorCode::InvalidRequest, "invalid request metadata"))?;
+            let mut deadline_value = None;
+            let mut trace_value = None;
+            let mut codec_value = None;
+            let mut original_value = None;
+            for (key, value) in validated.reserved_entries() {
+                match key {
+                    ReservedMetadataKey::DeadlineMillis => deadline_value = Some(value),
+                    ReservedMetadataKey::TraceContext => trace_value = Some(value),
+                    ReservedMetadataKey::CompressionCodec => codec_value = Some(value),
+                    ReservedMetadataKey::OriginalLength => original_value = Some(value),
+                    _ => {}
+                }
+            }
+            let deadline = if let Some(value) = deadline_value {
+                let bytes: [u8; 4] = value.try_into().map_err(|_| {
+                    (
+                        ErrorCode::InvalidRequest,
+                        "deadline metadata must contain four bytes",
+                    )
+                })?;
+                let millis = u32::from_be_bytes(bytes);
+                if millis == 0 {
+                    return Err((
+                        ErrorCode::InvalidRequest,
+                        "deadline must be greater than zero",
+                    ));
+                }
+                Some(Duration::from_millis(millis as u64))
+            } else {
+                None
+            };
+            let trace_context = if let Some(value) = trace_value {
+                if value.len() != TRACE_CONTEXT_LEN {
+                    return Err((
+                        ErrorCode::InvalidRequest,
+                        "trace-context metadata must contain 25 bytes",
+                    ));
+                }
+                Some(
+                    TraceContext::decode(value)
+                        .map_err(|_| (ErrorCode::InvalidRequest, "invalid trace context"))?,
+                )
+            } else {
+                None
+            };
+            let compression_metadata = match (codec_value, original_value) {
+                (None, None) => None,
+                (Some(&[codec]), Some(original)) => {
+                    let codec = CompressionCodec::try_from(codec).map_err(|_| {
+                        (
+                            ErrorCode::CompressionFailure,
+                            "unsupported compression codec",
+                        )
+                    })?;
+                    let original: [u8; 4] = original.try_into().map_err(|_| {
+                        (
+                            ErrorCode::CompressionFailure,
+                            "invalid original payload length",
+                        )
+                    })?;
+                    Some((codec, u32::from_be_bytes(original)))
+                }
+                _ => {
+                    return Err((
+                        ErrorCode::CompressionFailure,
+                        "incomplete compression metadata",
+                    ));
+                }
+            };
+            let metadata = retain_metadata
+                .then(|| validated.into_metadata())
+                .transpose()
+                .map_err(|_| (ErrorCode::InvalidRequest, "invalid request metadata"))?;
             (
-                ErrorCode::InvalidRequest,
-                "deadline metadata must contain four bytes",
+                deadline,
+                trace_context,
+                compression_metadata,
+                metadata,
+                frame.body.len() - payload.len(),
             )
-        })?;
-        let millis = u32::from_be_bytes(bytes);
-        if millis == 0 {
-            return Err((
-                ErrorCode::InvalidRequest,
-                "deadline must be greater than zero",
-            ));
-        }
-        Some(Duration::from_millis(millis as u64))
-    } else {
-        None
-    };
-    let trace_context = if let Some(value) =
-        metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::TraceContext))
-    {
-        if value.len() != TRACE_CONTEXT_LEN {
-            return Err((
-                ErrorCode::InvalidRequest,
-                "trace-context metadata must contain 25 bytes",
-            ));
-        }
-        let context = TraceContext::decode(value)
-            .map_err(|_| (ErrorCode::InvalidRequest, "invalid trace context"))?;
-        Some(context)
-    } else {
-        None
-    };
+        } else {
+            (None, None, None, retain_metadata.then(Metadata::new), 0)
+        };
     let payload_length = frame.body.len() - payload_offset;
     frame.body.copy_within(payload_offset.., 0);
     frame.body.truncate(payload_length);
     let encoded_payload = std::mem::take(&mut frame.body);
-    let codec_value = metadata.get(&MetadataKey::Reserved(
-        ReservedMetadataKey::CompressionCodec,
-    ));
-    let original_value = metadata.get(&MetadataKey::Reserved(ReservedMetadataKey::OriginalLength));
-    let (payload, decoded_permit) = match (codec_value, original_value) {
-        (None, None) => (encoded_payload, None),
-        (Some(&[codec]), Some(original)) => {
-            let codec = CompressionCodec::try_from(codec).map_err(|_| {
-                (
-                    ErrorCode::CompressionFailure,
-                    "unsupported compression codec",
-                )
-            })?;
+    let (payload, decoded_permit) = match compression_metadata {
+        None => (encoded_payload, None),
+        Some((codec, original_length)) => {
             if codec != CompressionCodec::Zstd || compression.codecs & COMPRESSION_CODEC_ZSTD == 0 {
                 return Err((
                     ErrorCode::CompressionFailure,
                     "compression codec was not negotiated",
                 ));
             }
-            let original: [u8; 4] = original.try_into().map_err(|_| {
-                (
-                    ErrorCode::CompressionFailure,
-                    "invalid original payload length",
-                )
-            })?;
             compression
                 .policy
                 .decode_with_reservation(
                     codec,
                     &encoded_payload,
-                    u32::from_be_bytes(original),
+                    original_length,
                     compression.budget,
                 )
                 .map_err(|_| (ErrorCode::CompressionFailure, "compressed payload rejected"))?
-        }
-        _ => {
-            return Err((
-                ErrorCode::CompressionFailure,
-                "incomplete compression metadata",
-            ));
         }
     };
     Ok(ParsedRequest {
@@ -2878,8 +2915,10 @@ mod tests {
                 policy,
                 budget: &budget,
             },
+            false,
         )
         .unwrap();
+        assert!(parsed.metadata.is_none());
         assert_eq!(parsed.payload, original);
     }
 

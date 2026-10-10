@@ -13,9 +13,13 @@ public final class MoonLightDrainHandle {
 
     void fail(Throwable failure) { completion.completeExceptionally(failure); }
 
-    /** Returns the shared terminal drain stage. */
+    /** Returns the shared terminal drain stage.
+     * @return stage completed when drain finishes or fails
+     */
     public CompletionStage<Void> completion() { return completion; }
 
-    /** Returns whether drain completed successfully or exceptionally. */
+    /** Returns whether drain completed successfully or exceptionally.
+     * @return {@code true} after terminal completion
+     */
     public boolean isDone() { return completion.isDone(); }
 }

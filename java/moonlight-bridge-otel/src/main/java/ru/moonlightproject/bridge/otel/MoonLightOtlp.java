@@ -10,7 +10,12 @@ import io.opentelemetry.sdk.trace.export.BatchSpanProcessor;
 import java.time.Duration;
 import java.util.Objects;
 
-/** Caller-owned bounded OTLP/HTTP lifecycle. */
+/**
+ * Caller-owned bounded OTLP/HTTP lifecycle.
+ *
+ * <p>This helper opens no listener. The caller chooses the collector endpoint, service identity,
+ * retention policy, and lifetime, and must close the instance to flush and stop the exporter.</p>
+ */
 public final class MoonLightOtlp implements AutoCloseable {
     private final SdkTracerProvider provider;
     private final MoonLightOpenTelemetry telemetry;
@@ -31,7 +36,18 @@ public final class MoonLightOtlp implements AutoCloseable {
         return create(endpoint, queueCapacity, null);
     }
 
-    /** Creates a bounded batch exporter with an explicit OpenTelemetry service name. */
+    /**
+     * Creates a bounded batch exporter with an explicit OpenTelemetry service name.
+     *
+     * <p>Prefer this overload for applications and Paper plugins. A stable service name prevents
+     * trace backends from grouping Java spans under {@code unknown_service:java}; use a different
+     * name for the Rust backend.</p>
+     *
+     * @param endpoint OTLP HTTP traces endpoint
+     * @param queueCapacity maximum queued spans
+     * @param serviceName non-blank process identity exported as {@code service.name}
+     * @return lifecycle and MoonLight telemetry adapter
+     */
     public static MoonLightOtlp create(String endpoint, int queueCapacity, String serviceName) {
         Objects.requireNonNull(endpoint, "endpoint");
         if (queueCapacity < 1) throw new IllegalArgumentException("queueCapacity must be positive");
@@ -55,7 +71,11 @@ public final class MoonLightOtlp implements AutoCloseable {
             AttributeKey.stringKey("service.name"), serviceName)));
     }
 
-    /** Returns the telemetry implementation passed to MoonLight clients. */
+    /**
+     * Returns the telemetry implementation passed to MoonLight clients.
+     *
+     * @return client telemetry sharing this OTLP exporter
+     */
     public MoonLightOpenTelemetry telemetry() { return telemetry; }
 
     @Override public void close() { provider.close(); }

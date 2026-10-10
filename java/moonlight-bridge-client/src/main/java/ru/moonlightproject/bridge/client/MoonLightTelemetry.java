@@ -3,7 +3,12 @@ package ru.moonlightproject.bridge.client;
 import java.util.Arrays;
 import java.util.ServiceLoader;
 
-/** Vendor-neutral instrumentation SPI used around connection and request lifecycle. */
+/**
+ * Vendor-neutral instrumentation SPI used around connection and request lifecycle.
+ *
+ * <p>Generated clients provide a canonical {@code Service/Method} name and may propagate the
+ * returned trace context to the Rust server. The SPI never receives application payload contents.</p>
+ */
 public interface MoonLightTelemetry {
     /**
      * Starts one request observation; returning {@code null} skips instrumentation.
@@ -94,10 +99,15 @@ public interface MoonLightTelemetry {
      * @param methodId stable generated method identifier
      * @param requestId connection-local request identifier
      * @param requestBytes encoded application payload size
-     * @param methodName generated service and method name, or {@code null} for raw calls
+     * @param methodName generated canonical {@code Service/Method} name, or {@code null} for raw
+     *                   calls
      */
     record RequestInfo(int methodId, long requestId, int requestBytes, String methodName) {
-        /** Creates metadata for a raw call whose method name is unavailable. */
+        /** Creates metadata for a raw call whose method name is unavailable.
+         * @param methodId stable generated method identifier
+         * @param requestId connection-local request identifier
+         * @param requestBytes encoded application payload size
+         */
         public RequestInfo(int methodId, long requestId, int requestBytes) {
             this(methodId, requestId, requestBytes, null);
         }

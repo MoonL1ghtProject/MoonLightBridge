@@ -13,11 +13,14 @@ user-visible framework changes; low-level refactors stay in the Git history.
   compression preferences, and deterministic trace sampling.
 - Added client/server interceptor chains, request contexts, and graceful connection draining.
 - Added code-first Protobuf generation from annotated Java, native Kotlin/KSP declarations, and
-  Rust source attributes while retaining optional handwritten `.proto` input.
+  Rust source attributes while retaining optional handwrittenc `.proto` input.
 - Preserved schema field/enum numbers and emitted reservations for removed code-first members using
   the compatibility lock; verified equivalent Java, Kotlin, and Rust contracts as descriptors.
 - Added application-owned Micrometer/Prometheus metrics and OpenTelemetry/OTLP trace propagation so
   a Java or Paper client span continues through Rust handler stages.
+- Generated spans now use readable `Service/Method` operation names. OTLP helpers accept an
+  explicit `service.name`, and Rust exports Protobuf decode, application handler, and Protobuf
+  encode work as child spans under the server request span.
 - Added the Grafana, Prometheus, and Tempo observability example and expanded the Paper example to
   cover unary, batch, event, server-streaming, and drain behavior.
 

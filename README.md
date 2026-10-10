@@ -29,7 +29,8 @@ Paper/Folia plugins over TCP, mutual TLS, or Unix-domain sockets.
 - **Failure is explicit.** Deadlines, cancellation, heartbeat, reconnect supervision,
   backpressure, protocol validation and structured remote errors are part of the core.
 - **Observable by the service owner.** Opt-in Micrometer/Prometheus metrics and OpenTelemetry
-  traces stay under the application's exporter and retention policy and never include bodies.
+  traces stay under the application's exporter and retention policy, never include bodies, and
+  preserve one readable Java-to-Rust span tree for every sampled generated call.
 
 ```mermaid
 flowchart LR
@@ -309,6 +310,28 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 | Java | Universal Java 21+ lifecycle API with no Bukkit dependency |
 | Minecraft | Thin Paper/Folia scheduler-aware adapter, no separate bridge plugin |
 | Operations | Application-owned Prometheus/Micrometer metrics and cross-runtime OpenTelemetry traces |
+
+## Observe one call across Java and Rust
+
+Observability is opt-in and belongs to the application: MoonLightBridge does not send anonymous
+usage statistics or choose a telemetry destination. Generated clients attach the readable
+`Service/Method` name and propagate the OpenTelemetry trace context over protocol metadata. The
+Rust adapter continues that trace and records generated backend stages as child spans:
+
+```text
+moonlight-observability-java  MonitoringService/Ping
+└─ moonlight-observability-rust  MonitoringService/Ping
+   ├─ protobuf.decode.MonitoringService.Ping
+   ├─ handler.MonitoringService.Ping
+   └─ protobuf.encode.MonitoringService.Ping
+```
+
+Use `moonlight-bridge-micrometer` on Java/Paper and the `prometheus` feature of
+`moonlight-bridge-observability` on Rust for bounded-cardinality metrics. Use
+`moonlight-bridge-otel` and the Rust `otel`/`otlp` features for distributed traces. Both OTLP
+helpers accept an explicit service name so Tempo does not display `unknown_service:java` or
+`unknown_service:rust`. The runnable [observability example](examples/observability) provisions
+Prometheus, Tempo, Grafana, a Rust backend, and a Java traffic generator.
 
 ## Documentation
 

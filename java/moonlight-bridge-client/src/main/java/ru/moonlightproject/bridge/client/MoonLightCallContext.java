@@ -28,24 +28,36 @@ public final class MoonLightCallContext {
         this.metadata = Objects.requireNonNull(metadata, "metadata");
     }
 
-    /** Returns the generated method identifier. */
+    /** Returns the generated method identifier.
+     * @return stable unsigned wire identifier stored in a Java {@code int}
+     */
     public int methodId() { return methodId; }
 
-    /** Returns the physical connection's request identifier. */
+    /** Returns the physical connection's request identifier.
+     * @return connection-local unsigned identifier stored in a Java {@code long}
+     */
     public long requestId() { return requestId; }
 
-    /** Returns the effective relative deadline. */
+    /** Returns the effective relative deadline.
+     * @return deadline after generated and caller limits are combined
+     */
     public Duration deadline() { return deadline; }
 
-    /** Returns the generated policy, or {@code null} for an untyped raw call. */
+    /** Returns the generated policy, or {@code null} for an untyped raw call.
+     * @return generated policy, or {@code null}
+     */
     public RpcPolicy policy() { return policy; }
 
-    /** Returns generated authorization scopes without selecting an identity or token format. */
+    /** Returns generated authorization scopes without selecting an identity or token format.
+     * @return immutable required-scope set
+     */
     public Set<String> requiredScopes() {
         return policy == null ? Set.of() : policy.requiredScopes();
     }
 
-    /** Returns immutable user metadata to attach to the request. */
+    /** Returns immutable user metadata to attach to the request.
+     * @return validated metadata
+     */
     public MoonLightMetadata metadata() { return metadata; }
 
     /**

@@ -56,3 +56,10 @@ relocates bundled dependencies to prevent classpath conflicts with server forks.
 
 Contracts may be handwritten Protobuf or code-first Java/Kotlin. Both generate the same client API;
 the Paper adapter does not require a special schema format. See [codegen.md](codegen.md).
+
+Application monitoring is also independent of Paper. Combine the Micrometer and OpenTelemetry
+adapters with the underlying client configuration to export plugin-owned metrics and propagate one
+trace through the Java/Paper client, Rust request, and generated decode/handler/encode stages. Give
+the Java and Rust processes distinct explicit service names. The adapters never access Bukkit state
+or schedule callbacks and therefore do not change Paper/Folia thread-affinity rules. See
+[observability.md](observability.md).

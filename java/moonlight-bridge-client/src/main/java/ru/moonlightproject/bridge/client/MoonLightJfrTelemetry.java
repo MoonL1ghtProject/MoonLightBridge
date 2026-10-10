@@ -6,7 +6,13 @@ import jdk.jfr.Label;
 import jdk.jfr.Name;
 import jdk.jfr.StackTrace;
 
-/** Optional per-request JFR events for controlled profiling sessions. */
+/**
+ * Optional per-request JFR events for controlled profiling sessions.
+ *
+ * <p>These bounded correlation events contain sizes, identifiers, duration, and outcome but no
+ * payload or stack trace. CPU call stacks and flame graphs require a separately configured JFR or
+ * sampling-profiler recording owned by the application.</p>
+ */
 public final class MoonLightJfrTelemetry implements MoonLightTelemetry {
     /** Creates an instrumentation adapter that emits events only during an active JFR recording. */
     public MoonLightJfrTelemetry() { }

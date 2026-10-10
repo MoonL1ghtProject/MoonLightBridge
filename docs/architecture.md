@@ -30,7 +30,8 @@ RPC per machine or Minecraft event.
 - Multiple backends are explicit named channels; service clients never silently choose a route.
 - Server streams use demand credits on the wire so backpressure remains bounded end to end.
 - Metrics and traces are opt-in, application-owned, and propagated across the Java-to-Rust
-  boundary; the observability adapters do not own exporters or anonymous analytics.
+  boundary with generated `Service/Method` names; the observability adapters do not own exporters
+  or anonymous analytics.
 
 ## Reconnect safety
 

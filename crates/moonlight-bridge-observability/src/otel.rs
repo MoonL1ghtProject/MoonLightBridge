@@ -9,12 +9,17 @@ use opentelemetry::{
 use std::time::{Duration, SystemTime};
 
 /// OpenTelemetry request adapter using a caller-owned tracer/provider.
+///
+/// Generated routes become `Service/Method` request spans. When the client propagates a trace
+/// context, this adapter creates the Rust request span as a child of the Java client span and
+/// exports recorded backend stages as children of the Rust span. Raw routes fall back to a stable
+/// `moonlight.rpc.<method-id>` name.
 pub struct OpenTelemetryTelemetry<T> {
     tracer: T,
 }
 
 impl<T> OpenTelemetryTelemetry<T> {
-    /// Uses the supplied tracer; exporter lifecycle remains owned by the application.
+    /// Uses the supplied tracer; exporter lifecycle and `service.name` remain application-owned.
     pub fn new(tracer: T) -> Self {
         Self { tracer }
     }

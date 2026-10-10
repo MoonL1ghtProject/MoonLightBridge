@@ -22,6 +22,7 @@ out of order. The optional Paper/Folia adapter keeps Minecraft world access on t
 - generated Protobuf service traits and router registration;
 - structured remote errors and strict protocol validation;
 - low-overhead metrics and pluggable request observations;
+- readable generated `Service/Method` tracing with decode, handler, and encode stages;
 - idempotency and optimistic-revision helpers for safe mutations.
 
 ## Installation

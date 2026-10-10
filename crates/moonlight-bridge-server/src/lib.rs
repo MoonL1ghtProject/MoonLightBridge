@@ -48,7 +48,10 @@ tokio::task_local! {
     static FUNCTION_STAGES: RefCell<Vec<(&'static str, Duration)>>;
 }
 
-/// Traces a synchronous backend function as a child stage when tracing is enabled.
+/// Traces a synchronous backend function as a child stage when request tracing is enabled.
+///
+/// Generated handlers call this for Protobuf decode, application handling, and encode work. The
+/// active [`RequestObservation`] receives the supplied stable stage name and elapsed duration.
 pub fn trace_function<T>(name: &'static str, function: impl FnOnce() -> T) -> T {
     if FUNCTION_STAGES.try_with(|_| ()).is_err() {
         return function();
@@ -61,7 +64,10 @@ pub fn trace_function<T>(name: &'static str, function: impl FnOnce() -> T) -> T 
     output
 }
 
-/// Traces an asynchronous backend function as a child stage when tracing is enabled.
+/// Traces an asynchronous backend function as a child stage when request tracing is enabled.
+///
+/// The active [`RequestObservation`] receives the supplied stable stage name and elapsed duration
+/// after the future completes.
 pub async fn trace_async_function<T>(name: &'static str, future: impl Future<Output = T>) -> T {
     if FUNCTION_STAGES.try_with(|_| ()).is_err() {
         return future.await;
@@ -240,7 +246,9 @@ impl Drop for RequestGuard {
 pub struct RequestInfo {
     /// Generated method identifier.
     pub method_id: u32,
-    /// Generated service and method name, when registered by generated code.
+    /// Canonical `Service/Method` name when registered by generated code.
+    ///
+    /// Raw routes may leave this unset; telemetry adapters then use the numeric method identifier.
     pub method_name: Option<&'static str>,
     /// Connection-local correlation identifier.
     pub request_id: u64,
@@ -268,6 +276,9 @@ pub enum RequestOutcome {
 /// Per-request observation created by a [`Telemetry`] implementation.
 pub trait RequestObservation: Send {
     /// Records a named generated or user-instrumented backend stage.
+    ///
+    /// OpenTelemetry adapters export this as a child span of the request and may additionally
+    /// retain a stage event for compatibility with event-based backends.
     fn record_stage(&mut self, _name: &'static str, _duration: Duration) {}
     /// Completes this observation with the request's terminal outcome.
     fn finish(self: Box<Self>, outcome: RequestOutcome);

@@ -10,7 +10,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import ru.moonlightproject.bridge.client.MoonLightTelemetry;
 import ru.moonlightproject.bridge.client.MoonLightTraceContext;
 
-/** Creates client spans through a caller-owned OpenTelemetry SDK. */
+/**
+ * Creates client spans through a caller-owned OpenTelemetry SDK.
+ *
+ * <p>Generated calls use their canonical {@code Service/Method} name. The adapter returns the
+ * Java span context to the transport so the Rust request and its decode, handler, and encode spans
+ * continue the same distributed trace. Raw calls fall back to {@code moonlight.rpc.<method-id>}.</p>
+ */
 public final class MoonLightOpenTelemetry implements MoonLightTelemetry {
     private final io.opentelemetry.api.trace.Tracer tracer;
 

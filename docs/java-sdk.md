@@ -96,8 +96,11 @@ Payload bodies are never attached to operational events.
 
 For application-owned monitoring, pass `moonlight-bridge-micrometer` and
 `moonlight-bridge-otel` adapters to the low-level connection or facade configuration. Trace
-context is propagated in protocol metadata so a Java/Paper client span and Rust handler stages
-appear as one trace. See [observability.md](observability.md).
+context is propagated in protocol metadata so a Java/Paper client span, the Rust request span, and
+the Rust Protobuf decode/handler/encode stages appear as one trace. Generated policies give both
+request spans the readable `Service/Method` name. Configure an explicit OpenTelemetry service name
+for each process to avoid `unknown_service` rows in Tempo. See
+[observability.md](observability.md).
 
 ## Deadlines, batches, and errors
 

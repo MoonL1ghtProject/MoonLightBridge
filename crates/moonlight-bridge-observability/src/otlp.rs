@@ -2,13 +2,19 @@ use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 
 /// Builds a caller-owned OTLP/HTTP tracer provider with a bounded background batch exporter.
+///
+/// The OpenTelemetry SDK chooses its default resource. Prefer
+/// [`tracer_provider_with_service`] for a stable process identity in trace backends.
 pub fn tracer_provider(
     endpoint: impl Into<String>,
 ) -> Result<SdkTracerProvider, opentelemetry_otlp::ExporterBuildError> {
     build_tracer_provider(endpoint, None)
 }
 
-/// Builds an OTLP/HTTP tracer provider with an explicit service name.
+/// Builds an OTLP/HTTP tracer provider with an explicit `service.name` resource attribute.
+///
+/// Use a different stable name for the Java client and Rust backend so a distributed trace is
+/// grouped into separate service rows rather than `unknown_service`.
 pub fn tracer_provider_with_service(
     endpoint: impl Into<String>,
     service_name: impl Into<String>,

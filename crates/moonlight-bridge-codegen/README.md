@@ -20,7 +20,8 @@ descriptor may come from Java/Kotlin/Rust code-first declarations, handwritten `
 
 The standard Protobuf descriptor remains the single intermediate representation. Code-first is a
 thin frontend over normal annotated source, not a second stored schema language.
-Generated method policy constants avoid descriptor reflection on the request path.
+Generated method policy constants avoid descriptor reflection on the request path and carry the
+canonical `Service/Method` telemetry name into both runtimes.
 
 ## Requirements and installation
 

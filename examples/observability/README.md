@@ -55,10 +55,21 @@ curl --noproxy '*' -s \
 
 Open Grafana at <http://localhost:3000> and sign in with `admin` / `admin`. The
 **MoonLightBridge / MoonLightBridge Java ↔ Rust** dashboard shows both metric producers. Open
-**Explore**, select **Tempo**, and search recent traces to inspect the Java client span and its Rust
-server child span. Generated method metadata gives both spans the readable `Service/Method` name.
-The Rust span expands into child spans for Protobuf decoding, the application handler, and Protobuf
-encoding. The shared trace also includes `rpc.request_id`, method ID, sizes, and result status.
+**Explore**, select **Tempo**, switch to **Search**, and search for service
+`moonlight-observability-java` and span name `MonitoringService/Ping`. Open a recent trace ID to
+inspect this tree:
+
+```text
+moonlight-observability-java  MonitoringService/Ping
+└─ moonlight-observability-rust  MonitoringService/Ping
+   ├─ protobuf.decode.MonitoringService.Ping
+   ├─ handler.MonitoringService.Ping
+   └─ protobuf.encode.MonitoringService.Ping
+```
+
+Tempo traces are immutable. If the query box contains an older trace ID, that view remains pinned
+to the old trace and does not acquire spans emitted later; clear it and run a new search. The shared
+trace also includes `rpc.request_id`, method ID, sizes, and result status.
 Prometheus is available directly at <http://localhost:9090>.
 
 The applications own their metrics endpoints and OTLP lifecycle. Adding an observability module by

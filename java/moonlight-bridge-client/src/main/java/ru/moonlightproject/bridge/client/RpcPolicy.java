@@ -17,7 +17,8 @@ import java.util.TreeSet;
  * @param requiredScopes authorization scopes required by middleware
  * @param compression per-method negotiated compression behavior
  * @param traceSamplePerMillion trace sampling probability in millionths
- * @param methodName generated service and method name used by telemetry
+ * @param methodName generated canonical {@code Service/Method} name used by telemetry, or
+ *                   {@code null} for a raw call
  */
 public record RpcPolicy(
     Duration timeout,
@@ -64,7 +65,23 @@ public record RpcPolicy(
         }
     }
 
-    /** Creates a policy without generated telemetry naming metadata. */
+    /**
+     * Creates a policy without generated telemetry naming metadata.
+     *
+     * <p>This compatibility constructor is intended for raw or manually registered calls.
+     * Generated clients use the canonical constructor so trace backends can display the readable
+     * {@code Service/Method} operation.</p>
+     *
+     * @param timeout overall logical-call timeout
+     * @param idleTimeout maximum silence between stream items, or zero for unary methods
+     * @param retry bounded retry settings
+     * @param idempotency retry-safety classification
+     * @param maxRequestBytes maximum decoded request bytes
+     * @param maxResponseBytes maximum decoded response or stream-item bytes
+     * @param requiredScopes authorization scopes required by middleware
+     * @param compression per-method negotiated compression behavior
+     * @param traceSamplePerMillion trace sampling probability in millionths
+     */
     public RpcPolicy(
         Duration timeout,
         Duration idleTimeout,

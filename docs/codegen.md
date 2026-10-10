@@ -10,6 +10,10 @@ is a project choice:
 - handwritten `.proto` files;
 - or code-first and handwritten schemas together.
 
+Generated RPC metadata also contains the canonical `Service/Method` name. The Java and Rust
+telemetry adapters use it for matching cross-runtime spans without reflection or a runtime schema
+lookup. Handwritten `.proto` methods receive the same metadata as code-first methods.
+
 There is no required project manifest or additional schema language. Code-first users write
 ordinary language source, while teams that already own Protobuf schemas keep using them unchanged.
 

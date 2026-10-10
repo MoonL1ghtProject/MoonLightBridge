@@ -3,6 +3,7 @@ build/
 /.gradle/
 /.idea/
 /.fleet/
+/.worktrees/
 /out/
 /.qodana/
 /qodana-results/

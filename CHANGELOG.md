@@ -23,6 +23,8 @@ user-visible framework changes; low-level refactors stay in the Git history.
   encode work as child spans under the server request span.
 - Added the Grafana, Prometheus, and Tempo observability example and expanded the Paper example to
   cover unary, batch, event, server-streaming, and drain behavior.
+- Reduced protocol-v2 Java request-path allocations by encoding runtime metadata directly into the
+  pooled frame and bypassing interceptor context construction when no interceptors are registered.
 
 Wire protocol v2 has no v1 fallback. Deploy compatible 0.5 clients and servers together. Public
 0.5.0 artifacts are not available until the corresponding release tag is published.

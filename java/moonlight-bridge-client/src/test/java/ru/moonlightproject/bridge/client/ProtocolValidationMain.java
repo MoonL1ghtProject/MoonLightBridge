@@ -15,6 +15,7 @@ import java.util.concurrent.CompletionException;
 public final class ProtocolValidationMain {
     public static void main(String[] args) throws Exception {
         verifyProtocolV2MetadataGoldenVector();
+        verifyRequestMetadataFastPathGoldenVector();
         verifyUserMetadataValidation();
         verifyMalformedMetadataIsRejected();
         verifyV2ErrorCodes();
@@ -56,6 +57,62 @@ public final class ProtocolValidationMain {
         if (!Arrays.equals(decoded.payload(), new byte[] {1, 2, 3})
             || !Arrays.equals(decoded.metadata().get("x-region"), new byte[] {'e', 'u'})) {
             throw new AssertionError("Java metadata decoder did not preserve metadata/payload");
+        }
+    }
+
+    private static void verifyRequestMetadataFastPathGoldenVector() {
+        byte[] traceId = new byte[16];
+        byte[] parentSpanId = new byte[8];
+        for (int index = 0; index < traceId.length; index++) traceId[index] = (byte) index;
+        for (int index = 0; index < parentSpanId.length; index++) {
+            parentSpanId[index] = (byte) (index + 16);
+        }
+        MoonLightMetadata metadata = MoonLightMetadata.builder()
+            .put("x-region", new byte[] {'e', 'u'})
+            .build();
+        byte[] encoded = metadata.encodeRequestPrefix(
+            100,
+            new MoonLightTraceContext(traceId, parentSpanId, true),
+            MoonLightCompression.Codec.ZSTD,
+            4096);
+        byte[] expected = HexFormat.of().parseHex(
+            "0000004f"
+                + "8001000000000400000064"
+                + "80020000000019000102030405060708090a0b0c0d0e0f101112131415161701"
+                + "8006000000000101"
+                + "8007000000000400001000"
+                + "7fff0800000002782d726567696f6e6575");
+        if (!Arrays.equals(encoded, expected)) {
+            throw new AssertionError("request metadata fast path changed canonical wire encoding");
+        }
+        ByteBuffer direct = ByteBuffer.allocate(expected.length + 2);
+        direct.put((byte) 0x55);
+        int prefixLength = metadata.requestPrefixLength(
+            new MoonLightTraceContext(traceId, parentSpanId, true),
+            MoonLightCompression.Codec.ZSTD);
+        metadata.writeRequestPrefix(
+            direct,
+            prefixLength,
+            100,
+            new MoonLightTraceContext(traceId, parentSpanId, true),
+            MoonLightCompression.Codec.ZSTD,
+            4096);
+        direct.put((byte) 0x66);
+        if (prefixLength != expected.length
+            || direct.position() != expected.length + 2
+            || direct.array()[0] != (byte) 0x55
+            || direct.array()[direct.array().length - 1] != (byte) 0x66
+            || !Arrays.equals(Arrays.copyOfRange(direct.array(), 1, expected.length + 1), expected)) {
+            throw new AssertionError("request metadata cannot be encoded into an existing frame");
+        }
+        if (MoonLightMetadata.empty() != MoonLightMetadata.empty()) {
+            throw new AssertionError("empty request metadata is not shared");
+        }
+        byte[] emptyEncoded = MoonLightMetadata.empty().encodeRequestPrefix(
+            100, null, MoonLightCompression.Codec.NONE, 0);
+        byte[] emptyExpected = HexFormat.of().parseHex("0000000b8001000000000400000064");
+        if (!Arrays.equals(emptyEncoded, emptyExpected)) {
+            throw new AssertionError("empty request metadata fast path changed wire encoding");
         }
     }
 

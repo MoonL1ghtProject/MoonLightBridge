@@ -88,15 +88,26 @@ semantic problems of one all-or-nothing mega-request.
 ## Local baseline
 
 Measured on the development machine with a release Rust backend, JDK 24, a
-32-byte payload, 2,000 sequential samples and 25,600 pipelined requests:
+32-byte payload, 1,000 warm-up calls, 2,000 sequential samples and 25,600
+pipelined requests per run. Each value is the median of three complete runs:
 
-| Transport | p50 | p95 | p99 | Pipelined throughput |
-|---|---:|---:|---:|---:|
-| TCP loopback | 75.3 µs | 100.5 µs | 125.7 µs | 96,674 req/s |
-| Unix socket | 53.7 µs | 76.9 µs | 105.8 µs | 148,763 req/s |
+| Version | Transport | p50 | p95 | p99 | Pipelined throughput |
+|---|---|---:|---:|---:|---:|
+| v0.4.0, protocol v1 | TCP loopback | 92.8 µs | 129.7 µs | 178.8 µs | 137,424 req/s |
+| v0.5 before metadata fast path | TCP loopback | 108.6 µs | 151.9 µs | 187.1 µs | 112,711 req/s |
+| v0.5 optimized | TCP loopback | 102.8 µs | 148.0 µs | 171.0 µs | 124,463 req/s |
+| v0.4.0, protocol v1 | Unix socket | 75.4 µs | 108.8 µs | 128.1 µs | 143,360 req/s |
+| v0.5 before metadata fast path | Unix socket | 84.9 µs | 115.3 µs | 153.6 µs | 119,447 req/s |
+| v0.5 optimized | Unix socket | 76.4 µs | 100.5 µs | 121.3 µs | 132,301 req/s |
 
-The latest clean transport run measured TCP at 71.9/96.6/115.3 µs and 95,910
-req/s. This benchmark uses `moonlight-bridge-client` without the bundled runtime
+The v0.5 fast path reuses empty metadata, skips interceptor context creation when
+there are no interceptors, writes mandatory protocol-v2 metadata directly into
+the pooled frame, and reuses the virtual-thread factory. Compared with the
+pre-optimization v0.5 median, pipelined throughput improved by about 10% on TCP
+and 11% on Unix sockets. The remaining throughput difference from v0.4 includes
+the mandatory bounded metadata encoding and decoding added by protocol v2.
+
+This benchmark uses `moonlight-bridge-client` without the bundled runtime
 instrumentation, so it is a transport baseline rather than a production-plugin simulation.
 
 These are a regression baseline, not portable guarantees. Run

@@ -91,6 +91,8 @@ public final class MoonLightClient implements MoonLightChannel {
         Thread.ofPlatform().daemon().name("moonlight-bridge-callback-", 0).factory(),
         new ThreadPoolExecutor.AbortPolicy()
     );
+    private static final ThreadFactory RESPONSE_CALLBACK_THREADS =
+        Thread.ofVirtual().name("moonlight-bridge-response-callback-", 0).factory();
     private static final ScheduledThreadPoolExecutor STREAM_TIMEOUTS = streamTimeouts();
 
     private static ScheduledThreadPoolExecutor streamTimeouts() {
@@ -479,28 +481,31 @@ public final class MoonLightClient implements MoonLightChannel {
         }
 
         long requestId = allocateRequestId();
-        MoonLightCallContext callContext = new MoonLightCallContext(
-            methodId, requestId, deadline, policy, MoonLightMetadata.builder().build());
+        MoonLightCallContext callContext = null;
         int enteredInterceptors = 0;
-        try {
-            for (MoonLightInterceptor interceptor : interceptors) {
-                enteredInterceptors++;
-                MoonLightCallContext next = java.util.Objects.requireNonNull(
-                    interceptor.beforeCall(callContext), "interceptor context");
-                if (next.methodId() != methodId || next.requestId() != requestId) {
-                    throw new IllegalArgumentException("interceptor cannot replace call identity");
+        if (!interceptors.isEmpty()) {
+            callContext = new MoonLightCallContext(
+                methodId, requestId, deadline, policy, MoonLightMetadata.empty());
+            try {
+                for (MoonLightInterceptor interceptor : interceptors) {
+                    enteredInterceptors++;
+                    MoonLightCallContext next = java.util.Objects.requireNonNull(
+                        interceptor.beforeCall(callContext), "interceptor context");
+                    if (next.methodId() != methodId || next.requestId() != requestId) {
+                        throw new IllegalArgumentException("interceptor cannot replace call identity");
+                    }
+                    callContext = next;
                 }
-                callContext = next;
+                deadline = callContext.deadline();
+                timeoutMillis = deadline.toMillis();
+                if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
+                    throw new IllegalArgumentException("deadline must be between 1ms and 2147483647ms");
+                }
+            } catch (Throwable failure) {
+                inFlight.release();
+                notifyInterceptors(callContext, null, failure, enteredInterceptors);
+                return CompletableFuture.failedFuture(failure);
             }
-            deadline = callContext.deadline();
-            timeoutMillis = deadline.toMillis();
-            if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException("deadline must be between 1ms and 2147483647ms");
-            }
-        } catch (Throwable failure) {
-            inFlight.release();
-            notifyInterceptors(callContext, null, failure, enteredInterceptors);
-            return CompletableFuture.failedFuture(failure);
         }
         MoonLightTelemetry.RequestObservation observation;
         try {
@@ -521,7 +526,7 @@ public final class MoonLightClient implements MoonLightChannel {
         try {
             enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
                 policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression(),
-                callContext.metadata());
+                callContext == null ? MoonLightMetadata.empty() : callContext.metadata());
         } catch (IOException error) {
             future.completeExceptionally(error);
         }
@@ -575,28 +580,31 @@ public final class MoonLightClient implements MoonLightChannel {
             throw new RejectedExecutionException("MoonLightBridge in-flight request limit reached");
         }
         long requestId = allocateRequestId();
-        MoonLightCallContext callContext = new MoonLightCallContext(
-            methodId, requestId, deadline, policy, MoonLightMetadata.builder().build());
+        MoonLightCallContext callContext = null;
         int enteredInterceptors = 0;
-        try {
-            for (MoonLightInterceptor interceptor : interceptors) {
-                enteredInterceptors++;
-                MoonLightCallContext next = java.util.Objects.requireNonNull(
-                    interceptor.beforeCall(callContext), "interceptor context");
-                if (next.methodId() != methodId || next.requestId() != requestId) {
-                    throw new IllegalArgumentException("interceptor cannot replace call identity");
+        if (!interceptors.isEmpty()) {
+            callContext = new MoonLightCallContext(
+                methodId, requestId, deadline, policy, MoonLightMetadata.empty());
+            try {
+                for (MoonLightInterceptor interceptor : interceptors) {
+                    enteredInterceptors++;
+                    MoonLightCallContext next = java.util.Objects.requireNonNull(
+                        interceptor.beforeCall(callContext), "interceptor context");
+                    if (next.methodId() != methodId || next.requestId() != requestId) {
+                        throw new IllegalArgumentException("interceptor cannot replace call identity");
+                    }
+                    callContext = next;
                 }
-                callContext = next;
+                deadline = callContext.deadline();
+                timeoutMillis = deadline.toMillis();
+                if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
+                    throw new IllegalArgumentException("deadline must be between 1ms and 2147483647ms");
+                }
+            } catch (Throwable failure) {
+                inFlight.release();
+                notifyInterceptors(callContext, null, failure, enteredInterceptors);
+                throw new CompletionException(failure);
             }
-            deadline = callContext.deadline();
-            timeoutMillis = deadline.toMillis();
-            if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException("deadline must be between 1ms and 2147483647ms");
-            }
-        } catch (Throwable failure) {
-            inFlight.release();
-            notifyInterceptors(callContext, null, failure, enteredInterceptors);
-            throw new CompletionException(failure);
         }
         MoonLightTelemetry.RequestObservation observation;
         try {
@@ -636,7 +644,7 @@ public final class MoonLightClient implements MoonLightChannel {
         try {
             enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
                 policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression(),
-                callContext.metadata());
+                callContext == null ? MoonLightMetadata.empty() : callContext.metadata());
         } catch (IOException error) {
             stream.fail(error);
             return stream;
@@ -791,10 +799,10 @@ public final class MoonLightClient implements MoonLightChannel {
                 boolean expectedSuccess = validateResponse(frame, request);
                 if (!pending.remove(frame.requestId, request)) continue;
                 Throwable remoteError = expectedSuccess ? null : decodeRemoteError(frame);
-                Thread.ofVirtual().name("moonlight-bridge-response-callback").start(() -> {
+                RESPONSE_CALLBACK_THREADS.newThread(() -> {
                     if (remoteError == null) request.future.complete(frame.body);
                     else request.future.completeExceptionally(remoteError);
-                });
+                }).start();
             }
         } catch (IOException error) {
             terminate(error);
@@ -900,15 +908,6 @@ public final class MoonLightClient implements MoonLightChannel {
         byte[] body, RpcPolicy.Compression compression, MoonLightMetadata userMetadata
     )
         throws IOException {
-        MoonLightMetadata.Builder metadata = MoonLightMetadata.builder()
-            .putReserved(MoonLightMetadata.ReservedKey.DEADLINE_MILLIS,
-                ByteBuffer.allocate(Integer.BYTES).putInt(timeoutMillis).array());
-        userMetadata.copyInto(metadata);
-        if (traceContext != null) {
-            ByteBuffer trace = ByteBuffer.allocate(MoonLightTraceContext.WIRE_LENGTH);
-            traceContext.writeTo(trace);
-            metadata.putReserved(MoonLightMetadata.ReservedKey.TRACE_CONTEXT, trace.array());
-        }
         boolean zstdNegotiated = (negotiatedCompressionCodecs & 2) != 0;
         if (compression == RpcPolicy.Compression.REQUIRED && !zstdNegotiated) {
             throw new IOException("generated RPC policy requires zstd compression");
@@ -918,19 +917,13 @@ public final class MoonLightClient implements MoonLightChannel {
             ? MoonLightCompression.encode(body, MoonLightCompression.Codec.ZSTD, compressionOptions)
             : null;
         byte[] encodedBody = compressed == null ? body : compressed.internalBytes();
-        if (compressed != null && compressed.codec() == MoonLightCompression.Codec.ZSTD) {
-            metadata.putReserved(
-                MoonLightMetadata.ReservedKey.COMPRESSION_CODEC,
-                new byte[] {(byte) compressed.codec().wireValue()});
-            metadata.putReserved(
-                MoonLightMetadata.ReservedKey.ORIGINAL_LENGTH,
-                ByteBuffer.allocate(Integer.BYTES).putInt(compressed.originalLength()).array());
-        }
-        byte[] metadataPrefix = metadata.build().encodePrefix();
-        if (metadataPrefix.length - Integer.BYTES > maxMetadataLength) {
+        MoonLightCompression.Codec wireCodec = compressed == null
+            ? MoonLightCompression.Codec.NONE : compressed.codec();
+        int metadataPrefixLength = userMetadata.requestPrefixLength(traceContext, wireCodec);
+        if (metadataPrefixLength - Integer.BYTES > maxMetadataLength) {
             throw new IOException("request metadata exceeds negotiated limit");
         }
-        int bodyLength = Math.addExact(encodedBody.length, metadataPrefix.length);
+        int bodyLength = Math.addExact(encodedBody.length, metadataPrefixLength);
         if (bodyLength > maxBodyLength) throw new IOException("request body exceeds negotiated limit");
         int length = 24 + bodyLength;
         if (!outgoingRequestBytes.tryAcquire(length)) {
@@ -940,7 +933,14 @@ public final class MoonLightClient implements MoonLightChannel {
         ByteBuffer target = ByteBuffer.wrap(encoded);
         target.putInt(MAGIC).put((byte) VERSION).put((byte) REQUEST)
             .putShort((short) FLAG_HAS_METADATA).putInt(bodyLength).putInt(methodId)
-            .putLong(requestId).put(metadataPrefix);
+            .putLong(requestId);
+        userMetadata.writeRequestPrefix(
+            target,
+            metadataPrefixLength,
+            timeoutMillis,
+            traceContext,
+            wireCodec,
+            compressed == null ? body.length : compressed.originalLength());
         target.put(encodedBody);
         long expiresAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         if (!outgoing.offer(new OutboundFrame(

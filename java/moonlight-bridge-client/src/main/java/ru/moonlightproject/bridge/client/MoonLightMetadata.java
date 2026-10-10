@@ -16,6 +16,13 @@ public final class MoonLightMetadata {
     private static final int KEY_MASK = CRITICAL_BIT - 1;
     private static final int USER_KEY_ID = 0x7fff;
     private static final int ENTRY_HEADER_LENGTH = 7;
+    private static final ReservedKey[] REQUEST_KEYS = {
+        ReservedKey.DEADLINE_MILLIS,
+        ReservedKey.TRACE_CONTEXT,
+        ReservedKey.COMPRESSION_CODEC,
+        ReservedKey.ORIGINAL_LENGTH
+    };
+    private static final MoonLightMetadata EMPTY = new MoonLightMetadata(Map.of());
 
     private final Map<WireKey, byte[]> entries;
 
@@ -32,6 +39,156 @@ public final class MoonLightMetadata {
      */
     public static Builder builder() {
         return new Builder();
+    }
+
+    static MoonLightMetadata empty() {
+        return EMPTY;
+    }
+
+    byte[] encodeRequestPrefix(
+        int timeoutMillis,
+        MoonLightTraceContext traceContext,
+        MoonLightCompression.Codec compressionCodec,
+        int originalLength
+    ) {
+        int prefixLength = requestPrefixLength(traceContext, compressionCodec);
+        ByteBuffer output = ByteBuffer.allocate(prefixLength);
+        writeRequestPrefix(output, prefixLength, timeoutMillis, traceContext, compressionCodec,
+            originalLength);
+        return output.array();
+    }
+
+    int requestPrefixLength(
+        MoonLightTraceContext traceContext,
+        MoonLightCompression.Codec compressionCodec
+    ) {
+        if (entries.isEmpty()) {
+            int length = Integer.BYTES + ENTRY_HEADER_LENGTH + Integer.BYTES;
+            if (traceContext != null) {
+                length += ENTRY_HEADER_LENGTH + MoonLightTraceContext.WIRE_LENGTH;
+            }
+            if (compressionCodec == MoonLightCompression.Codec.ZSTD) {
+                length += ENTRY_HEADER_LENGTH + 1;
+                length += ENTRY_HEADER_LENGTH + Integer.BYTES;
+            }
+            return length;
+        }
+        int encodedLength = 0;
+        for (ReservedKey key : REQUEST_KEYS) {
+            int valueLength = requestValueLength(key, traceContext, compressionCodec);
+            if (valueLength == 0) continue;
+            for (WireKey entry : entries.keySet()) {
+                if (entry.reserved == key) {
+                    throw new IllegalArgumentException("duplicate singleton metadata key");
+                }
+            }
+            encodedLength = Math.addExact(encodedLength, ENTRY_HEADER_LENGTH + valueLength);
+        }
+        for (Map.Entry<WireKey, byte[]> entry : entries.entrySet()) {
+            encodedLength = Math.addExact(encodedLength, ENTRY_HEADER_LENGTH);
+            encodedLength = Math.addExact(encodedLength, entry.getKey().name.length());
+            encodedLength = Math.addExact(encodedLength, entry.getValue().length);
+        }
+        return Math.addExact(Integer.BYTES, encodedLength);
+    }
+
+    void writeRequestPrefix(
+        ByteBuffer output,
+        int prefixLength,
+        int timeoutMillis,
+        MoonLightTraceContext traceContext,
+        MoonLightCompression.Codec compressionCodec,
+        int originalLength
+    ) {
+        output.putInt(prefixLength - Integer.BYTES);
+        if (entries.isEmpty()) {
+            writeEntryHeader(output, CRITICAL_BIT | ReservedKey.DEADLINE_MILLIS.wireId,
+                0, Integer.BYTES);
+            output.putInt(timeoutMillis);
+            if (traceContext != null) {
+                writeEntryHeader(output, CRITICAL_BIT | ReservedKey.TRACE_CONTEXT.wireId,
+                    0, MoonLightTraceContext.WIRE_LENGTH);
+                traceContext.writeTo(output);
+            }
+            if (compressionCodec == MoonLightCompression.Codec.ZSTD) {
+                writeEntryHeader(output, CRITICAL_BIT | ReservedKey.COMPRESSION_CODEC.wireId,
+                    0, 1);
+                output.put((byte) compressionCodec.wireValue());
+                writeEntryHeader(output, CRITICAL_BIT | ReservedKey.ORIGINAL_LENGTH.wireId,
+                    0, Integer.BYTES);
+                output.putInt(originalLength);
+            }
+            return;
+        }
+        var iterator = entries.entrySet().iterator();
+        Map.Entry<WireKey, byte[]> entry = iterator.hasNext() ? iterator.next() : null;
+        int requestKeyIndex = 0;
+        while (entry != null || requestKeyIndex < REQUEST_KEYS.length) {
+            while (requestKeyIndex < REQUEST_KEYS.length
+                && requestValueLength(REQUEST_KEYS[requestKeyIndex], traceContext, compressionCodec) == 0) {
+                requestKeyIndex++;
+            }
+            if (entry == null && requestKeyIndex == REQUEST_KEYS.length) break;
+            int entryId = entry == null ? Integer.MAX_VALUE
+                : entry.getKey().reserved == null ? USER_KEY_ID : entry.getKey().reserved.wireId;
+            int requestId = requestKeyIndex == REQUEST_KEYS.length ? Integer.MAX_VALUE
+                : REQUEST_KEYS[requestKeyIndex].wireId;
+            if (requestId < entryId) {
+                ReservedKey key = REQUEST_KEYS[requestKeyIndex++];
+                int valueLength = requestValueLength(key, traceContext, compressionCodec);
+                writeEntryHeader(output, CRITICAL_BIT | key.wireId, 0, valueLength);
+                writeRequestValue(output, key, timeoutMillis, traceContext, compressionCodec,
+                    originalLength);
+            } else {
+                writeEntry(output, entry.getKey(), entry.getValue());
+                entry = iterator.hasNext() ? iterator.next() : null;
+            }
+        }
+    }
+
+    private static int requestValueLength(
+        ReservedKey key,
+        MoonLightTraceContext traceContext,
+        MoonLightCompression.Codec compressionCodec
+    ) {
+        return switch (key) {
+            case DEADLINE_MILLIS -> Integer.BYTES;
+            case ORIGINAL_LENGTH ->
+                compressionCodec == MoonLightCompression.Codec.ZSTD ? Integer.BYTES : 0;
+            case TRACE_CONTEXT -> traceContext == null ? 0 : MoonLightTraceContext.WIRE_LENGTH;
+            case COMPRESSION_CODEC -> compressionCodec == MoonLightCompression.Codec.ZSTD ? 1 : 0;
+            default -> 0;
+        };
+    }
+
+    private static void writeRequestValue(
+        ByteBuffer output,
+        ReservedKey key,
+        int timeoutMillis,
+        MoonLightTraceContext traceContext,
+        MoonLightCompression.Codec compressionCodec,
+        int originalLength
+    ) {
+        switch (key) {
+            case DEADLINE_MILLIS -> output.putInt(timeoutMillis);
+            case TRACE_CONTEXT -> traceContext.writeTo(output);
+            case COMPRESSION_CODEC -> output.put((byte) compressionCodec.wireValue());
+            case ORIGINAL_LENGTH -> output.putInt(originalLength);
+            default -> throw new IllegalArgumentException("unsupported request metadata key");
+        }
+    }
+
+    private static void writeEntry(ByteBuffer output, WireKey key, byte[] value) {
+        byte[] name = key.name.getBytes(StandardCharsets.US_ASCII);
+        int taggedId = key.reserved == null ? USER_KEY_ID : CRITICAL_BIT | key.reserved.wireId;
+        writeEntryHeader(output, taggedId, name.length, value.length);
+        output.put(name).put(value);
+    }
+
+    private static void writeEntryHeader(
+        ByteBuffer output, int taggedId, int nameLength, int valueLength
+    ) {
+        output.putShort((short) taggedId).put((byte) nameLength).putInt(valueLength);
     }
 
     /**

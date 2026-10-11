@@ -25,6 +25,10 @@ allprojects {
             "org.apache.commons:commons-lang3:3.18.0",
             "org.codehaus.plexus:plexus-utils:3.6.1",
             "org.apache.logging.log4j:log4j-api:2.25.5",
+            "org.bouncycastle:bcpg-jdk18on:1.85",
+            "org.bouncycastle:bcpkix-jdk18on:1.85",
+            "org.bouncycastle:bcprov-jdk18on:1.85",
+            "org.bouncycastle:bcutil-jdk18on:1.85",
         )
     }
 

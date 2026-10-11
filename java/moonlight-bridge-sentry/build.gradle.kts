@@ -1,5 +1,6 @@
 plugins {
     `java-library`
+    id("io.sentry.jvm.gradle")
 }
 
 java {
@@ -15,8 +16,18 @@ tasks.withType<JavaCompile>().configureEach {
 dependencies {
     compileOnly(project(":java:moonlight-bridge-client"))
     testImplementation(project(":java:moonlight-bridge-client"))
-    implementation("io.sentry:sentry:8.55.0")
-    runtimeOnly("io.sentry:sentry-async-profiler:8.55.0")
+    implementation("io.sentry:sentry:8.60.0")
+    runtimeOnly("io.sentry:sentry-async-profiler:8.60.0")
+}
+
+sentry {
+    // Keep local and consumer builds offline. Release CI enables both bundle generation and upload.
+    includeSourceContext.set(System.getenv("SENTRY_AUTH_TOKEN") != null)
+    autoUploadSourceContext.set(true)
+    org.set("test-1cd")
+    projectName.set("moonlightbridge-java")
+    authToken.set(providers.environmentVariable("SENTRY_AUTH_TOKEN"))
+    autoInstallation.enabled.set(false)
 }
 
 fun telemetryRate(property: String, fallback: String): String {

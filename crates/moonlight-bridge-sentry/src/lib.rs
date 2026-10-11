@@ -9,7 +9,7 @@ use std::time::Instant;
 
 pub use sentry_tracing;
 
-const FRAMEWORK_DSN: &str = "https://62dd4dd1aa9a802c30444e9423cb0faa@o4511248228941824.ingest.us.sentry.io/4511981091487744";
+const FRAMEWORK_DSN: &str = "https://02b241e085f408dcfc96cbf447f8c0fa@o4511837552640000.ingest.us.sentry.io/4512236832882688";
 
 /// Initializes the MoonLightBridge-owned Sentry client. Keep the returned guard alive for the process lifetime.
 pub fn init_framework_sentry() -> sentry::ClientInitGuard {
@@ -253,5 +253,18 @@ mod tests {
         observation
             .unwrap()
             .finish(RequestOutcome::Success { response_bytes: 17 });
+    }
+
+    #[test]
+    fn framework_client_uses_private_rust_destination_without_pii() {
+        let guard = init_framework_sentry();
+        assert_eq!(
+            guard.dsn().map(ToString::to_string).as_deref(),
+            Some(
+                "https://02b241e085f408dcfc96cbf447f8c0fa:@o4511837552640000.ingest.us.sentry.io/4512236832882688"
+            )
+        );
+        assert!(!guard.options().send_default_pii);
+        assert!(!guard.options().default_integrations);
     }
 }

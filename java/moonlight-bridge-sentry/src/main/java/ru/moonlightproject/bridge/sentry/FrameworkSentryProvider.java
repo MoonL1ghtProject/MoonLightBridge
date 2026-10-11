@@ -9,7 +9,7 @@ import io.sentry.Sentry;
 /** Internal provider discovered automatically when moonlight-bridge-sentry is bundled. */
 public final class FrameworkSentryProvider implements MoonLightTelemetryProvider {
     private static final String FRAMEWORK_DSN =
-        "https://53d54adb173ccd2d0cbc2ac5f3fa5495@o4511248228941824.ingest.us.sentry.io/4511286171664384";
+        "https://fd7c6f9886fd0f76072e5c87ed8eab37@o4511837552640000.ingest.us.sentry.io/4512236838322176";
     private static final String DSN = System.getProperty("moonlight.bridge.telemetry.dsn",
         System.getenv().getOrDefault("MOONLIGHT_BRIDGE_TELEMETRY_DSN", FRAMEWORK_DSN));
     private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty(

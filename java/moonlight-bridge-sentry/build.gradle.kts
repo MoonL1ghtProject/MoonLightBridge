@@ -78,4 +78,12 @@ val telemetryDisabledTest = tasks.register<JavaExec>("telemetryDisabledTest") {
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "ru.moonlightproject.bridge.sentry.TelemetryDisabledMain"
 }
-tasks.check { dependsOn(telemetryPrivacyTest, telemetryDisabledTest) }
+val telemetryConfigurationTest = tasks.register<JavaExec>("telemetryConfigurationTest") {
+    group = "verification"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "ru.moonlightproject.bridge.sentry.TelemetryConfigurationMain"
+}
+tasks.check {
+    dependsOn(telemetryPrivacyTest, telemetryDisabledTest, telemetryConfigurationTest)
+}

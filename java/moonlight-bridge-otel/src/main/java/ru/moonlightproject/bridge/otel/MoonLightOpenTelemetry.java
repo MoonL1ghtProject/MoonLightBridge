@@ -27,7 +27,7 @@ public final class MoonLightOpenTelemetry implements MoonLightTelemetry {
      */
     public MoonLightOpenTelemetry(OpenTelemetry openTelemetry) {
         tracer = Objects.requireNonNull(openTelemetry, "openTelemetry")
-            .getTracer("ru.moonlightproject.bridge", "0.5.0");
+            .getTracer("ru.moonlightproject.bridge", "0.5.1");
     }
 
     @Override

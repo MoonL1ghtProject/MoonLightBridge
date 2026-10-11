@@ -297,7 +297,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 
 ## What is included
 
-| Area | Available on `main` for 0.5.0 |
+| Area | Available on `main` for 0.5.1 |
 |---|---|
 | Transport | Unix socket, TCP, mutual TLS |
 | RPC | Protocol v2 multiplexing, unary, batches, server streaming, deadlines, cancellation |
@@ -355,9 +355,8 @@ Prometheus, Tempo, and Grafana lives in [examples/observability](examples/observ
 
 ## Project status
 
-Version `0.4.0` is the latest stable public release. The `main` branch is preparing `0.5.0`; its
-source examples use the upcoming APIs and are not a promise that `0.5.0` artifacts are already in
-public registries. Benchmark your own workload and pin exact released versions in production.
+Version `0.5.1` is the latest stable public release. The source examples use the same published
+coordinates. Benchmark your own workload and pin exact released versions in production.
 Backward-incompatible changes follow semantic versioning.
 
 ## Contributing

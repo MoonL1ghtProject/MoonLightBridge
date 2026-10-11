@@ -74,8 +74,8 @@ plugins {
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-code-first:0.5.0")
-    ksp("ru.moonlightproject:moonlight-bridge-code-first:0.5.0")
+    implementation("ru.moonlightproject:moonlight-bridge-code-first:0.5.1")
+    ksp("ru.moonlightproject:moonlight-bridge-code-first:0.5.1")
 }
 
 ksp {
@@ -173,12 +173,12 @@ handwritten application `.proto` files. When both exist, they are compiled into 
 ```kotlin
 plugins {
     java
-    id("ru.moonlightproject.bridge") version "0.5.0"
+    id("ru.moonlightproject.bridge") version "0.5.1"
 }
 
 dependencies {
-    annotationProcessor("ru.moonlightproject:moonlight-bridge-code-first:0.5.0")
-    compileOnly("ru.moonlightproject:moonlight-bridge-code-first:0.5.0")
+    annotationProcessor("ru.moonlightproject:moonlight-bridge-code-first:0.5.1")
+    compileOnly("ru.moonlightproject:moonlight-bridge-code-first:0.5.1")
 }
 
 moonlightBridge {
@@ -188,8 +188,7 @@ moonlightBridge {
 }
 ```
 
-The `0.5.0` coordinates above describe the source version on `main`; use them after the 0.5.0
-release is published. The latest currently published release remains 0.4.0.
+The `0.5.1` coordinates above, including the Gradle plugin marker, are published to Maven Central.
 
 ## Stable numbers and compatibility
 

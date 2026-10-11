@@ -5,7 +5,16 @@ user-visible framework changes; low-level refactors stay in the Git history.
 
 ## Unreleased
 
-### 0.5.0
+## 0.5.1 — Developer telemetry maintenance
+
+- Rotated the private Java and Rust framework-maintainer Sentry destinations after the previous
+  projects were replaced.
+- Added release-only Java source-context uploads so internal framework diagnostics resolve to the
+  exact source while normal local and consumer builds remain offline.
+- Updated the embedded Java Sentry SDK and async profiler to 8.60.0 while retaining runtime
+  opt-out, destination overrides, constant diagnostics, and `sendDefaultPii=false`.
+
+## 0.5.0 — Protocol v2 and code-first contracts
 
 - Added wire protocol v2 with bounded typed metadata, strict canonical decoding, structured
   authentication/availability errors, negotiated Zstandard compression, and decoded-byte budgets.
@@ -28,8 +37,7 @@ user-visible framework changes; low-level refactors stay in the Git history.
 - Added allocation-free borrowed Rust metadata validation and deferred owned request contexts until
   middleware actually needs them.
 
-Wire protocol v2 has no v1 fallback. Deploy compatible 0.5 clients and servers together. Public
-0.5.0 artifacts are not available until the corresponding release tag is published.
+Wire protocol v2 has no v1 fallback. Deploy compatible 0.5 clients and servers together.
 
 ## 0.4.0 — Resource limits and lifecycle hardening
 

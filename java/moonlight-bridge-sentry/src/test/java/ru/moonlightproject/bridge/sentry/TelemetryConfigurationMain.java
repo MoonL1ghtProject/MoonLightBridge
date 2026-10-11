@@ -2,6 +2,7 @@ package ru.moonlightproject.bridge.sentry;
 
 import io.sentry.Sentry;
 import io.sentry.SentryOptions;
+import io.sentry.KeyValueCollectionBehavior;
 
 /** Verifies the embedded provider targets the private Java project without collecting PII. */
 public final class TelemetryConfigurationMain {
@@ -14,8 +15,23 @@ public final class TelemetryConfigurationMain {
         if (!EXPECTED_DSN.equals(options.getDsn())) {
             throw new AssertionError("embedded provider initialized the wrong private destination");
         }
-        if (options.isSendDefaultPii()) {
-            throw new AssertionError("embedded provider enabled default PII collection");
+        var data = options.getDataCollection();
+        if (!Boolean.FALSE.equals(data.getUserInfo())
+            || !Boolean.FALSE.equals(data.getDatabaseQueryData())
+            || !Boolean.FALSE.equals(data.getFilePaths())
+            || !Boolean.FALSE.equals(data.getGraphql().getDocument())
+            || !Boolean.FALSE.equals(data.getGraphql().getVariables())
+            || data.getHttpBodies() == null
+            || !data.getHttpBodies().isEmpty()
+            || data.getCookies() == null
+            || data.getCookies().getMode() != KeyValueCollectionBehavior.Mode.OFF
+            || data.getUrlQueryParams() == null
+            || data.getUrlQueryParams().getMode() != KeyValueCollectionBehavior.Mode.OFF
+            || data.getHttpHeaders().getRequest() == null
+            || data.getHttpHeaders().getRequest().getMode() != KeyValueCollectionBehavior.Mode.OFF
+            || data.getHttpHeaders().getResponse() == null
+            || data.getHttpHeaders().getResponse().getMode() != KeyValueCollectionBehavior.Mode.OFF) {
+            throw new AssertionError("embedded provider did not explicitly disable sensitive data collection");
         }
         Sentry.close();
         System.out.println("Embedded telemetry uses the private Java destination without PII");

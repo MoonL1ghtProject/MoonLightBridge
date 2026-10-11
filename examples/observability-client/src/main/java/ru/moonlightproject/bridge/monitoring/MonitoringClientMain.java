@@ -17,6 +17,7 @@ import ru.moonlightproject.bridge.otel.MoonLightOtlp;
 public final class MonitoringClientMain {
     private MonitoringClientMain() { }
 
+    @SuppressWarnings("BusyWait") // A fixed-rate traffic generator, not a synchronization loop.
     public static void main(String[] args) throws Exception {
         var registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         var micrometer = new MoonLightMicrometerTelemetry(registry);

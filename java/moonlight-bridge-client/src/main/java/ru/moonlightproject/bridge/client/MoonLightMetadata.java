@@ -129,20 +129,27 @@ public final class MoonLightMetadata {
                 requestKeyIndex++;
             }
             if (entry == null && requestKeyIndex == REQUEST_KEYS.length) break;
-            int entryId = entry == null ? Integer.MAX_VALUE
-                : entry.getKey().reserved == null ? USER_KEY_ID : entry.getKey().reserved.wireId;
-            int requestId = requestKeyIndex == REQUEST_KEYS.length ? Integer.MAX_VALUE
-                : REQUEST_KEYS[requestKeyIndex].wireId;
-            if (requestId < entryId) {
+            if (entry == null) {
                 ReservedKey key = REQUEST_KEYS[requestKeyIndex++];
                 int valueLength = requestValueLength(key, traceContext, compressionCodec);
                 writeEntryHeader(output, CRITICAL_BIT | key.wireId, 0, valueLength);
                 writeRequestValue(output, key, timeoutMillis, traceContext, compressionCodec,
                     originalLength);
-            } else {
+                continue;
+            }
+            int entryId = entry.getKey().reserved == null
+                ? USER_KEY_ID : entry.getKey().reserved.wireId;
+            if (requestKeyIndex == REQUEST_KEYS.length
+                || REQUEST_KEYS[requestKeyIndex].wireId >= entryId) {
                 writeEntry(output, entry.getKey(), entry.getValue());
                 entry = iterator.hasNext() ? iterator.next() : null;
+                continue;
             }
+            ReservedKey key = REQUEST_KEYS[requestKeyIndex++];
+            int valueLength = requestValueLength(key, traceContext, compressionCodec);
+            writeEntryHeader(output, CRITICAL_BIT | key.wireId, 0, valueLength);
+            writeRequestValue(output, key, timeoutMillis, traceContext, compressionCodec,
+                originalLength);
         }
     }
 

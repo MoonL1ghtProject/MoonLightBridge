@@ -37,13 +37,13 @@ public record RpcPolicy(
 
     /** Validates and defensively copies an RPC policy. */
     public RpcPolicy {
-        timeout = requirePositiveBounded(timeout, "timeout");
-        idleTimeout = Objects.requireNonNull(idleTimeout, "idleTimeout");
+        validatePositiveBounded(timeout, "timeout");
+        Objects.requireNonNull(idleTimeout, "idleTimeout");
         if (idleTimeout.isNegative() || idleTimeout.compareTo(MAX_TIMEOUT) > 0) {
             throw new IllegalArgumentException("idleTimeout must be zero through ten minutes");
         }
-        retry = Objects.requireNonNull(retry, "retry");
-        idempotency = Objects.requireNonNull(idempotency, "idempotency");
+        Objects.requireNonNull(retry, "retry");
+        Objects.requireNonNull(idempotency, "idempotency");
         if (retry.maxAttempts > 1 && idempotency == Idempotency.UNSPECIFIED) {
             throw new IllegalArgumentException("retries require explicit idempotency semantics");
         }
@@ -56,7 +56,7 @@ public record RpcPolicy(
             throw new IllegalArgumentException("invalid required RPC scope");
         }
         requiredScopes = Set.copyOf(scopes);
-        compression = Objects.requireNonNull(compression, "compression");
+        Objects.requireNonNull(compression, "compression");
         if (traceSamplePerMillion < 0 || traceSamplePerMillion > 1_000_000) {
             throw new IllegalArgumentException("trace sample rate must be between 0 and 1000000");
         }
@@ -104,16 +104,15 @@ public record RpcPolicy(
      * @return the shorter of the caller and schema deadlines
      */
     public Duration effectiveDeadline(Duration requested) {
-        requested = requirePositiveBounded(requested, "requested");
+        validatePositiveBounded(requested, "requested");
         return requested.compareTo(timeout) < 0 ? requested : timeout;
     }
 
-    private static Duration requirePositiveBounded(Duration value, String name) {
+    private static void validatePositiveBounded(Duration value, String name) {
         Objects.requireNonNull(value, name);
         if (value.isZero() || value.isNegative() || value.compareTo(MAX_TIMEOUT) > 0) {
             throw new IllegalArgumentException(name + " must be between one nanosecond and ten minutes");
         }
-        return value;
     }
 
     private static boolean validScope(String scope) {
@@ -169,8 +168,8 @@ public record RpcPolicy(
             if (maxAttempts < 1 || maxAttempts > 8) {
                 throw new IllegalArgumentException("maxAttempts must be between 1 and 8");
             }
-            initialBackoff = Objects.requireNonNull(initialBackoff, "initialBackoff");
-            maxBackoff = Objects.requireNonNull(maxBackoff, "maxBackoff");
+            Objects.requireNonNull(initialBackoff, "initialBackoff");
+            Objects.requireNonNull(maxBackoff, "maxBackoff");
             if (initialBackoff.isZero() || initialBackoff.isNegative()
                 || initialBackoff.compareTo(Duration.ofMinutes(1)) > 0
                 || maxBackoff.compareTo(initialBackoff) < 0

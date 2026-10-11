@@ -69,6 +69,8 @@ public final class MoonLightBridgeGroup implements AutoCloseable {
      * @throws IllegalArgumentException when the name is unknown
      */
     public MoonLightBridge bridge(String name) {
+        // The group owns this resource; callers only borrow its lifecycle facade.
+        @SuppressWarnings("AutoCloseableResource")
         MoonLightBridge bridge = bridges.get(name);
         if (bridge == null) throw new IllegalArgumentException("unknown MoonLightBridge backend: " + name);
         return bridge;

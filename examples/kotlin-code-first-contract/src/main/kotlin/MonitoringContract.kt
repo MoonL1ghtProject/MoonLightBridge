@@ -10,6 +10,7 @@ import ru.moonlightproject.bridge.codegen.MoonLightService
     protoPackage = "moonlight.kotlin.v1",
     javaPackage = "example.kotlin.generated",
 )
+@Suppress("unused") // Referenced by KSP rather than directly from Kotlin code.
 interface MonitoringContract {
     @MoonLightMessage
     data class PingRequest(

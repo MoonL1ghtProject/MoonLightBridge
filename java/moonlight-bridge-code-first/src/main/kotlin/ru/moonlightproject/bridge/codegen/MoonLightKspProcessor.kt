@@ -17,7 +17,7 @@ import java.util.Locale
 import java.util.regex.Pattern
 
 /** KSP entry point for native Kotlin code-first contracts. */
-public class MoonLightKspProcessorProvider : SymbolProcessorProvider {
+class MoonLightKspProcessorProvider : SymbolProcessorProvider {
     override fun create(environment: SymbolProcessorEnvironment): SymbolProcessor =
         MoonLightKspProcessor(environment)
 }
@@ -223,12 +223,14 @@ private class MoonLightKspProcessor(
     }
 
     private fun loadLock(path: String?): LockedSchema {
-        if (path.isNullOrBlank() || !Files.isRegularFile(Path.of(path))) {
+        if (path.isNullOrBlank()) {
             return LockedSchema(emptyMap(), emptyMap())
         }
-        val json = Files.readString(Path.of(path))
+        val lockPath = Path.of(path)
+        if (!Files.isRegularFile(lockPath)) return LockedSchema(emptyMap(), emptyMap())
+        val json = Files.readString(lockPath)
         val messages = mutableMapOf<String, LockedMessage>()
-        val messageNames = Pattern.compile("\\\"([^\\\"]+)\\\"\\s*:\\s*\\{\\s*\\\"fields\\\"").matcher(json)
+        val messageNames = Pattern.compile("\"([^\"]+)\"\\s*:\\s*\\{\\s*\"fields\"").matcher(json)
         while (messageNames.find()) {
             val objectStart = json.indexOf('{', messageNames.start())
             val objectEnd = matchingBrace(json, objectStart)
@@ -245,7 +247,7 @@ private class MoonLightKspProcessor(
         }
         val enums = mutableMapOf<String, LockedEnum>()
         val enumNames = Pattern.compile(
-            "\\\"([^\\\"]+)\\\"\\s*:\\s*\\{\\s*\\\"values\\\"\\s*:\\s*\\{",
+            "\"([^\"]+)\"\\s*:\\s*\\{\\s*\"values\"\\s*:\\s*\\{",
         ).matcher(json)
         while (enumNames.find()) {
             val objectStart = json.indexOf('{', enumNames.start())
@@ -305,17 +307,17 @@ private class MoonLightKspProcessor(
         const val SERVICE = "ru.moonlightproject.bridge.codegen.MoonLightService"
         const val RPC = "ru.moonlightproject.bridge.codegen.MoonLightRpc"
         val LOCKED_FIELD: Pattern = Pattern.compile(
-            "\\\"(\\d+)\\\"\\s*:\\s*\\{[^{}]*?\\\"name\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"",
+            "\"(\\d+)\"\\s*:\\s*\\{[^{}]*?\"name\"\\s*:\\s*\"([^\"]+)\"",
         )
-        val LOCKED_ENUM_VALUE: Pattern = Pattern.compile("\\\"(-?\\d+)\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+        val LOCKED_ENUM_VALUE: Pattern = Pattern.compile("\"(-?\\d+)\"\\s*:\\s*\"([^\"]+)\"")
         val LOCKED_RANGE: Pattern = Pattern.compile(
-            "\\\"start\\\"\\s*:\\s*(-?\\d+)\\s*,\\s*\\\"end\\\"\\s*:\\s*(-?\\d+)",
+            "\"start\"\\s*:\\s*(-?\\d+)\\s*,\\s*\"end\"\\s*:\\s*(-?\\d+)",
         )
         val LOCKED_RESERVED_NAMES: Pattern = Pattern.compile(
-            "\\\"reserved_names\\\"\\s*:\\s*\\[(.*?)]",
+            "\"reserved_names\"\\s*:\\s*\\[(.*?)]",
             Pattern.DOTALL,
         )
-        val LOCKED_STRING: Pattern = Pattern.compile("\\\"([^\\\"]+)\\\"")
+        val LOCKED_STRING: Pattern = Pattern.compile("\"([^\"]+)\"")
     }
 }
 

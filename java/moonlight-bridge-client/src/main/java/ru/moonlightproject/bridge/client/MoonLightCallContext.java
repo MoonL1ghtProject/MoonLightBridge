@@ -23,7 +23,8 @@ public final class MoonLightCallContext {
         if (requestId == 0) throw new IllegalArgumentException("requestId must not be zero");
         this.methodId = methodId;
         this.requestId = requestId;
-        this.deadline = requirePositive(deadline);
+        requirePositive(deadline);
+        this.deadline = deadline;
         this.policy = policy;
         this.metadata = Objects.requireNonNull(metadata, "metadata");
     }
@@ -67,7 +68,7 @@ public final class MoonLightCallContext {
      * @return updated immutable context
      */
     public MoonLightCallContext withDeadline(Duration value) {
-        value = requirePositive(value);
+        requirePositive(value);
         if (value.compareTo(deadline) > 0) {
             throw new IllegalArgumentException("interceptor cannot weaken the call deadline");
         }
@@ -84,11 +85,10 @@ public final class MoonLightCallContext {
         return new MoonLightCallContext(methodId, requestId, deadline, policy, value);
     }
 
-    private static Duration requirePositive(Duration value) {
+    private static void requirePositive(Duration value) {
         Objects.requireNonNull(value, "deadline");
         if (value.isZero() || value.isNegative()) {
             throw new IllegalArgumentException("deadline must be positive");
         }
-        return value;
     }
 }

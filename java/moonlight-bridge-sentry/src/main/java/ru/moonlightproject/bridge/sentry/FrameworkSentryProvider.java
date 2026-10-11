@@ -3,8 +3,10 @@ package ru.moonlightproject.bridge.sentry;
 import ru.moonlightproject.bridge.client.MoonLightTelemetry;
 import ru.moonlightproject.bridge.client.MoonLightTelemetryProvider;
 import io.sentry.ITransaction;
+import io.sentry.KeyValueCollectionBehavior;
 import io.sentry.ProfileLifecycle;
 import io.sentry.Sentry;
+import java.util.Set;
 
 /** Internal provider discovered automatically when moonlight-bridge-sentry is bundled. */
 public final class FrameworkSentryProvider implements MoonLightTelemetryProvider {
@@ -41,7 +43,17 @@ public final class FrameworkSentryProvider implements MoonLightTelemetryProvider
                 // The SDK default of 30 drops telemetry during even a small MoonLightBridge
                 // batch. Keep the queue bounded, but sized for framework bursts.
                 options.setMaxQueueSize(256);
-                options.setSendDefaultPii(false);
+                var data = options.getDataCollection();
+                data.setUserInfo(false);
+                data.setCookies(KeyValueCollectionBehavior.off());
+                data.setUrlQueryParams(KeyValueCollectionBehavior.off());
+                data.setHttpBodies(Set.of());
+                data.setDatabaseQueryData(false);
+                data.setFilePaths(false);
+                data.getHttpHeaders().setRequest(KeyValueCollectionBehavior.off());
+                data.getHttpHeaders().setResponse(KeyValueCollectionBehavior.off());
+                data.getGraphql().setDocument(false);
+                data.getGraphql().setVariables(false);
                 options.setDebug(CONFIG.debug());
                 options.setEnableUncaughtExceptionHandler(false);
             });

@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -22,10 +23,8 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.RecordComponentElement;
 import javax.lang.model.element.TypeElement;
-import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.ArrayType;
 import javax.lang.model.type.DeclaredType;
-import javax.lang.model.type.PrimitiveType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
@@ -33,14 +32,14 @@ import javax.tools.Diagnostic;
 /** Emits a standard Protobuf schema from Java records/interfaces and Kotlin kapt stubs. */
 public final class MoonLightContractProcessor extends AbstractProcessor {
     private static final Pattern LOCKED_FIELD = Pattern.compile(
-        "\\\"(\\d+)\\\"\\s*:\\s*\\{[^{}]*?\\\"name\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+        "\"(\\d+)\"\\s*:\\s*\\{[^{}]*?\"name\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern LOCKED_ENUM_VALUE = Pattern.compile(
-        "\\\"(-?\\d+)\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+        "\"(-?\\d+)\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern LOCKED_RANGE = Pattern.compile(
-        "\\\"start\\\"\\s*:\\s*(-?\\d+)\\s*,\\s*\\\"end\\\"\\s*:\\s*(-?\\d+)");
+        "\"start\"\\s*:\\s*(-?\\d+)\\s*,\\s*\"end\"\\s*:\\s*(-?\\d+)");
     private static final Pattern LOCKED_RESERVED_NAMES = Pattern.compile(
-        "\\\"reserved_names\\\"\\s*:\\s*\\[(.*?)]", Pattern.DOTALL);
-    private static final Pattern LOCKED_STRING = Pattern.compile("\\\"([^\\\"]+)\\\"");
+        "\"reserved_names\"\\s*:\\s*\\[(.*?)]", Pattern.DOTALL);
+    private static final Pattern LOCKED_STRING = Pattern.compile("\"([^\"]+)\"");
     private boolean generated;
 
     /** Creates a processor for one compiler invocation. */
@@ -93,7 +92,8 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
     }
 
     private String generate(TypeElement contract) throws IOException {
-        MoonLightContract settings = contract.getAnnotation(MoonLightContract.class);
+        MoonLightContract settings = Objects.requireNonNull(
+            contract.getAnnotation(MoonLightContract.class), "missing @MoonLightContract");
         Map<String, LockedMessage> locked = loadLockedMessages(
             processingEnv.getOptions().get("moonlight.schemaLock"));
         Map<String, LockedEnum> lockedEnums = loadLockedEnums(
@@ -254,7 +254,7 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
 
     private ProtoType mapType(TypeMirror type, String location) {
         if (type.getKind().isPrimitive()) {
-            return new ProtoType("", switch (((PrimitiveType) type).getKind()) {
+            return new ProtoType("", switch (type.getKind()) {
                 case BOOLEAN -> "bool";
                 case INT -> "int32";
                 case LONG -> "int64";
@@ -270,7 +270,7 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
         if (!(type instanceof DeclaredType declared)) {
             throw new IllegalArgumentException("unsupported JVM type for " + location + ": " + type);
         }
-        String qualified = ((TypeElement) declared.asElement()).getQualifiedName().toString();
+        String qualified = declaredTypeElement(declared, location).getQualifiedName().toString();
         if (qualified.equals("java.util.List") || qualified.equals("java.util.Collection")) {
             return withLabel("repeated ", mapType(declared.getTypeArguments().getFirst(), location));
         }
@@ -284,7 +284,7 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
             case "java.lang.Long" -> "int64";
             case "java.lang.Float" -> "float";
             case "java.lang.Double" -> "double";
-            default -> ((TypeElement) declared.asElement()).getSimpleName().toString();
+            default -> declared.asElement().getSimpleName().toString();
         };
         String label = qualified.startsWith("java.lang.") && !qualified.equals("java.lang.String")
             ? "optional " : "";
@@ -293,7 +293,8 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
 
     private TypeMirror unwrapAsync(TypeMirror type) {
         if (type instanceof DeclaredType declared && !declared.getTypeArguments().isEmpty()) {
-            String qualified = ((TypeElement) declared.asElement()).getQualifiedName().toString();
+            String qualified = declaredTypeElement(declared, "asynchronous response")
+                .getQualifiedName().toString();
             if (qualified.equals("java.util.concurrent.CompletableFuture")
                     || qualified.equals("java.util.concurrent.Flow.Publisher")) {
                 return declared.getTypeArguments().getFirst();
@@ -306,14 +307,22 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
         if (!(type instanceof DeclaredType declared)) {
             throw new IllegalArgumentException("RPC " + role + " must be a declared message type: " + type);
         }
-        return ((TypeElement) declared.asElement()).getSimpleName().toString();
+        return declared.asElement().getSimpleName().toString();
+    }
+
+    private static TypeElement declaredTypeElement(DeclaredType declared, String location) {
+        if (declared.asElement() instanceof TypeElement element) return element;
+        throw new IllegalArgumentException("declared JVM type for " + location
+            + " is not a type element: " + declared);
     }
 
     private Map<String, LockedMessage> loadLockedMessages(String path) throws IOException {
-        if (path == null || path.isBlank() || !Files.isRegularFile(Path.of(path))) return Map.of();
-        String json = Files.readString(Path.of(path));
+        if (path == null || path.isBlank()) return Map.of();
+        Path lockPath = Path.of(path);
+        if (!Files.isRegularFile(lockPath)) return Map.of();
+        String json = Files.readString(lockPath);
         Map<String, LockedMessage> result = new HashMap<>();
-        Matcher messageName = Pattern.compile("\\\"([^\\\"]+)\\\"\\s*:\\s*\\{\\s*\\\"fields\\\"").matcher(json);
+        Matcher messageName = Pattern.compile("\"([^\"]+)\"\\s*:\\s*\\{\\s*\"fields\"").matcher(json);
         while (messageName.find()) {
             int messageStart = json.indexOf('{', messageName.start());
             int messageEnd = matchingBrace(json, messageStart);
@@ -331,11 +340,13 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
     }
 
     private Map<String, LockedEnum> loadLockedEnums(String path) throws IOException {
-        if (path == null || path.isBlank() || !Files.isRegularFile(Path.of(path))) return Map.of();
-        String json = Files.readString(Path.of(path));
+        if (path == null || path.isBlank()) return Map.of();
+        Path lockPath = Path.of(path);
+        if (!Files.isRegularFile(lockPath)) return Map.of();
+        String json = Files.readString(lockPath);
         Map<String, LockedEnum> result = new HashMap<>();
         Matcher enumName = Pattern.compile(
-            "\\\"([^\\\"]+)\\\"\\s*:\\s*\\{\\s*\\\"values\\\"\\s*:\\s*\\{").matcher(json);
+            "\"([^\"]+)\"\\s*:\\s*\\{\\s*\"values\"\\s*:\\s*\\{").matcher(json);
         while (enumName.find()) {
             int enumStart = json.indexOf('{', enumName.start());
             int enumEnd = matchingBrace(json, enumStart);

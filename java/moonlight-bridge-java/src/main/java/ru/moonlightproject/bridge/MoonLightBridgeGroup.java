@@ -58,9 +58,10 @@ public final class MoonLightBridgeGroup implements AutoCloseable {
      * @return channel for that backend
      * @throws IllegalArgumentException when the name is unknown
      */
-    @SuppressWarnings("AutoCloseableResource") // The group owns the borrowed bridge.
     public MoonLightChannel channel(String name) {
-        return bridge(name).channel();
+        MoonLightBridge bridge = bridges.get(name);
+        if (bridge == null) throw new IllegalArgumentException("unknown MoonLightBridge backend: " + name);
+        return bridge.channel();
     }
 
     /**

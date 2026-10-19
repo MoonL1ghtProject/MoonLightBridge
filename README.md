@@ -44,7 +44,7 @@ flowchart LR
 
 ## Install
 
-MoonLightBridge `0.4.0` is available from Maven Central without repository credentials.
+MoonLightBridge `0.5.1` is available from Maven Central without repository credentials.
 
 For any Java 21+ application:
 
@@ -54,7 +54,7 @@ repositories {
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-java:0.4.0")
+    implementation("ru.moonlightproject:moonlight-bridge-java:0.5.1")
 }
 ```
 
@@ -62,7 +62,7 @@ For Paper or Folia, use the adapter instead; it already includes the universal r
 
 ```kotlin
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-paper:0.4.0")
+    implementation("ru.moonlightproject:moonlight-bridge-paper:0.5.1")
 }
 ```
 
@@ -93,7 +93,7 @@ Add the Rust runtime to the backend:
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.4.0"
+moonlight-bridge-server = "0.5.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -152,11 +152,11 @@ pluginManagement {
 ```kotlin
 // build.gradle.kts
 plugins {
-    id("ru.moonlightproject.bridge") version "0.4.0"
+    id("ru.moonlightproject.bridge") version "0.5.1"
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-client:0.4.0")
+    implementation("ru.moonlightproject:moonlight-bridge-client:0.5.1")
     implementation("com.google.protobuf:protobuf-java:4.36.1")
 }
 ```

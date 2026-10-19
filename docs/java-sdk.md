@@ -130,6 +130,51 @@ Server middleware receives the matching request context, including deadline, tra
 idempotency key, authorization scopes, retry identity, and user metadata. Keep interceptors
 non-blocking because they execute on the request path.
 
+### Interceptors and application metadata
+
+The universal `MoonLightBridge` facade intentionally uses default transport settings. Applications
+that need interceptors construct the low-level reconnecting channel and pass it to the same
+generated clients. The interceptor chain is immutable and remains installed after reconnects.
+
+```java
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import java.util.List;
+import ru.moonlightproject.bridge.client.MoonLightCallContext;
+import ru.moonlightproject.bridge.client.MoonLightInterceptor;
+import ru.moonlightproject.bridge.client.MoonLightMetadata;
+import ru.moonlightproject.bridge.client.MoonLightPerformanceOptions;
+import ru.moonlightproject.bridge.client.MoonLightTelemetry;
+import ru.moonlightproject.bridge.client.ReconnectingMoonLightClient;
+
+MoonLightInterceptor authorization = new MoonLightInterceptor() {
+    @Override
+    public MoonLightCallContext beforeCall(MoonLightCallContext context) {
+        var metadata = MoonLightMetadata.builder()
+            .put("authorization", loadServiceToken().getBytes(UTF_8))
+            .build();
+        return context.withMetadata(metadata);
+    }
+};
+
+try (var channel = ReconnectingMoonLightClient.connect(
+    "tls://backend.internal:38191",
+    ReconnectingMoonLightClient.ReconnectPolicy.defaults(),
+    MoonLightPerformanceOptions.automatic("tls"),
+    MoonLightTelemetry.automatic(),
+    List.of(authorization)
+)) {
+    var profiles = new ProfileServiceClient(channel);
+    var profile = profiles.loadProfile(request).join();
+}
+```
+
+User metadata keys must be lowercase ASCII and cannot use the reserved `moonlight-` namespace.
+Values are opaque bytes, copied into an immutable bounded metadata block. Interceptors run in
+registration order; `beforeCall` may only tighten a deadline, and `afterCall` observes exactly one
+terminal success, failure, timeout, or cancellation. Do not put credentials or payload data in
+logs, metrics, span attributes, or exception messages.
+
 ## Server events
 
 Every top-level Protobuf message ending in `Event` receives a generated subscription helper:

@@ -18,6 +18,8 @@ out of order. The optional Paper/Folia adapter keeps Minecraft world access on t
 - credit-controlled server-streaming RPC with bounded backpressure;
 - bounded per-connection work and response queues;
 - deadlines, cancellation and a timeout for silent pre-HELLO clients;
+- ordered middleware with validated metadata, generated scopes, peer identity, and cancellation;
+- graceful draining that stops admission before waiting for active requests;
 - heartbeat, health/readiness and reconnect-safe server events;
 - generated Protobuf service traits and router registration;
 - structured remote errors and strict protocol validation;
@@ -146,6 +148,85 @@ failures.
 Deadlines are transmitted as request metadata and enforced around the handler future. Cancellation
 aborts the request task. External systems may still commit concurrently with timeout/disconnect, so
 mutating calls need an idempotency key when the application intends to retry.
+
+## Middleware and request context
+
+Generated registration functions attach each method's required scopes to its route. Middleware
+runs in registration order and receives validated protocol metadata, the effective deadline,
+generated scopes, an optional authenticated TLS peer identity, and a cancellation signal. Payload
+bodies and authorization values remain application data and are never added to telemetry.
+
+The following layer requires an application-owned `authorization` metadata entry whenever the
+schema declares scopes. Replace the comparison with verification against your own identity system:
+
+```rust,no_run
+use std::sync::Arc;
+use moonlight_bridge_protocol::MetadataKey;
+use moonlight_bridge_server::{
+    ErrorCode, HandlerError, Middleware, MiddlewareFuture, Next, RequestContext, Router,
+};
+
+struct Authorize;
+
+impl Middleware for Authorize {
+    fn call(
+        &self,
+        context: RequestContext,
+        body: Vec<u8>,
+        next: Next,
+    ) -> MiddlewareFuture {
+        Box::pin(async move {
+            let authorization = context.metadata().get(
+                &MetadataKey::User("authorization".to_owned()),
+            );
+            if !context.required_scopes().is_empty()
+                && authorization != Some(b"replace-me".as_slice())
+            {
+                return Err(HandlerError::new(
+                    ErrorCode::PermissionDenied,
+                    "required scope is not authorized",
+                ));
+            }
+            next.run(context, body).await
+        })
+    }
+}
+
+let builder = Router::builder().layer(Arc::new(Authorize));
+// Pass `builder` to the generated `register_*_service` function, then call `build()`.
+# let _ = builder;
+```
+
+`Next::run` may be called at most once. Return an error without calling it to reject a request.
+Use `context.cancellation().is_cancelled()` inside long-running application work that cannot be
+cancelled by dropping its future alone.
+
+## Graceful drain
+
+Keep a `ServerHandle` before moving the server into its run task. Draining marks readiness false,
+stops new admission, sends `GOODBYE` to active connections, and waits for accepted work. A `false`
+result means the timeout elapsed and the runtime forced the remaining connections closed.
+
+```rust,no_run
+use std::time::Duration;
+use moonlight_bridge_server::{Router, Server};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = Server::bind_tcp("127.0.0.1:38191", Router::builder().build()).await?;
+    let handle = server.handle();
+    let server_task = tokio::spawn(server.run());
+
+    // Call this from the application's shutdown signal handler.
+    let completed_within_deadline = handle.drain(Duration::from_secs(10)).await;
+    server_task.await??;
+
+    if !completed_within_deadline {
+        eprintln!("MoonLightBridge drain deadline elapsed");
+    }
+    Ok(())
+}
+```
 
 ## Safe retryable mutations
 

@@ -59,6 +59,7 @@ async fn main() -> std::io::Result<()> {
     let events = EventHub::default();
     let builder = Router::builder()
         .telemetry(Arc::new(telemetry))
+        .allow_unsecured_scopes()
         .route(ECHO_METHOD_ID, |body| async move { Ok(body) })
         .route(SLOW_METHOD_ID, |body| async move {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;

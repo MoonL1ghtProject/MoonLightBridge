@@ -31,9 +31,15 @@ Server::bind_tls("0.0.0.0:38191", router, tls)
 ```
 
 The defaults cap accepted connections, decoded request bytes held across connections,
-the time to receive each frame, and response-writer shutdown. Tune these process-wide
-limits to the backend memory budget; per-connection negotiated request concurrency remains
-an additional bound.
+queued response bytes both process-wide and per connection, the time to receive each frame,
+and response-writer shutdown. Tune these limits to the backend memory budget;
+per-connection negotiated request concurrency remains an additional bound. When the response
+budget is exhausted, RPC responses fail with `ResourceExhausted` and excess events are dropped
+instead of retaining an unbounded payload backlog.
+
+Generated routes with non-empty authorization scopes fail at `RouterBuilder::build()` unless an
+`authorization_layer(...)` is installed. Local examples may explicitly call
+`allow_unsecured_scopes()`; production services should never use that escape hatch.
 
 The private key must be readable only by the backend account. Use separate
 client certificates per Minecraft server or trust domain so certificates can be

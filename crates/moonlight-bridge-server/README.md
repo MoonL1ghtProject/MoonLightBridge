@@ -155,6 +155,9 @@ Generated registration functions attach each method's required scopes to its rou
 runs in registration order and receives validated protocol metadata, the effective deadline,
 generated scopes, an optional authenticated TLS peer identity, and a cancellation signal. Payload
 bodies and authorization values remain application data and are never added to telemetry.
+`build()` fails closed when a generated route declares scopes but no authorization layer was
+installed. `allow_unsecured_scopes()` is an explicit local-test escape hatch, not a production
+default.
 
 The following layer requires an application-owned `authorization` metadata entry whenever the
 schema declares scopes. Replace the comparison with verification against your own identity system:
@@ -192,7 +195,7 @@ impl Middleware for Authorize {
     }
 }
 
-let builder = Router::builder().layer(Arc::new(Authorize));
+let builder = Router::builder().authorization_layer(Arc::new(Authorize));
 // Pass `builder` to the generated `register_*_service` function, then call `build()`.
 # let _ = builder;
 ```

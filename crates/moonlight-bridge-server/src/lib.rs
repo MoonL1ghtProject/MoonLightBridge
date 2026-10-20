@@ -590,6 +590,8 @@ pub struct RouterBuilder {
     method_names: HashMap<u32, &'static str>,
     required_scopes: HashMap<u32, &'static [&'static str]>,
     middleware: Vec<Arc<dyn Middleware>>,
+    authorization_configured: bool,
+    unsecured_scopes_allowed: bool,
     telemetry: Option<Arc<dyn Telemetry>>,
 }
 
@@ -609,6 +611,8 @@ impl Router {
             method_names: HashMap::new(),
             required_scopes: HashMap::new(),
             middleware: Vec::new(),
+            authorization_configured: false,
+            unsecured_scopes_allowed: false,
             telemetry: None,
         }
     }
@@ -1068,6 +1072,25 @@ impl RouterBuilder {
         self
     }
 
+    /// Appends the middleware responsible for enforcing generated authorization scopes.
+    ///
+    /// Scoped routes cannot be built until this method is called, unless the application
+    /// explicitly opts out with [`RouterBuilder::allow_unsecured_scopes`].
+    pub fn authorization_layer(mut self, middleware: Arc<dyn Middleware>) -> Self {
+        self.middleware.push(middleware);
+        self.authorization_configured = true;
+        self
+    }
+
+    /// Allows generated authorization scopes to reach handlers without being enforced.
+    ///
+    /// This explicit escape hatch is intended for local examples and tests. Production
+    /// applications should install an [`RouterBuilder::authorization_layer`] instead.
+    pub fn allow_unsecured_scopes(mut self) -> Self {
+        self.unsecured_scopes_allowed = true;
+        self
+    }
+
     /// Installs the telemetry implementation used for handled requests.
     pub fn telemetry(mut self, telemetry: Arc<dyn Telemetry>) -> Self {
         self.telemetry = Some(telemetry);
@@ -1188,7 +1211,19 @@ impl RouterBuilder {
     }
 
     /// Freezes handler registration into a cloneable router.
+    ///
+    /// # Panics
+    /// Panics when a route declares one or more authorization scopes without an authorization
+    /// layer or an explicit [`RouterBuilder::allow_unsecured_scopes`] opt-out.
     pub fn build(self) -> Router {
+        let has_scoped_routes = self
+            .required_scopes
+            .values()
+            .any(|required_scopes| !required_scopes.is_empty());
+        assert!(
+            !has_scoped_routes || self.authorization_configured || self.unsecured_scopes_allowed,
+            "scoped routes require an authorization layer; call authorization_layer(...) or explicitly allow_unsecured_scopes()"
+        );
         Router {
             handlers: Arc::new(self.handlers),
             stream_handlers: Arc::new(self.stream_handlers),
@@ -2548,6 +2583,7 @@ mod tests {
         let captured = Arc::new(StdMutex::new(None));
         let router = Router::builder()
             .layer(Arc::new(ContextCapture(captured.clone())))
+            .allow_unsecured_scopes()
             .route_scoped(1, &["echo.invoke"], |body| async move { Ok(body) })
             .build();
         let mut metadata = Metadata::new();
@@ -2905,6 +2941,14 @@ mod tests {
 
         assert!(encoded.is_empty());
         assert!(encoded.capacity() <= 512 * 1024);
+    }
+
+    #[test]
+    #[should_panic(expected = "scoped routes require an authorization layer")]
+    fn scoped_routes_require_explicit_authorization_configuration() {
+        Router::builder()
+            .route_scoped(1, &["profile.read"], |_| async { Ok(Vec::new()) })
+            .build();
     }
 
     #[derive(Default)]

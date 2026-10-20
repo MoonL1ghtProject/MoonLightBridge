@@ -30,7 +30,7 @@ canonical `Service/Method` telemetry name into both runtimes.
 - `prost-build` for Rust messages.
 
 ```bash
-cargo install moonlight-bridge-codegen --version 0.5.1 --locked
+cargo install moonlight-bridge-codegen --version 0.5.2 --locked
 ```
 
 ## Code-first contracts
@@ -103,11 +103,11 @@ message BalanceChangedEvent { string player_id = 1; int64 balance = 2; }
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.5.1"
+moonlight-bridge-server = "0.5.2"
 prost = "0.14"
 
 [build-dependencies]
-moonlight-bridge-codegen = "0.5.1"
+moonlight-bridge-codegen = "0.5.2"
 prost-build = "0.14"
 ```
 
@@ -205,12 +205,12 @@ validation into `check`:
 ```kotlin
 plugins {
     `java-library`
-    id("ru.moonlightproject.bridge") version "0.5.1"
+    id("ru.moonlightproject.bridge") version "0.5.2"
 }
 
 dependencies {
-    annotationProcessor("ru.moonlightproject:moonlight-bridge-code-first:0.5.1")
-    compileOnly("ru.moonlightproject:moonlight-bridge-code-first:0.5.1")
+    annotationProcessor("ru.moonlightproject:moonlight-bridge-code-first:0.5.2")
+    compileOnly("ru.moonlightproject:moonlight-bridge-code-first:0.5.2")
 }
 
 moonlightBridge {

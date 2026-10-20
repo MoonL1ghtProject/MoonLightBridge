@@ -5,6 +5,8 @@ user-visible framework changes; low-level refactors stay in the Git history.
 
 ## Unreleased
 
+## 0.5.2 — Security, backpressure, and observability hardening
+
 - Bounded queued Rust response bytes both globally and per connection, return
   `ResourceExhausted` instead of retaining oversized backlogs, and release peak writer-buffer
   allocations after large responses.

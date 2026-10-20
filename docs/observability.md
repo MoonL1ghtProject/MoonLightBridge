@@ -17,7 +17,7 @@ Prometheus memory, including in private installations.
 uses:
 
 ```toml
-moonlight-bridge-observability = { version = "0.5.1", features = ["prometheus", "otel", "otlp"] }
+moonlight-bridge-observability = { version = "0.5.2", features = ["prometheus", "otel", "otlp"] }
 ```
 
 `PrometheusSnapshotExporter` converts `MoonLightMetrics::snapshot()` into an isolated registry. It

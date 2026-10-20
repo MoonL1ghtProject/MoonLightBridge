@@ -5,6 +5,21 @@ user-visible framework changes; low-level refactors stay in the Git history.
 
 ## Unreleased
 
+- Bounded queued Rust response bytes both globally and per connection, return
+  `ResourceExhausted` instead of retaining oversized backlogs, and release peak writer-buffer
+  allocations after large responses.
+- Bounded Java server-stream callback delivery to 32 pending items and replenished wire credit only
+  as callbacks finish, preventing a slow application executor from creating an unbounded backlog.
+- Made generated authorization scopes fail closed unless the Rust router installs an explicit
+  `authorization_layer(...)`; local tests must deliberately opt out with
+  `allow_unsecured_scopes()`.
+- Preserved Sentry span completion when its bounded finisher queue is saturated instead of
+  silently discarding telemetry work.
+- Expanded the provisioned Grafana dashboard with request rates, success/failure ratios, traffic,
+  payload sizes, exporter health, connection churn, and Java/Rust latency views.
+- Pinned GitHub Actions by immutable commit and narrowed workflow write permissions; updated Rust
+  TLS/QUIC dependencies to audited patch releases.
+
 ## 0.5.1 — Developer telemetry maintenance
 
 - Rotated the private Java and Rust framework-maintainer Sentry destinations after the previous

@@ -11,7 +11,9 @@ import java.util.function.LongConsumer;
 import java.util.function.Consumer;
 
 /**
- * A single-subscriber, credit-controlled server-streaming RPC.
+ * A single-subscriber, credit-controlled server-streaming RPC. Wire credit is capped at 32
+ * pending callbacks and replenished after callback delivery, so an unbounded subscriber request
+ * cannot create an unbounded executor backlog.
  *
  * @param <T> decoded item type delivered to the subscriber
  */

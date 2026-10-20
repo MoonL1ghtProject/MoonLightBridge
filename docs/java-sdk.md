@@ -208,7 +208,10 @@ client.scanChunks(request).subscribe(new Flow.Subscriber<>() {
 ```
 
 Cancellation, the configured deadline, connection loss, and remote errors terminate the publisher.
-Streams interrupted by reconnect are never replayed automatically.
+Streams interrupted by reconnect are never replayed automatically. Even if a subscriber requests
+unbounded demand, the client grants at most 32 in-flight wire items and replenishes credit only as
+its serialized `onNext` callbacks finish. A slow Paper scheduler or custom callback executor
+therefore applies backpressure instead of accumulating an unbounded callback queue.
 
 ## Low-level module
 

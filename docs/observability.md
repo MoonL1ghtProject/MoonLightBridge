@@ -83,4 +83,6 @@ and request attributes. Profiling is never started by the public metrics or Open
 
 [`examples/observability`](../examples/observability/README.md) generates the shared Protobuf
 contract from annotated Rust source, then connects the Rust service and Java traffic generator to
-Prometheus, Tempo, and a provisioned Grafana dashboard.
+Prometheus, Tempo, and a provisioned Grafana dashboard. The extended dashboard covers Java and
+Rust request rates, failures and success percentage, transferred bytes and average payload size,
+Java latency percentiles, Rust average/maximum latency, connection churn, and exporter drops.

@@ -303,7 +303,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 | RPC | Protocol v2 multiplexing, unary, batches, server streaming, deadlines, cancellation |
 | Contracts | Java/Kotlin/Rust code-first generation and handwritten `.proto`, independently or together |
 | Policies | Generated timeouts, size limits, retry safety, scopes, compression and trace sampling |
-| Load control | Bounded outgoing/in-flight queues, dedicated writer, write coalescing |
+| Load control | Bounded request/response bytes, stream callbacks and writer memory; write coalescing |
 | Lifecycle | HELLO timeout, heartbeat, reconnect, health/readiness and graceful draining |
 | Server push | Reconnect-safe typed Rust-to-Java events |
 | Safety | Encoded/decoded limits, bounded Zstandard, metadata validation and duplicate-ID rejection |

@@ -33,8 +33,23 @@ tasks.jar {
 }
 
 tasks.processResources {
+    inputs.property("pluginVersion", project.version.toString())
+
     filesMatching("plugin.yml") {
         expand("version" to project.version)
+    }
+}
+
+val verifyPluginDescriptorVersion = tasks.register("verifyPluginDescriptorVersion") {
+    group = "verification"
+    dependsOn(tasks.processResources)
+
+    doLast {
+        val descriptor = layout.buildDirectory.file("resources/main/plugin.yml").get().asFile
+        val expectedVersion = "version: '${project.version}'"
+        check(descriptor.readLines().contains(expectedVersion)) {
+            "Expected $expectedVersion in ${descriptor.path}"
+        }
     }
 }
 
@@ -48,4 +63,8 @@ tasks.shadowJar {
 
 tasks.build {
     dependsOn(tasks.shadowJar)
+}
+
+tasks.check {
+    dependsOn(verifyPluginDescriptorVersion)
 }

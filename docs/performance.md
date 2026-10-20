@@ -98,9 +98,11 @@ JVM runs; throughput within each run is itself the median of five windows:
 | v0.4.0, protocol v1 | TCP loopback | 83.5 µs | 114.6 µs | 135.1 µs | 145,330 req/s |
 | v0.5 Java fast path only | TCP loopback | 81.0 µs | 135.0 µs | 210.5 µs | 127,485 req/s |
 | v0.5 Java + borrowed Rust metadata | TCP loopback | 70.1 µs | 90.5 µs | 108.5 µs | 137,500 req/s |
+| v0.5.2, protocol v2 | TCP loopback | 73.2 µs | 114.7 µs | 134.1 µs | 132,451 req/s |
 | v0.4.0, protocol v1 | Unix socket | 58.1 µs | 73.6 µs | 92.8 µs | 179,668 req/s |
 | v0.5 Java fast path only | Unix socket | 64.1 µs | 85.6 µs | 117.2 µs | 151,404 req/s |
 | v0.5 Java + borrowed Rust metadata | Unix socket | 61.1 µs | 84.3 µs | 99.9 µs | 164,852 req/s |
+| v0.5.2, protocol v2 | Unix socket | 61.2 µs | 91.9 µs | 111.4 µs | 165,034 req/s |
 
 The Java fast path reuses empty metadata, skips interceptor context creation when
 there are no interceptors, writes mandatory protocol-v2 metadata directly into
@@ -112,6 +114,11 @@ TCP p50/p95/p99 latency is lower than v0.4; Unix p50 remains within 3 µs. The
 remaining throughput difference from v0.4 is 5-8% and includes protocol-v2's
 mandatory metadata validation and server-side deadline enforcement.
 
+The v0.5.2 rows are a fresh three-run median on the same Ryzen 5 2600X development host with
+JDK 26 and Rust 1.98; the historical rows used JDK 24. Unix throughput remains level with the
+previous optimized v0.5 measurement. TCP throughput varied more between runs and its median was
+3.7% below that measurement, while all TCP latency percentiles remained below the v0.4 baseline.
+
 This benchmark uses `moonlight-bridge-client` without the bundled runtime
 instrumentation, so it is a transport baseline rather than a production-plugin simulation.
 
@@ -121,11 +128,19 @@ These are a regression baseline, not portable guarantees. Run
 ## Leaf plugin load test
 
 `examples/paper-load-test-plugin` measures the shaded library as it is used by a
-real plugin. On Leaf 1.21.11, JDK 24, loopback TCP, a release Rust backend, and
-the default embedded telemetry policy, a one-million-request run at concurrency
-128 produced 88,819-100,278 req/s across repeated runs, p50 1.24-1.41 ms and p99
-2.01-2.31 ms, with zero failures. A 20,000-request sequential run measured p50
-78.1 µs and p99 174.4 µs.
+real plugin. A fresh three-run v0.5.2 measurement used Leaf 1.21.11 build 179,
+JDK 21, loopback TCP, a release Rust backend, a Ryzen 5 2600X, and the default
+embedded telemetry policy:
+
+| Scenario | Requests | Concurrency | Throughput | p50 | p95 | p99 |
+|---|---:|---:|---:|---:|---:|---:|
+| Sequential | 20,000 | 1 | 8,682 req/s | 104.2 µs | 175.8 µs | 214.1 µs |
+| Pipelined | 1,000,000 | 128 | 112,268 req/s | 1.108 ms | 1.514 ms | 1.929 ms |
+
+The pipelined runs ranged from 111,257 to 113,153 req/s. All six measured phases completed with
+zero failures, and Leaf reported 20.0 TPS after the load. These numbers supersede the earlier
+88,819-100,278 req/s development range; they remain machine-specific rather than a throughput
+guarantee.
 
 JFR identified protobuf encoding/decoding and `CompletableFuture` lifecycle as
 the main Java allocation sources. Linux `perf` showed Tokio scheduling,

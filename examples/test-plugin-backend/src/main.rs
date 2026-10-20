@@ -62,7 +62,9 @@ async fn main() -> std::io::Result<()> {
     ]);
     let events = EventHub::default();
     let router = register_echo_service(
-        Router::builder().telemetry(Arc::new(telemetry)),
+        Router::builder()
+            .telemetry(Arc::new(telemetry))
+            .allow_unsecured_scopes(),
         Arc::new(PaperTestService {
             processed: AtomicU64::default(),
             events: events.clone(),

@@ -5,6 +5,13 @@ user-visible framework changes; low-level refactors stay in the Git history.
 
 ## Unreleased
 
+- Made Paper/Folia shutdown wait for the bounded graceful drain before the plugin classloader is
+  released, preventing late bridge work from reading a closed plugin JAR.
+- Invalidated processed Paper example resources when the project version changes and verified the
+  embedded `plugin.yml` version during `check`.
+- Restored the local Paper test backend after scoped-route hardening by making its intentionally
+  unsecured loopback policy explicit.
+
 ## 0.5.2 — Security, backpressure, and observability hardening
 
 - Bounded queued Rust response bytes both globally and per connection, return

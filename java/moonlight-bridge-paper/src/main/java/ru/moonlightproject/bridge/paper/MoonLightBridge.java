@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -122,7 +123,12 @@ public final class MoonLightBridge implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
-        if (!closed.compareAndSet(false, true)) return;
-        runtime.drain(Duration.ofSeconds(5));
+        closed.set(true);
+        try {
+            runtime.drain(Duration.ofSeconds(5)).completion().toCompletableFuture().join();
+        } catch (CompletionException error) {
+            Throwable cause = error.getCause() == null ? error : error.getCause();
+            throw new IOException("MoonLightBridge drain failed during Paper shutdown", cause);
+        }
     }
 }

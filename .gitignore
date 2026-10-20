@@ -3,10 +3,12 @@ build/
 /.gradle/
 /.idea/
 /.fleet/
+/.ignore
 /.worktrees/
 /out/
 /.qodana/
 /qodana-results/
+/examples/observability/moonlightbridge.json
 /java/**/build/
 *.log
 *.pid

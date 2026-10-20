@@ -48,7 +48,7 @@ public final class HardeningMain {
     public static void main(String[] args) throws Exception {
         var failures = new java.util.ArrayList<Throwable>();
         String[] tests = args.length == 0
-            ? new String[]{"welcome", "terminal", "callback", "event", "batch", "compression", "compression-limit", "compression-wire-limit", "rpc-policy", "interceptor-order", "interceptor-short-circuit", "interceptor-cancel", "drain"}
+            ? new String[]{"welcome", "terminal", "callback", "stream-backpressure", "event", "batch", "compression", "compression-limit", "compression-wire-limit", "rpc-policy", "interceptor-order", "interceptor-short-circuit", "interceptor-cancel", "drain"}
             : args;
         for (String test : tests) {
             try { run(test); } catch(Throwable e) { failures.add(e); e.printStackTrace(); }
@@ -75,6 +75,23 @@ public final class HardeningMain {
             });
             if(test.equals("terminal")) check(errors.get()==1,"invalid demand sends exactly one error");
             else { stream.complete(); check(true,"subscriber terminal exception isolated"); }
+        }
+        if (test.equals("stream-backpressure")) {
+            var granted = new AtomicLong();
+            var callbacks = new ConcurrentLinkedQueue<Runnable>();
+            var stream = new MoonLightServerStream<byte[]>(
+                granted::addAndGet, () -> {}, error -> {}, callbacks::add);
+            stream.subscribe(new Flow.Subscriber<>() {
+                public void onSubscribe(Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
+                public void onNext(byte[] item) {}
+                public void onError(Throwable error) { throw new AssertionError(error); }
+                public void onComplete() {}
+            });
+            check(granted.get() == 32, "stream credit is capped by callback capacity");
+            for (int index = 0; index < 32; index++) stream.emit(new byte[0]);
+            check(granted.get() == 32, "slow callback executor does not accumulate more stream items");
+            callbacks.remove().run();
+            check(granted.get() == 64, "stream credit replenishes after callback delivery");
         }
         if (test.equals("event")) {
             var entered=new CountDownLatch(1); var release=new CountDownLatch(1);

@@ -16,6 +16,8 @@ import java.util.function.Consumer;
  * @param <T> decoded item type delivered to the subscriber
  */
 public final class MoonLightServerStream<T> implements Flow.Publisher<T>, AutoCloseable {
+    private static final int MAX_PENDING_CALLBACKS = 32;
+
     private final LongConsumer grantCredit;
     private final Runnable cancelRemote;
     private final Consumer<Throwable> terminalCleanup;
@@ -30,6 +32,8 @@ public final class MoonLightServerStream<T> implements Flow.Publisher<T>, AutoCl
     private volatile boolean terminated;
     private boolean cancelled;
     private Throwable terminalError;
+    private long outstandingWireCredit;
+    private int pendingCallbacks;
 
     MoonLightServerStream(LongConsumer grantCredit, Runnable cancelRemote, Consumer<Throwable> terminalCleanup) {
         this(grantCredit, cancelRemote, terminalCleanup, Runnable::run);
@@ -61,14 +65,16 @@ public final class MoonLightServerStream<T> implements Flow.Publisher<T>, AutoCl
             try {
                 next.onSubscribe(new Flow.Subscription() {
                     @Override public void request(long count) {
-                        if (terminated) return;
-                        if (count <= 0) {
-                            fail(new IllegalArgumentException("Flow demand must be positive"));
-                            cancelRemote.run();
-                            return;
+                        synchronized (callbacks) {
+                            if (terminated) return;
+                            if (count <= 0) {
+                                fail(new IllegalArgumentException("Flow demand must be positive"));
+                                cancelRemote.run();
+                                return;
+                            }
+                            demand.getAndUpdate(current -> current + count < 0 ? Long.MAX_VALUE : current + count);
+                            grantAvailableCredit();
                         }
-                        demand.getAndUpdate(current -> current + count < 0 ? Long.MAX_VALUE : current + count);
-                        grantCredit.accept(count);
                     }
                     @Override public void cancel() { cancelStream(); }
                 });
@@ -84,11 +90,12 @@ public final class MoonLightServerStream<T> implements Flow.Publisher<T>, AutoCl
     void emit(T item) {
         synchronized (callbacks) {
             if (terminated) return;
-            if (subscriber == null || demand.get() == 0) {
+            if (subscriber == null || demand.get() == 0 || outstandingWireCredit == 0) {
                 fail(new IllegalStateException("server sent a stream item without delivery credit"));
                 cancelRemote.run();
                 return;
             }
+            outstandingWireCredit--;
             demand.getAndUpdate(current -> current == Long.MAX_VALUE ? current : current - 1);
             Flow.Subscriber<? super T> target = subscriber;
             dispatchCallback(() -> {
@@ -96,9 +103,26 @@ public final class MoonLightServerStream<T> implements Flow.Publisher<T>, AutoCl
                 catch (Throwable error) {
                     fail(error);
                     cancelRemote.run();
+                } finally {
+                    synchronized (callbacks) {
+                        pendingCallbacks--;
+                        grantAvailableCredit();
+                    }
                 }
             });
         }
+    }
+
+    private void grantAvailableCredit() {
+        if (terminated) return;
+        long ungrantedDemand = demand.get() - outstandingWireCredit;
+        if (ungrantedDemand <= 0) return;
+        long availableCallbacks = MAX_PENDING_CALLBACKS - pendingCallbacks;
+        long credit = Math.min(ungrantedDemand, availableCallbacks);
+        if (credit <= 0) return;
+        outstandingWireCredit += credit;
+        pendingCallbacks += Math.toIntExact(credit);
+        grantCredit.accept(credit);
     }
 
     void complete() { finish(null, false); }

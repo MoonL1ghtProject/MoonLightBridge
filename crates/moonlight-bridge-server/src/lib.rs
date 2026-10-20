@@ -130,6 +130,7 @@ struct ActiveRequest {
 struct ConnectionResources {
     limits: ServerLimits,
     request_bytes: Arc<Semaphore>,
+    response_bytes: Arc<Semaphore>,
     _admission: OwnedSemaphorePermit,
 }
 
@@ -141,10 +142,112 @@ struct ConnectionConfig {
 
 struct StreamDelivery {
     credits: Arc<Semaphore>,
-    responses: mpsc::Sender<Frame>,
+    responses: ResponseQueue,
+}
+
+struct QueuedResponse {
+    frame: Frame,
+    _global_bytes: OwnedSemaphorePermit,
+    _connection_bytes: OwnedSemaphorePermit,
+}
+
+#[derive(Clone)]
+struct ResponseQueue {
+    sender: mpsc::Sender<QueuedResponse>,
+    global_bytes: Arc<Semaphore>,
+    connection_bytes: Arc<Semaphore>,
+}
+
+impl ResponseQueue {
+    fn new(
+        sender: mpsc::Sender<QueuedResponse>,
+        global_bytes: Arc<Semaphore>,
+        connection_bytes: Arc<Semaphore>,
+    ) -> Self {
+        Self {
+            sender,
+            global_bytes,
+            connection_bytes,
+        }
+    }
+
+    async fn send(&self, frame: Frame) -> io::Result<()> {
+        let queued = match self.try_reserve(frame) {
+            Ok(queued) => queued,
+            Err(frame) if frame.kind == FrameKind::Event => {
+                tracing::warn!(
+                    event_id = frame.method_id,
+                    event_bytes = frame.body.len(),
+                    "MoonLightBridge dropped an event because the response byte budget is full"
+                );
+                return Ok(());
+            }
+            Err(frame) if matches!(frame.kind, FrameKind::Response | FrameKind::StreamItem) => {
+                let rejected = Frame::new(
+                    FrameKind::Error,
+                    frame.method_id,
+                    frame.request_id,
+                    ErrorCode::ResourceExhausted.encode("response byte budget exhausted"),
+                );
+                self.reserve(rejected).await?
+            }
+            Err(frame) => self.reserve(frame).await?,
+        };
+        self.sender.send(queued).await.map_err(channel_closed)
+    }
+
+    fn try_reserve(&self, frame: Frame) -> Result<QueuedResponse, Frame> {
+        let Ok(bytes) = u32::try_from(HEADER_LEN + frame.body.len()) else {
+            return Err(frame);
+        };
+        let Ok(connection) = self.connection_bytes.clone().try_acquire_many_owned(bytes) else {
+            return Err(frame);
+        };
+        let Ok(global) = self.global_bytes.clone().try_acquire_many_owned(bytes) else {
+            return Err(frame);
+        };
+        Ok(QueuedResponse {
+            frame,
+            _global_bytes: global,
+            _connection_bytes: connection,
+        })
+    }
+
+    async fn reserve(&self, frame: Frame) -> io::Result<QueuedResponse> {
+        let bytes = u32::try_from(HEADER_LEN + frame.body.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "response frame is too large")
+        })?;
+        let connection = self
+            .connection_bytes
+            .clone()
+            .acquire_many_owned(bytes)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "response budget closed"))?;
+        let global = self
+            .global_bytes
+            .clone()
+            .acquire_many_owned(bytes)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "response budget closed"))?;
+        Ok(QueuedResponse {
+            frame,
+            _global_bytes: global,
+            _connection_bytes: connection,
+        })
+    }
 }
 
 type ActiveRequests = Arc<Mutex<HashMap<u64, ActiveRequest>>>;
+
+const WRITER_BATCH_BYTES: usize = 512 * 1024;
+
+fn recycle_writer_buffer(encoded: &mut Vec<u8>) {
+    if encoded.capacity() > WRITER_BATCH_BYTES * 2 {
+        *encoded = Vec::with_capacity(WRITER_BATCH_BYTES);
+    } else {
+        encoded.clear();
+    }
+}
 
 #[derive(Clone)]
 /// Bounded broadcast channel for one-way events sent to connected clients.
@@ -1121,6 +1224,10 @@ pub struct ServerLimits {
     pub max_connections: usize,
     /// Maximum bytes retained by decoded request frames across all connections.
     pub max_buffered_request_bytes: usize,
+    /// Maximum queued response bytes retained across all connections.
+    pub max_buffered_response_bytes: usize,
+    /// Maximum queued response bytes retained by one connection.
+    pub max_buffered_response_bytes_per_connection: usize,
     /// Maximum time allowed to receive one complete frame.
     pub frame_read_timeout: Duration,
     /// Maximum time spent draining the response writer during connection shutdown.
@@ -1132,6 +1239,8 @@ impl Default for ServerLimits {
         Self {
             max_connections: 1_024,
             max_buffered_request_bytes: 64 * 1024 * 1024,
+            max_buffered_response_bytes: 64 * 1024 * 1024,
+            max_buffered_response_bytes_per_connection: 32 * 1024 * 1024,
             frame_read_timeout: Duration::from_secs(30),
             writer_shutdown_timeout: Duration::from_millis(500),
         }
@@ -1239,8 +1348,8 @@ impl Server {
     /// Replaces the process-wide connection, buffering, and I/O limits.
     ///
     /// # Panics
-    /// Panics when a count is zero, the request budget cannot hold one maximum-size frame,
-    /// or an I/O timeout is zero.
+    /// Panics when a count is zero, a byte budget cannot hold one maximum-size frame,
+    /// a per-connection response budget exceeds the process-wide budget, or an I/O timeout is zero.
     pub fn with_limits(mut self, limits: ServerLimits) -> Self {
         assert!(
             limits.max_connections > 0 && limits.max_connections <= Semaphore::MAX_PERMITS,
@@ -1253,6 +1362,18 @@ impl Server {
         assert!(
             limits.max_buffered_request_bytes <= Semaphore::MAX_PERMITS,
             "request byte budget must fit the Tokio semaphore"
+        );
+        let largest_response = self.settings.max_decoded_body_len as usize + HEADER_LEN;
+        assert!(
+            limits.max_buffered_response_bytes >= largest_response
+                && limits.max_buffered_response_bytes <= Semaphore::MAX_PERMITS,
+            "global response byte budget must hold one maximum-size frame"
+        );
+        assert!(
+            limits.max_buffered_response_bytes_per_connection >= largest_response
+                && limits.max_buffered_response_bytes_per_connection
+                    <= limits.max_buffered_response_bytes,
+            "per-connection response byte budget must hold one maximum-size frame and fit the global budget"
         );
         assert!(
             !limits.frame_read_timeout.is_zero() && !limits.writer_shutdown_timeout.is_zero(),
@@ -1291,6 +1412,7 @@ impl Server {
         self.runtime.ready.store(true, Ordering::Release);
         let connection_permits = Arc::new(Semaphore::new(self.limits.max_connections));
         let request_bytes = Arc::new(Semaphore::new(self.limits.max_buffered_request_bytes));
+        let response_bytes = Arc::new(Semaphore::new(self.limits.max_buffered_response_bytes));
         let mut drain_rx = self.runtime.drain_tx.subscribe();
         match self.listener {
             Listener::Tcp(listener) => loop {
@@ -1313,6 +1435,7 @@ impl Server {
                     continue;
                 };
                 let request_bytes = request_bytes.clone();
+                let response_bytes = response_bytes.clone();
                 tokio::spawn(async move {
                     if let Err(error) = serve_connection(
                         stream,
@@ -1327,6 +1450,7 @@ impl Server {
                         ConnectionResources {
                             limits,
                             request_bytes,
+                            response_bytes,
                             _admission: connection_permit,
                         },
                     )
@@ -1357,6 +1481,7 @@ impl Server {
                     continue;
                 };
                 let request_bytes = request_bytes.clone();
+                let response_bytes = response_bytes.clone();
                 tokio::spawn(async move {
                     let handshake = timeout(Duration::from_secs(10), acceptor.accept(stream)).await;
                     match handshake {
@@ -1382,6 +1507,7 @@ impl Server {
                                 ConnectionResources {
                                     limits,
                                     request_bytes,
+                                    response_bytes,
                                     _admission: connection_permit,
                                 },
                             )
@@ -1417,6 +1543,7 @@ impl Server {
                     continue;
                 };
                 let request_bytes = request_bytes.clone();
+                let response_bytes = response_bytes.clone();
                 tokio::spawn(async move {
                     if let Err(error) = serve_connection(
                         stream,
@@ -1431,6 +1558,7 @@ impl Server {
                         ConnectionResources {
                             limits,
                             request_bytes,
+                            response_bytes,
                             _admission: connection_permit,
                         },
                     )
@@ -1463,6 +1591,7 @@ where
     let ConnectionResources {
         limits,
         request_bytes,
+        response_bytes,
         _admission,
     } = resources;
     runtime.active_connections.fetch_add(1, Ordering::Relaxed);
@@ -1514,8 +1643,15 @@ where
     );
 
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let (responses_tx, mut responses_rx) =
-        mpsc::channel::<Frame>(negotiated.max_in_flight as usize);
+    let (responses_sender, mut responses_rx) =
+        mpsc::channel::<QueuedResponse>(negotiated.max_in_flight as usize);
+    let responses_tx = ResponseQueue::new(
+        responses_sender,
+        response_bytes,
+        Arc::new(Semaphore::new(
+            limits.max_buffered_response_bytes_per_connection,
+        )),
+    );
     let (frames_tx, mut frames_rx) =
         mpsc::channel::<io::Result<BufferedFrame>>(negotiated.max_in_flight as usize);
     let active: ActiveRequests = Arc::new(Mutex::new(HashMap::new()));
@@ -1551,53 +1687,58 @@ where
 
     let mut writer_task = tokio::spawn(async move {
         const MAX_BATCH_FRAMES: usize = 64;
-        const MAX_BATCH_BYTES: usize = 512 * 1024;
-        let mut encoded = Vec::with_capacity(MAX_BATCH_BYTES);
+        let mut encoded = Vec::with_capacity(WRITER_BATCH_BYTES);
         let mut deferred = None;
         loop {
-            let first = match deferred.take() {
+            let mut first = match deferred.take() {
                 Some(frame) => frame,
                 None => match responses_rx.recv().await {
                     Some(frame) => frame,
                     None => break,
                 },
             };
-            let first = fit_outbound_frame(first, negotiated.max_decoded_body_len);
-            let first = compress_outbound_frame(
-                first,
+            first.frame = fit_outbound_frame(first.frame, negotiated.max_decoded_body_len);
+            first.frame = compress_outbound_frame(
+                first.frame,
                 negotiated.compression_codecs,
                 connection_compression_policy,
                 negotiated.max_metadata_len,
             );
-            let first = fit_outbound_frame(first, negotiated.max_body_len);
+            first.frame = fit_outbound_frame(first.frame, negotiated.max_body_len);
             encoded.clear();
             first
+                .frame
                 .encode_into(&mut encoded)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let mut held_responses = vec![first];
             let mut frames = 1;
             while frames < MAX_BATCH_FRAMES {
-                let Ok(frame) = responses_rx.try_recv() else {
+                let Ok(mut queued) = responses_rx.try_recv() else {
                     break;
                 };
-                let frame = fit_outbound_frame(frame, negotiated.max_decoded_body_len);
-                let frame = compress_outbound_frame(
-                    frame,
+                queued.frame = fit_outbound_frame(queued.frame, negotiated.max_decoded_body_len);
+                queued.frame = compress_outbound_frame(
+                    queued.frame,
                     negotiated.compression_codecs,
                     connection_compression_policy,
                     negotiated.max_metadata_len,
                 );
-                let frame = fit_outbound_frame(frame, negotiated.max_body_len);
-                let frame_len = HEADER_LEN + frame.body.len();
-                if encoded.len() + frame_len > MAX_BATCH_BYTES {
-                    deferred = Some(frame);
+                queued.frame = fit_outbound_frame(queued.frame, negotiated.max_body_len);
+                let frame_len = HEADER_LEN + queued.frame.body.len();
+                if encoded.len() + frame_len > WRITER_BATCH_BYTES {
+                    deferred = Some(queued);
                     break;
                 }
-                frame
+                queued
+                    .frame
                     .encode_into(&mut encoded)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                held_responses.push(queued);
                 frames += 1;
             }
             writer.write_all(&encoded).await?;
+            drop(held_responses);
+            recycle_writer_buffer(&mut encoded);
         }
         Ok::<(), io::Error>(())
     });
@@ -1605,8 +1746,7 @@ where
     if draining {
         responses_tx
             .send(Frame::new(FrameKind::GoAway, 0, 0, Vec::new()))
-            .await
-            .map_err(channel_closed)?;
+            .await?;
     }
     let connection_result = loop {
         let buffered = tokio::select! {
@@ -1631,7 +1771,7 @@ where
                             continue;
                         }
                         if let Err(error) = responses_tx.send(frame).await {
-                            break Err(channel_closed(error));
+                            break Err(error);
                         }
                         continue;
                     }
@@ -1710,7 +1850,7 @@ where
                             ))
                             .await
                         {
-                            break Err(channel_closed(error));
+                            break Err(error);
                         }
                         continue;
                     }
@@ -1861,7 +2001,7 @@ where
                     .send(Frame::new(FrameKind::Pong, 0, frame.request_id, frame.body))
                     .await
                 {
-                    break Err(channel_closed(error));
+                    break Err(error);
                 }
             }
             FrameKind::Health => {
@@ -1891,7 +2031,7 @@ where
                     ))
                     .await
                 {
-                    break Err(channel_closed(error));
+                    break Err(error);
                 }
             }
             FrameKind::Goodbye => break Ok(()),
@@ -2692,6 +2832,7 @@ mod tests {
     {
         let limits = ServerLimits::default();
         let request_bytes = Arc::new(Semaphore::new(limits.max_buffered_request_bytes));
+        let response_bytes = Arc::new(Semaphore::new(limits.max_buffered_response_bytes));
         let connection_permits = Arc::new(Semaphore::new(1));
         let connection_permit = connection_permits.acquire_owned().await.unwrap();
         serve_connection(
@@ -2707,10 +2848,63 @@ mod tests {
             ConnectionResources {
                 limits,
                 request_bytes,
+                response_bytes,
                 _admission: connection_permit,
             },
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn response_queue_holds_byte_budget_until_writer_releases_frame() {
+        let global_bytes = Arc::new(Semaphore::new(64));
+        let connection_bytes = Arc::new(Semaphore::new(64));
+        let (sender, mut receiver) = mpsc::channel(4);
+        let responses = ResponseQueue::new(sender, global_bytes.clone(), connection_bytes);
+
+        responses
+            .send(Frame::new(FrameKind::Response, 1, 1, vec![0; 40]))
+            .await
+            .unwrap();
+        assert_eq!(global_bytes.available_permits(), 0);
+
+        let blocked = tokio::spawn({
+            let responses = responses.clone();
+            async move {
+                responses
+                    .send(Frame::new(FrameKind::Response, 1, 2, vec![0; 40]))
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !blocked.is_finished(),
+            "second response bypassed byte budget"
+        );
+
+        let first = receiver.recv().await.unwrap();
+        assert_eq!(first.frame.request_id, 1);
+        drop(first);
+        timeout(Duration::from_secs(1), blocked)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let rejected = receiver.recv().await.unwrap();
+        assert_eq!(rejected.frame.kind, FrameKind::Error);
+        assert_eq!(rejected.frame.request_id, 2);
+    }
+
+    #[test]
+    fn writer_buffer_discards_oversized_allocation() {
+        let mut encoded = Vec::with_capacity(2 * 1024 * 1024);
+        encoded.extend_from_slice(&[0; 16]);
+
+        recycle_writer_buffer(&mut encoded);
+
+        assert!(encoded.is_empty());
+        assert!(encoded.capacity() <= 512 * 1024);
     }
 
     #[derive(Default)]

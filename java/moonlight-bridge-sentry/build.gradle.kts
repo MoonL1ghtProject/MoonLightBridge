@@ -95,6 +95,13 @@ val telemetryConfigurationTest = tasks.register<JavaExec>("telemetryConfiguratio
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "ru.moonlightproject.bridge.sentry.TelemetryConfigurationMain"
 }
+val sentryFinisherSaturationTest = tasks.register<JavaExec>("sentryFinisherSaturationTest") {
+    group = "verification"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "ru.moonlightproject.bridge.sentry.SentryFinisherSaturationMain"
+}
 tasks.check {
-    dependsOn(telemetryPrivacyTest, telemetryDisabledTest, telemetryConfigurationTest)
+    dependsOn(telemetryPrivacyTest, telemetryDisabledTest, telemetryConfigurationTest,
+        sentryFinisherSaturationTest)
 }

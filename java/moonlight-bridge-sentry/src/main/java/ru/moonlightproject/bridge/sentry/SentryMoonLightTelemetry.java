@@ -16,14 +16,7 @@ import java.util.concurrent.TimeUnit;
 /** Bridges active Sentry transactions across an MoonLightBridge request without logging payload contents. */
 public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
     private static final HexFormat HEX = HexFormat.of();
-    private static final ThreadPoolExecutor FINISHER = new ThreadPoolExecutor(
-        1,
-        1,
-        0L,
-        TimeUnit.MILLISECONDS,
-        new ArrayBlockingQueue<>(4_096),
-        Thread.ofPlatform().daemon().name("moonlight-bridge-sentry-finish").factory(),
-        new ThreadPoolExecutor.DiscardPolicy());
+    private static final ThreadPoolExecutor FINISHER = newFinisher(4_096);
     private final double traceSampleRate;
     private final boolean logsEnabled;
 
@@ -41,6 +34,17 @@ public final class SentryMoonLightTelemetry implements MoonLightTelemetry {
         }
         this.traceSampleRate = traceSampleRate;
         this.logsEnabled = logsEnabled;
+    }
+
+    static ThreadPoolExecutor newFinisher(int queueCapacity) {
+        return new ThreadPoolExecutor(
+            1,
+            1,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(queueCapacity),
+            Thread.ofPlatform().daemon().name("moonlight-bridge-sentry-finish").factory(),
+            new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
     @Override

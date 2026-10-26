@@ -2,6 +2,13 @@ pub mod model {
     include!(concat!(env!("OUT_DIR"), "/moonlight.bridge.example.v1.rs"));
 }
 
+// Applications often import these names themselves. The generated file must not conflict with
+// them; this crate keeps that guarantee compiling.
+#[allow(unused_imports)]
+use moonlight_bridge_server::{EventHub, HandlerError};
+#[allow(unused_imports)]
+use std::sync::Arc;
+
 include!(concat!(env!("OUT_DIR"), "/moonlight_bridge_services.rs"));
 
 #[cfg(test)]

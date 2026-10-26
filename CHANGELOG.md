@@ -3,6 +3,15 @@
 MoonLightBridge follows [Semantic Versioning](https://semver.org/). This file records
 user-visible framework changes; low-level refactors stay in the Git history.
 
+## Unreleased
+
+- Generated Rust service files no longer conflict with an application's own imports of
+  `HandlerError`, `Arc`, `EventHub`, and similar names. Their dependencies now come from a hidden
+  glob-imported module, which an explicit `use` shadows. Code relying on those names from the
+  generated file keeps compiling.
+- Documented how to include generated Rust models and services, including APIs that span several
+  Protobuf packages, and listed `moonlight-bridge-protocol` among the required dependencies.
+
 ## 0.6.1 — Code-first fix, published examples, faster releases
 
 - Fixed code-first contracts in packages with a `moonlight` segment that is not first, such as

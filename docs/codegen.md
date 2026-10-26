@@ -144,6 +144,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Including the generated code
+
+`prost-build` writes one model file per Protobuf package, named after the package. The service
+file refers to every message as `crate::model::<Name>`, so include all model files into one
+`model` module at the crate root and the service file next to it:
+
+```rust,ignore
+// src/lib.rs (a binary's main.rs works the same way)
+pub mod model {
+    include!(concat!(env!("OUT_DIR"), "/example.profile.v1.rs"));
+    // Further packages of the same API go into this module as well.
+}
+
+include!(concat!(env!("OUT_DIR"), "/moonlight_bridge_services.rs"));
+```
+
+The generated code needs `moonlight-bridge-server`, `moonlight-bridge-protocol`, and `prost` as
+regular dependencies. It brings `HandlerError`, `Arc`, `EventHub`, and similar names into scope for
+your service code. Since 0.6.2 you may also import them yourself without a conflict.
+
 `String`, integers, floats, booleans, `Option<T>`, `Vec<T>`, `Vec<u8>`, message names, and fieldless
 enums are supported. `server_streaming` on `#[moonlight::rpc]` generates a server stream. Standard
 Rust syntax highlighting, navigation, formatting, and compiler diagnostics remain available.

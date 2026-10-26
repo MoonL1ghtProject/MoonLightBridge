@@ -104,6 +104,7 @@ message BalanceChangedEvent { string player_id = 1; int64 balance = 2; }
 ```toml
 [dependencies]
 moonlight-bridge-server = "0.6.1"
+moonlight-bridge-protocol = "0.6.1"
 prost = "0.14"
 
 [build-dependencies]
@@ -131,6 +132,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 generates services into Cargo's `OUT_DIR` and emits rebuild hints. See the complete working
 [example API crate](https://github.com/MoonL1ghtProject/MoonLightBridge/tree/main/crates/moonlight-bridge-example-api)
 for the model/service `include!` layout.
+
+## Including the generated code
+
+`prost-build` writes one model file per Protobuf package, named after the package. The service
+file refers to every message as `crate::model::<Name>`, so include all model files into one
+`model` module at the crate root and the service file next to it:
+
+```rust,ignore
+// src/lib.rs (a binary's main.rs works the same way)
+pub mod model {
+    include!(concat!(env!("OUT_DIR"), "/example.profile.v1.rs"));
+    // Further packages of the same API go into this module as well.
+}
+
+include!(concat!(env!("OUT_DIR"), "/moonlight_bridge_services.rs"));
+```
+
+The generated code needs `moonlight-bridge-server`, `moonlight-bridge-protocol`, and `prost` as
+regular dependencies. It brings `HandlerError`, `Arc`, `EventHub`, and similar names into scope for
+your service code. Since 0.6.2 you may also import them yourself without a conflict.
 
 RPC policies are validated while the descriptor is compiled. Unsafe retries, streaming retries,
 invalid scopes, unbounded message sizes, and invalid timeout, backoff, or sampling ranges fail the

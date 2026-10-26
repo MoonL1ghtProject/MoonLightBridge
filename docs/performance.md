@@ -148,6 +148,14 @@ The idle-fast-path rows add the direct idle write, the platform reader thread, a
 Rust reader. They were measured on the same host with JDK 27 and Rust 1.98, where v0.5.2 rerun the
 same day gave p50 70.1 µs / 133,268 req/s on TCP and 61.8 µs / 160,223 req/s on a Unix socket.
 
+Most of the remaining TCP-versus-Unix gap belongs to the kernel. On the same host a plain
+blocking 88-byte ping-pong, with no framework, took p50 about 25 µs over TCP loopback and 7-9 µs
+over a Unix socket, and a Tokio echo server measured the same. On loopback, the sending syscall
+also runs the receiver's TCP processing; the server's response write took 11.6 µs over TCP
+versus 3.9 µs over a Unix socket. Prefer a Unix socket when Java and Rust share a host. Moving
+request reads into the connection task saved only 1-2 µs and lowered pipelined throughput, so the
+dedicated reader task stays.
+
 This benchmark uses `moonlight-bridge-client` without the bundled runtime
 instrumentation, so it is a transport baseline rather than a production-plugin simulation.
 

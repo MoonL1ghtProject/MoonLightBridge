@@ -61,7 +61,7 @@ Set the same version in `Cargo.toml`, `gradle.properties`, and every versioned l
 dependency. Then run:
 
 ```bash
-release_version=0.6.0
+release_version=0.6.1
 ./scripts/check-release-version.sh "$release_version"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -83,7 +83,7 @@ contain sources, Javadoc, license, developer, SCM and issue-tracker metadata.
 Commit the version, merge it to `main`, then create and push the exact tag:
 
 ```bash
-release_version=0.6.0
+release_version=0.6.1
 git tag -s "v$release_version" -m "MoonLightBridge $release_version"
 git push origin "v$release_version"
 ```

@@ -94,6 +94,8 @@ public final class CodeFirstProcessorMain {
         check(proto.contains("reserved \"DEPRECATED\";"), proto);
         check(proto.contains("rpc Ping(PingRequest) returns (PingResponse)"), proto);
         check(proto.contains("required_scopes: \"monitoring.ping\""), proto);
+        // Fully qualified, so contracts in packages such as dev.moonlight.* still resolve it.
+        check(proto.contains("option (.moonlight.bridge.options.v1.rpc_policy)"), proto);
         Process protoc = new ProcessBuilder(
             "protoc",
             "--proto_path=" + directory,

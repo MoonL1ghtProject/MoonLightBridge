@@ -233,7 +233,7 @@ public final class MoonLightContractProcessor extends AbstractProcessor {
             proto.append(";\n");
             return;
         }
-        proto.append(" {\n    option (moonlight.bridge.options.v1.rpc_policy) = {\n")
+        proto.append(" {\n    option (.moonlight.bridge.options.v1.rpc_policy) = {\n")
             .append("      timeout_ms: ").append(policy.timeoutMs()).append("\n")
             .append("      idle_timeout_ms: ").append(streaming && policy.idleTimeoutMs() == 0
                 ? 30_000 : policy.idleTimeoutMs()).append("\n")

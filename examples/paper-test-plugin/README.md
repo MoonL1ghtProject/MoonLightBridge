@@ -31,7 +31,7 @@ Run the complete Java-to-Rust smoke test:
 It verifies unary, batch, typed event, server-streaming, and drain behavior, then creates:
 
 ```text
-examples/paper-test-plugin/build/libs/paper-test-plugin-0.6.0.jar
+examples/paper-test-plugin/build/libs/paper-test-plugin-0.6.1.jar
 ```
 
 To run it on Paper:

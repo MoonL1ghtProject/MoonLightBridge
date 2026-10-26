@@ -120,6 +120,60 @@ mod contract {
 }
 
 #[test]
+fn policy_option_resolves_inside_a_package_with_a_moonlight_segment() {
+    // In `dev.moonlight.app.v1`, a relative `moonlight.` name resolves to `dev.moonlight.` first.
+    // The generated option must therefore be fully qualified.
+    let directory = temporary_directory("moonlight-segment");
+    let source = directory.join("contract.rs");
+    let output = directory.join("contract.proto");
+    fs::write(
+        &source,
+        r#"
+#[moonlight::contract(package = "dev.moonlight.app.v1", java_package = "dev.moonlight.app.v1")]
+mod contract {
+    #[moonlight::message]
+    pub struct PingRequest { pub id: String }
+
+    #[moonlight::message]
+    pub struct PingResponse { pub id: String }
+
+    #[moonlight::service]
+    pub trait PingService {
+        #[moonlight::rpc(timeout_ms = 250)]
+        async fn ping(request: PingRequest) -> PingResponse;
+    }
+}
+"#,
+    )
+    .unwrap();
+    generate_proto_from_rust_source(RustSourceConfig {
+        source,
+        output: output.clone(),
+        schema_lock: None,
+    })
+    .unwrap();
+
+    let proto = fs::read_to_string(&output).unwrap();
+    assert!(
+        proto.contains("option (.moonlight.bridge.options.v1.rpc_policy)"),
+        "{proto}"
+    );
+    let repository_proto = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../proto");
+    let status = Command::new("protoc")
+        .arg(format!("--proto_path={}", directory.display()))
+        .arg(format!("--proto_path={}", repository_proto.display()))
+        .arg(format!(
+            "--descriptor_set_out={}",
+            directory.join("contract.pb").display()
+        ))
+        .arg("--include_imports")
+        .arg(&output)
+        .status()
+        .unwrap();
+    assert!(status.success(), "generated Protobuf must compile: {proto}");
+}
+
+#[test]
 fn removed_locked_field_is_reserved_and_unsupported_type_points_to_field() {
     let directory = temporary_directory("rust-source-errors");
     let source = directory.join("contract.rs");

@@ -3,8 +3,12 @@
 MoonLightBridge follows [Semantic Versioning](https://semver.org/). This file records
 user-visible framework changes; low-level refactors stay in the Git history.
 
-## Unreleased
+## 0.6.1 — Code-first fix, published examples, faster releases
 
+- Fixed code-first contracts in packages with a `moonlight` segment that is not first, such as
+  `dev.moonlight.app.v1`: the Java, Kotlin, and Rust generators now write the fully qualified
+  `(.moonlight.bridge.options.v1.rpc_policy)` option, which `protoc` previously resolved to a
+  missing `dev.moonlight.bridge...` name.
 - Examples now consume MoonLightBridge exactly like applications do: the published Maven Central
   artifacts, the published `ru.moonlightproject.bridge` Gradle plugin, and the published crates
   and `moonlight-bridge-codegen` (`publishedMoonLightBridgeVersion` in `gradle.properties`). They

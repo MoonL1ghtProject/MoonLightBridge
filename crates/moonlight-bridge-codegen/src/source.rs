@@ -297,7 +297,7 @@ fn generate_service(proto: &mut String, service: &ItemTrait) -> io::Result<()> {
                 "  rpc {method_name}({input}) returns ({stream}{output}) {{"
             )
             .unwrap();
-            proto.push_str("    option (moonlight.bridge.options.v1.rpc_policy) = {\n");
+            proto.push_str("    option (.moonlight.bridge.options.v1.rpc_policy) = {\n");
             for (key, value) in &options.values {
                 if is_retry_key(key) {
                     continue;

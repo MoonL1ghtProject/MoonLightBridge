@@ -160,7 +160,7 @@ private class MoonLightKspProcessor(
             append(";\n")
             return
         }
-        append(" {\n    option (moonlight.bridge.options.v1.rpc_policy) = {\n")
+        append(" {\n    option (.moonlight.bridge.options.v1.rpc_policy) = {\n")
         append("      timeout_ms: ").append(policy.int("timeoutMs", 2_000)).append('\n')
         append("      idle_timeout_ms: ").append(
             policy.int("idleTimeoutMs", if (streaming) 30_000 else 0),

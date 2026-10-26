@@ -3,7 +3,7 @@
 MoonLightBridge follows [Semantic Versioning](https://semver.org/). This file records
 user-visible framework changes; low-level refactors stay in the Git history.
 
-## Unreleased
+## 0.6.0 — Complete trace waterfall and lower idle latency
 
 - Completed the distributed trace waterfall. Java client spans now start before request encoding
   and end after response decoding, with `protobuf.encode/decode`, `moonlight.client.prepare`,

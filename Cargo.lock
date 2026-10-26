@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-codegen"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -828,11 +828,11 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-contract"
-version = "0.5.2"
+version = "0.6.0"
 
 [[package]]
 name = "moonlight-bridge-example-api"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "moonlight-bridge-codegen",
  "moonlight-bridge-protocol",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-example-backend"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "moonlight-bridge-example-api",
  "moonlight-bridge-sentry",
@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-observability"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "moonlight-bridge-protocol",
  "moonlight-bridge-server",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-observability-backend"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "moonlight-bridge-codegen",
  "moonlight-bridge-contract",
@@ -882,14 +882,14 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-protocol"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "zstd",
 ]
 
 [[package]]
 name = "moonlight-bridge-sentry"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "moonlight-bridge-server",
  "sentry",
@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-server"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "moonlight-bridge-test-plugin-backend"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "moonlight-bridge-example-api",
  "moonlight-bridge-sentry",

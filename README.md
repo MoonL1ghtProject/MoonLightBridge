@@ -44,7 +44,7 @@ flowchart LR
 
 ## Install
 
-MoonLightBridge `0.5.2` is available from Maven Central without repository credentials.
+MoonLightBridge `0.6.0` is available from Maven Central without repository credentials.
 
 For any Java 21+ application:
 
@@ -54,7 +54,7 @@ repositories {
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-java:0.5.2")
+    implementation("ru.moonlightproject:moonlight-bridge-java:0.6.0")
 }
 ```
 
@@ -62,7 +62,7 @@ For Paper or Folia, use the adapter instead; it already includes the universal r
 
 ```kotlin
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-paper:0.5.2")
+    implementation("ru.moonlightproject:moonlight-bridge-paper:0.6.0")
 }
 ```
 
@@ -93,7 +93,7 @@ Add the Rust runtime to the backend:
 
 ```toml
 [dependencies]
-moonlight-bridge-server = "0.5.2"
+moonlight-bridge-server = "0.6.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -152,11 +152,11 @@ pluginManagement {
 ```kotlin
 // build.gradle.kts
 plugins {
-    id("ru.moonlightproject.bridge") version "0.5.2"
+    id("ru.moonlightproject.bridge") version "0.6.0"
 }
 
 dependencies {
-    implementation("ru.moonlightproject:moonlight-bridge-client:0.5.2")
+    implementation("ru.moonlightproject:moonlight-bridge-client:0.6.0")
     implementation("com.google.protobuf:protobuf-java:4.36.1")
 }
 ```
@@ -297,7 +297,7 @@ documented in [deployment-pterodactyl.md](docs/deployment-pterodactyl.md).
 
 ## What is included
 
-| Area | Available on `main` for 0.5.2 |
+| Area | Available on `main` for 0.6.0 |
 |---|---|
 | Transport | Unix socket, TCP, mutual TLS |
 | RPC | Protocol v2 multiplexing, unary, batches, server streaming, deadlines, cancellation |
@@ -363,7 +363,7 @@ Prometheus, Tempo, and Grafana lives in [examples/observability](examples/observ
 
 ## Project status
 
-Version `0.5.2` is the latest stable public release. The source examples use the same published
+Version `0.6.0` is the latest stable public release. The source examples use the same published
 coordinates. Benchmark your own workload and pin exact released versions in production.
 Backward-incompatible changes follow semantic versioning.
 

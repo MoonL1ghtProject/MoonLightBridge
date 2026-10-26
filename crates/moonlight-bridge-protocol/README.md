@@ -26,7 +26,7 @@ tests and tools that need to encode or inspect frames.
 
 ```toml
 [dependencies]
-moonlight-bridge-protocol = "0.5.2"
+moonlight-bridge-protocol = "0.6.0"
 ```
 
 Rust 1.88 or newer is required.

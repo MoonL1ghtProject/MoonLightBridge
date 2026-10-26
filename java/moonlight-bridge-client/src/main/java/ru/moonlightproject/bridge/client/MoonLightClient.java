@@ -476,25 +476,82 @@ public final class MoonLightClient implements MoonLightChannel {
     public CompletableFuture<byte[]> request(
         int methodId, byte[] body, Duration deadline, RpcPolicy policy
     ) {
-        if (closed.get()) return CompletableFuture.failedFuture(new IOException("MoonLightBridge client is closed"));
-        if (!accepting.get()) return CompletableFuture.failedFuture(
+        return sendRequest(methodId, body, deadline, policy, System.nanoTime(), false).future();
+    }
+
+    @Override
+    public <Q, R> CompletableFuture<R> call(
+        int methodId, Q request, MoonLightCodec<Q, R> codec, Duration deadline, RpcPolicy policy
+    ) {
+        long startNanos = System.nanoTime();
+        byte[] payload;
+        try {
+            payload = codec.encode(request);
+        } catch (RuntimeException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+        long encodedNanos = System.nanoTime();
+        ObservedCall call = sendRequest(methodId, payload, deadline, policy, startNanos, true);
+        MoonLightTelemetry.RequestObservation observation = call.observation();
+        // The timeline exists only when the observation wants stage timing.
+        boolean stages = observation != null && call.timeline() != null;
+        if (stages) {
+            recordStage(observation, codec.encodeStage(), startNanos, encodedNanos);
+            recordStage(observation, MoonLightTelemetry.STAGE_PREPARE, encodedNanos,
+                call.timeline().queuedNanos);
+        }
+        CompletableFuture<R> result = new CompletableFuture<>();
+        result.whenComplete((value, error) -> { if (result.isCancelled()) call.future().cancel(true); });
+        call.future().whenComplete((body, error) -> {
+            if (error != null) {
+                finishObservation(observation, call.timeline(), 0, error);
+                result.completeExceptionally(error);
+                return;
+            }
+            long decodeStarted = stages ? System.nanoTime() : 0;
+            try {
+                R value = codec.decode(body, policy);
+                if (stages) recordStage(observation, codec.decodeStage(), decodeStarted, System.nanoTime());
+                finishObservation(observation, call.timeline(), body.length, null);
+                result.complete(value);
+            } catch (Throwable failure) {
+                finishObservation(observation, call.timeline(), 0, failure);
+                result.completeExceptionally(failure);
+            }
+        });
+        return result;
+    }
+
+    /**
+     * Starts one unary request.
+     *
+     * @param startNanos when the call started, before any request encoding
+     * @param deferFinish when {@code true}, the caller finishes the returned observation (after
+     *                    decoding); otherwise it is finished when the transport future completes
+     */
+    private ObservedCall sendRequest(
+        int methodId, byte[] body, Duration deadline, RpcPolicy policy, long startNanos,
+        boolean deferFinish
+    ) {
+        if (closed.get()) return ObservedCall.failed(new IOException("MoonLightBridge client is closed"));
+        if (!accepting.get()) return ObservedCall.failed(
             new RejectedExecutionException("MoonLightBridge client is draining"));
         if (policy != null) {
             if (body.length > policy.maxRequestBytes()) {
-                return CompletableFuture.failedFuture(
+                return ObservedCall.failed(
                     new IllegalArgumentException("request exceeds generated RPC policy"));
             }
             deadline = policy.effectiveDeadline(deadline);
         }
         long timeoutMillis = deadline.toMillis();
         if (timeoutMillis <= 0 || timeoutMillis > Integer.MAX_VALUE) {
-            return CompletableFuture.failedFuture(new IllegalArgumentException("deadline must be between 1ms and 2147483647ms"));
+            return ObservedCall.failed(new IllegalArgumentException("deadline must be between 1ms and 2147483647ms"));
         }
         if (body.length > maxDecodedBodyLength) {
-            return CompletableFuture.failedFuture(new IllegalArgumentException("body is too large"));
+            return ObservedCall.failed(new IllegalArgumentException("body is too large"));
         }
         if (!inFlight.tryAcquire()) {
-            return CompletableFuture.failedFuture(new RejectedExecutionException("MoonLightBridge in-flight request limit reached"));
+            return ObservedCall.failed(new RejectedExecutionException("MoonLightBridge in-flight request limit reached"));
         }
 
         long requestId = allocateRequestId();
@@ -521,13 +578,14 @@ public final class MoonLightClient implements MoonLightChannel {
             } catch (Throwable failure) {
                 inFlight.release();
                 notifyInterceptors(callContext, null, failure, enteredInterceptors);
-                return CompletableFuture.failedFuture(failure);
+                return ObservedCall.failed(failure);
             }
         }
         MoonLightTelemetry.RequestObservation observation;
         try {
             observation = telemetry.startRequest(new MoonLightTelemetry.RequestInfo(
-                methodId, requestId, body.length, policy == null ? null : policy.methodName()));
+                methodId, requestId, body.length, policy == null ? null : policy.methodName(),
+                startNanos));
             if (observation == null) observation = MoonLightTelemetry.disabled().startRequest(null);
         } catch (RuntimeException ignored) {
             observation = MoonLightTelemetry.disabled().startRequest(null);
@@ -537,13 +595,19 @@ public final class MoonLightClient implements MoonLightChannel {
             try { traceContext = observation.traceContext(); }
             catch (RuntimeException ignored) { }
         }
+        // Stage timestamps are only collected when a real observation records them.
+        boolean wantsStages;
+        try { wantsStages = observation.wantsStages(); }
+        catch (RuntimeException ignored) { wantsStages = false; }
+        CallTimeline timeline = wantsStages ? new CallTimeline(System.nanoTime()) : null;
         CompletableFuture<byte[]> future = new CompletableFuture<>();
-        PendingRequest pendingRequest = new PendingRequest(RESPONSE, methodId, true, future);
+        PendingRequest pendingRequest = new PendingRequest(RESPONSE, methodId, true, future, timeline);
         pending.put(requestId, pendingRequest);
         try {
             enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
                 policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression(),
-                callContext == null ? MoonLightMetadata.empty() : callContext.metadata(), true);
+                callContext == null ? MoonLightMetadata.empty() : callContext.metadata(), true,
+                timeline);
         } catch (IOException error) {
             future.completeExceptionally(error);
         }
@@ -555,8 +619,10 @@ public final class MoonLightClient implements MoonLightChannel {
         future.whenComplete((ignored, error) -> {
             pending.remove(requestId, pendingRequest);
             inFlight.release();
-            try { completedObservation.finish(ignored == null ? 0 : ignored.length, error); }
-            catch (RuntimeException ignoredTelemetryError) { }
+            if (!deferFinish) {
+                finishObservation(completedObservation, timeline,
+                    ignored == null ? 0 : ignored.length, error);
+            }
             notifyInterceptors(completedContext, ignored, error, completedInterceptors);
             if (error != null) {
                 LOGGER.log(System.Logger.Level.DEBUG,
@@ -565,7 +631,38 @@ public final class MoonLightClient implements MoonLightChannel {
             }
             if (error instanceof TimeoutException || error instanceof CancellationException) sendCancel(requestId);
         });
-        return future;
+        return new ObservedCall(future, deferFinish ? observation : null, timeline);
+    }
+
+    private static void recordStage(
+        MoonLightTelemetry.RequestObservation observation, String name, long startNanos, long endNanos
+    ) {
+        try { observation.recordStage(name, startNanos, endNanos); }
+        catch (RuntimeException ignored) { }
+    }
+
+    /** Records the transport stages known from the timeline, then finishes the observation. */
+    private static void finishObservation(
+        MoonLightTelemetry.RequestObservation observation, CallTimeline timeline,
+        int responseBytes, Throwable error
+    ) {
+        if (observation == null) return;
+        if (timeline != null) {
+            long written = timeline.writtenNanos;
+            long received = timeline.receivedNanos;
+            long completing = timeline.completingNanos;
+            if (written != 0) {
+                recordStage(observation, MoonLightTelemetry.STAGE_WRITE, timeline.queuedNanos, written);
+                if (received != 0) {
+                    recordStage(observation, MoonLightTelemetry.STAGE_WAIT, written, received);
+                    if (completing != 0) {
+                        recordStage(observation, MoonLightTelemetry.STAGE_DISPATCH, received, completing);
+                    }
+                }
+            }
+        }
+        try { observation.finish(responseBytes, error); }
+        catch (RuntimeException ignored) { }
     }
 
     @Override
@@ -661,7 +758,7 @@ public final class MoonLightClient implements MoonLightChannel {
         try {
             enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
                 policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression(),
-                callContext == null ? MoonLightMetadata.empty() : callContext.metadata(), false);
+                callContext == null ? MoonLightMetadata.empty() : callContext.metadata(), false, null);
         } catch (IOException error) {
             stream.fail(error);
             return stream;
@@ -814,6 +911,7 @@ public final class MoonLightClient implements MoonLightChannel {
                 }
                 PendingRequest request = pending.get(frame.requestId);
                 if (request == null) continue;
+                if (request.timeline != null) request.timeline.receivedNanos = System.nanoTime();
                 boolean expectedSuccess = validateResponse(frame, request);
                 if (!pending.remove(frame.requestId, request)) continue;
                 Throwable remoteError = expectedSuccess ? null : decodeRemoteError(frame);
@@ -831,6 +929,7 @@ public final class MoonLightClient implements MoonLightChannel {
     }
 
     private static void completeResponse(PendingRequest request, byte[] body, Throwable remoteError) {
+        if (request.timeline != null) request.timeline.completingNanos = System.nanoTime();
         if (remoteError == null) request.future.complete(body);
         else request.future.completeExceptionally(remoteError);
     }
@@ -923,7 +1022,7 @@ public final class MoonLightClient implements MoonLightChannel {
         ByteBuffer target = ByteBuffer.wrap(encoded);
         target.putInt(MAGIC).put((byte) VERSION).put((byte) kind).putShort((short) flags)
             .putInt(body.length).putInt(methodId).putLong(requestId).put(body);
-        if (!outgoing.offer(new OutboundFrame(encoded, length, written, 0, false, 0, Long.MAX_VALUE))) {
+        if (!outgoing.offer(new OutboundFrame(encoded, length, written, 0, false, 0, Long.MAX_VALUE, null))) {
             bufferPool.release(encoded);
             throw new OutgoingQueueFullException(performance.outgoingQueueCapacity());
         }
@@ -931,7 +1030,8 @@ public final class MoonLightClient implements MoonLightChannel {
 
     private void enqueueRequestFrame(
         int methodId, long requestId, int timeoutMillis, MoonLightTraceContext traceContext,
-        byte[] body, RpcPolicy.Compression compression, MoonLightMetadata userMetadata, boolean unary
+        byte[] body, RpcPolicy.Compression compression, MoonLightMetadata userMetadata, boolean unary,
+        CallTimeline timeline
     )
         throws IOException {
         boolean zstdNegotiated = (negotiatedCompressionCodecs & 2) != 0;
@@ -978,12 +1078,13 @@ public final class MoonLightClient implements MoonLightChannel {
             }
             if (written) {
                 outgoingRequestBytes.release(length);
+                if (timeline != null) timeline.writtenNanos = System.nanoTime();
                 return;
             }
         }
         long expiresAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         if (!outgoing.offer(new OutboundFrame(
-            encoded, length, null, length, true, requestId, expiresAt))) {
+            encoded, length, null, length, true, requestId, expiresAt, timeline))) {
             bufferPool.release(encoded);
             outgoingRequestBytes.release(length);
             throw new OutgoingQueueFullException(performance.outgoingQueueCapacity());
@@ -1084,7 +1185,12 @@ public final class MoonLightClient implements MoonLightChannel {
                 } finally {
                     writeLock.unlock();
                 }
+                long writtenNanos = 0;
                 for (OutboundFrame frame : batch) {
+                    if (frame.timeline != null) {
+                        if (writtenNanos == 0) writtenNanos = System.nanoTime();
+                        frame.timeline.writtenNanos = writtenNanos;
+                    }
                     releaseOutbound(frame, null);
                 }
                 batch.clear();
@@ -1253,8 +1359,36 @@ public final class MoonLightClient implements MoonLightChannel {
         int expectedKind,
         int methodId,
         boolean errorAllowed,
-        CompletableFuture<byte[]> future
-    ) { }
+        CompletableFuture<byte[]> future,
+        CallTimeline timeline
+    ) {
+        PendingRequest(int expectedKind, int methodId, boolean errorAllowed, CompletableFuture<byte[]> future) {
+            this(expectedKind, methodId, errorAllowed, future, null);
+        }
+    }
+
+    /** {@link System#nanoTime()} marks of one traced unary call; zero means "not reached". */
+    private static final class CallTimeline {
+        final long queuedNanos;
+        volatile long writtenNanos;
+        volatile long receivedNanos;
+        volatile long completingNanos;
+
+        CallTimeline(long queuedNanos) { this.queuedNanos = queuedNanos; }
+    }
+
+    /**
+     * A started unary request. {@code observation} is set only when the caller must finish it.
+     */
+    private record ObservedCall(
+        CompletableFuture<byte[]> future,
+        MoonLightTelemetry.RequestObservation observation,
+        CallTimeline timeline
+    ) {
+        static ObservedCall failed(Throwable error) {
+            return new ObservedCall(CompletableFuture.failedFuture(error), null, null);
+        }
+    }
 
     private record StreamRequest(
         int methodId,
@@ -1269,7 +1403,8 @@ public final class MoonLightClient implements MoonLightChannel {
         int reservedBytes,
         boolean requestFrame,
         long requestId,
-        long expiresAtNanos
+        long expiresAtNanos,
+        CallTimeline timeline
     ) { }
 
     /** Backpressure failure raised when the bounded writer queue cannot accept a frame. */

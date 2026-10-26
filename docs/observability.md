@@ -29,6 +29,21 @@ a stable `service.name` in Tempo.
 Generated registrations pass the canonical method name to the server. Their decode, handler, and
 encode instrumentation becomes child spans of the Rust request span; custom backend work wrapped
 with `trace_function` or `trace_async_function` is recorded through the same request observation.
+Every stage keeps its real start time, so the waterfall shows where the time went.
+
+For sampled requests the runtime also records its own stages and keeps the server span open until
+the response is written:
+
+| Stage | Covers |
+|---|---|
+| `moonlight.server.queue` | From reading the frame until the handler is about to run: admission, task scheduling, metadata validation |
+| `moonlight.server.frame_decode` | Decompression of a compressed request (absent otherwise) |
+| `moonlight.server.middleware` | The middleware chain around the handler (only with middleware) |
+| `moonlight.server.write` | From the finished handler until the response bytes are on the socket |
+
+A custom `RequestObservation` opts into these stages by returning `true` from `wants_timing()`.
+`OpenTelemetryTelemetry` does so only for recording spans, so unsampled requests skip the extra
+work.
 
 ## Java, Kotlin, and Paper
 
@@ -52,18 +67,29 @@ Paper and Folia plugins should expose metrics from their existing web/admin inte
 plugin-owned server. The adapters never bind ports during class loading or construction.
 
 The generated `RpcPolicy.methodName()` supplies the Java client span name. Raw calls without that
-metadata retain the fallback `moonlight.rpc.<method-id>` name. A normal generated call appears as:
+metadata retain the fallback `moonlight.rpc.<method-id>` name. Generated clients call
+`MoonLightChannel.call(...)` with a `MoonLightCodec`, so the client span starts before request
+encoding and ends after response decoding. A sampled generated call appears as:
 
 ```text
-profile-paper  ProfileService/LoadProfile
-└─ profile-rust  ProfileService/LoadProfile
-   ├─ protobuf.decode.ProfileService.LoadProfile
-   ├─ handler.ProfileService.LoadProfile
-   └─ protobuf.encode.ProfileService.LoadProfile
+profile-paper  ProfileService/LoadProfile                (client span)
+├─ protobuf.encode.ProfileService.LoadProfile
+├─ moonlight.client.prepare                              admission, interceptors, span start
+├─ moonlight.client.write                                writer queue and socket flush
+├─ moonlight.client.wait                                 network and server time
+├─ profile-rust  ProfileService/LoadProfile              (server span)
+│  ├─ moonlight.server.queue
+│  ├─ protobuf.decode.ProfileService.LoadProfile
+│  ├─ handler.ProfileService.LoadProfile
+│  ├─ protobuf.encode.ProfileService.LoadProfile
+│  └─ moonlight.server.write
+├─ moonlight.client.dispatch                             hand-off to the completion thread
+└─ protobuf.decode.ProfileService.LoadProfile
 ```
 
-The Java span is the root, the Rust request span continues its propagated context, and the three
-stage spans are children of the Rust request. Set a distinct explicit service name for every
+The Java span is the root and the Rust request span continues its propagated context. A custom
+Java `RequestObservation` receives these stages by returning `true` from `wantsStages()`;
+`MoonLightOpenTelemetry` does so only for recording spans. Set a distinct explicit service name for every
 process. Reusing one name makes separate runtimes difficult to distinguish; omitting it lets the
 OpenTelemetry SDK fall back to an `unknown_service` resource.
 

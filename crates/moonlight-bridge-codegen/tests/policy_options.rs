@@ -77,7 +77,12 @@ message Output {}
     let java = fs::read_to_string(java_output.join("policy/test/TestServiceClient.java")).unwrap();
     assert!(java.contains("public static final RpcPolicy READ_POLICY"));
     assert!(java.contains("\"TestService/Read\""));
-    assert!(java.contains("channel.request(READ_METHOD_ID, payload, callDeadline, READ_POLICY)"));
+    assert!(
+        java.contains(
+            "channel.call(READ_METHOD_ID, request, READ_CODEC, callDeadline, READ_POLICY)"
+        )
+    );
+    assert!(java.contains("MoonLightCodec.protobuf(\"TestService.Read\""));
 }
 
 #[test]

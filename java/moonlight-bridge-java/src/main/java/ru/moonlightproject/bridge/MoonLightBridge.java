@@ -2,6 +2,7 @@ package ru.moonlightproject.bridge;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -11,10 +12,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import ru.moonlightproject.bridge.client.MoonLightChannel;
+import ru.moonlightproject.bridge.client.MoonLightCodec;
 import ru.moonlightproject.bridge.client.MoonLightHealth;
+import ru.moonlightproject.bridge.client.MoonLightRequest;
 import ru.moonlightproject.bridge.client.MoonLightDrainHandle;
 import ru.moonlightproject.bridge.client.MoonLightServerStream;
 import ru.moonlightproject.bridge.client.ReconnectingMoonLightClient;
+import ru.moonlightproject.bridge.client.RpcPolicy;
 
 /**
  * Universal Java lifecycle facade for a supervised MoonLightBridge connection.
@@ -135,8 +139,34 @@ public final class MoonLightBridge implements MoonLightChannel {
     }
 
     @Override
+    public CompletableFuture<byte[]> request(
+        int methodId, byte[] body, Duration deadline, RpcPolicy policy
+    ) {
+        return client.request(methodId, body, deadline, policy);
+    }
+
+    @Override
+    public <Q, R> CompletableFuture<R> call(
+        int methodId, Q request, MoonLightCodec<Q, R> codec, Duration deadline, RpcPolicy policy
+    ) {
+        return client.call(methodId, request, codec, deadline, policy);
+    }
+
+    @Override
+    public CompletableFuture<List<byte[]>> requestBatch(List<MoonLightRequest> requests) {
+        return client.requestBatch(requests);
+    }
+
+    @Override
     public MoonLightServerStream<byte[]> serverStream(int methodId, byte[] body, Duration deadline) {
         return client.serverStream(methodId, body, deadline);
+    }
+
+    @Override
+    public MoonLightServerStream<byte[]> serverStream(
+        int methodId, byte[] body, Duration deadline, RpcPolicy policy
+    ) {
+        return client.serverStream(methodId, body, deadline, policy);
     }
 
     @Override

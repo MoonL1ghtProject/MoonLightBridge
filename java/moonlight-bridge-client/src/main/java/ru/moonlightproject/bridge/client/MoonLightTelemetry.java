@@ -10,6 +10,15 @@ import java.util.ServiceLoader;
  * returned trace context to the Rust server. The SPI never receives application payload contents.</p>
  */
 public interface MoonLightTelemetry {
+    /** From the end of request encoding until the frame is queued: admission, interceptors, span start. */
+    String STAGE_PREPARE = "moonlight.client.prepare";
+    /** From the queued frame until it is flushed to the socket, including writer queue wait. */
+    String STAGE_WRITE = "moonlight.client.write";
+    /** From the flushed request until the response frame is read: network plus server time. */
+    String STAGE_WAIT = "moonlight.client.wait";
+    /** From the read response frame until its completion runs (the completion thread hand-off). */
+    String STAGE_DISPATCH = "moonlight.client.dispatch";
+
     /**
      * Starts one request observation; returning {@code null} skips instrumentation.
      *
@@ -101,8 +110,23 @@ public interface MoonLightTelemetry {
      * @param requestBytes encoded application payload size
      * @param methodName generated canonical {@code Service/Method} name, or {@code null} for raw
      *                   calls
+     * @param startNanos {@link System#nanoTime()} when the call started, before request encoding
      */
-    record RequestInfo(int methodId, long requestId, int requestBytes, String methodName) {
+    record RequestInfo(
+        int methodId, long requestId, int requestBytes, String methodName, long startNanos
+    ) {
+        /**
+         * Creates metadata for a call that starts now.
+         *
+         * @param methodId stable generated method identifier
+         * @param requestId connection-local request identifier
+         * @param requestBytes encoded application payload size
+         * @param methodName generated canonical {@code Service/Method} name, or {@code null}
+         */
+        public RequestInfo(int methodId, long requestId, int requestBytes, String methodName) {
+            this(methodId, requestId, requestBytes, methodName, System.nanoTime());
+        }
+
         /** Creates metadata for a raw call whose method name is unavailable.
          * @param methodId stable generated method identifier
          * @param requestId connection-local request identifier
@@ -126,6 +150,30 @@ public interface MoonLightTelemetry {
          * @param error completion failure, or {@code null} for success
          */
         void finish(int responseBytes, Throwable error);
+
+        /**
+         * Records a completed stage of this request with real start and end times.
+         *
+         * <p>The client reports codec stages ({@code protobuf.encode.*}, {@code protobuf.decode.*})
+         * and transport stages ({@link #STAGE_PREPARE}, {@link #STAGE_WRITE}, {@link #STAGE_WAIT},
+         * {@link #STAGE_DISPATCH}) before {@link #finish}. Tracing adapters export them as child
+         * spans so a waterfall shows where the call spent its time.</p>
+         *
+         * @param name stable stage name
+         * @param startNanos {@link System#nanoTime()} when the stage started
+         * @param endNanos {@link System#nanoTime()} when the stage ended
+         */
+        default void recordStage(String name, long startNanos, long endNanos) { }
+
+        /**
+         * Returns whether this request wants stage timing.
+         *
+         * <p>The client only collects stage timestamps when this returns {@code true}. Tracing
+         * adapters return {@code true} for sampled requests only, so unsampled calls pay nothing.</p>
+         *
+         * @return {@code true} to receive {@link #recordStage} calls
+         */
+        default boolean wantsStages() { return false; }
     }
 
     /** Auto-closeable child stage for generated codecs and application functions. */
@@ -217,6 +265,22 @@ public interface MoonLightTelemetry {
                 public void finish(int responseBytes, Throwable error) {
                     for (RequestObservation observation : observations) {
                         try { observation.finish(responseBytes, error); }
+                        catch (RuntimeException ignored) { }
+                    }
+                }
+
+                @Override
+                public boolean wantsStages() {
+                    for (RequestObservation observation : observations) {
+                        if (observation.wantsStages()) return true;
+                    }
+                    return false;
+                }
+
+                @Override
+                public void recordStage(String name, long startNanos, long endNanos) {
+                    for (RequestObservation observation : observations) {
+                        try { observation.recordStage(name, startNanos, endNanos); }
                         catch (RuntimeException ignored) { }
                     }
                 }

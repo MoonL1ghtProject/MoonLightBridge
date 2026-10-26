@@ -248,6 +248,7 @@ mod tests {
             request_id: 11,
             request_bytes: 13,
             trace_context: None,
+            received_at: Instant::now(),
         });
         assert!(observation.is_some());
         observation

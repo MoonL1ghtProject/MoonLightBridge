@@ -5,6 +5,22 @@ user-visible framework changes; low-level refactors stay in the Git history.
 
 ## Unreleased
 
+- Completed the distributed trace waterfall. Java client spans now start before request encoding
+  and end after response decoding, with `protobuf.encode/decode`, `moonlight.client.prepare`,
+  `write`, `wait`, and `dispatch` child spans. Rust server spans start when the frame is read and
+  end when the response is written, with `moonlight.server.queue`, `frame_decode`, `middleware`,
+  and `write` stages. Every stage keeps its real start time; previously Rust stages were placed
+  at the end of the request span.
+- Generated Java clients call the new `MoonLightChannel.call(...)` with a `MoonLightCodec`.
+  Regenerate clients to get the client-side stages.
+- Server-streaming handlers now report their generated decode, handler, and per-item encode
+  stages (bounded to 128 stages per request).
+- Fixed `MoonLightBridge` (Java and Paper) dropping the generated `RpcPolicy`: the span name,
+  compression preference, and policy limits now reach the transport.
+- Added `RequestObservation::wants_timing` (Rust) and `RequestObservation.wantsStages()` (Java).
+  OpenTelemetry adapters enable detailed timing only for sampled requests.
+- `RequestInfo` gained `received_at` (Rust) and `startNanos` (Java). The previous Java
+  constructors remain.
 - Cut sequential call latency on an idle connection: the Java caller writes a lone request
   frame itself instead of waking the writer thread, responses are read by a platform thread
   instead of a virtual one, and the Rust server reads requests through a buffer. On the

@@ -320,10 +320,18 @@ Rust adapter continues that trace and records generated backend stages as child 
 
 ```text
 moonlight-observability-java  MonitoringService/Ping
-└─ moonlight-observability-rust  MonitoringService/Ping
-   ├─ protobuf.decode.MonitoringService.Ping
-   ├─ handler.MonitoringService.Ping
-   └─ protobuf.encode.MonitoringService.Ping
+├─ protobuf.encode.MonitoringService.Ping
+├─ moonlight.client.prepare
+├─ moonlight.client.write
+├─ moonlight.client.wait
+├─ moonlight-observability-rust  MonitoringService/Ping
+│  ├─ moonlight.server.queue
+│  ├─ protobuf.decode.MonitoringService.Ping
+│  ├─ handler.MonitoringService.Ping
+│  ├─ protobuf.encode.MonitoringService.Ping
+│  └─ moonlight.server.write
+├─ moonlight.client.dispatch
+└─ protobuf.decode.MonitoringService.Ping
 ```
 
 Use `moonlight-bridge-micrometer` on Java/Paper and the `prometheus` feature of

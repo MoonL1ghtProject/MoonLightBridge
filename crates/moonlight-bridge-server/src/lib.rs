@@ -46,7 +46,7 @@ pub use middleware::{
 pub mod tls;
 
 tokio::task_local! {
-    static FUNCTION_STAGES: RefCell<Vec<(&'static str, Duration)>>;
+    static FUNCTION_STAGES: RefCell<Vec<(&'static str, Instant, Duration)>>;
 }
 
 /// Traces a synchronous backend function as a child stage when request tracing is enabled.
@@ -61,7 +61,7 @@ pub fn trace_function<T>(name: &'static str, function: impl FnOnce() -> T) -> T 
     let span = tracing::info_span!(target: "moonlight_bridge::function", "backend.function", function = name);
     let _entered = span.enter();
     let output = function();
-    let _ = FUNCTION_STAGES.try_with(|stages| stages.borrow_mut().push((name, started.elapsed())));
+    push_stage(name, started, started.elapsed());
     output
 }
 
@@ -77,8 +77,41 @@ pub async fn trace_async_function<T>(name: &'static str, future: impl Future<Out
     let output = future
         .instrument(tracing::info_span!(target: "moonlight_bridge::function", "backend.function", function = name))
         .await;
-    let _ = FUNCTION_STAGES.try_with(|stages| stages.borrow_mut().push((name, started.elapsed())));
+    push_stage(name, started, started.elapsed());
     output
+}
+
+/// Upper bound of stages kept for one request, so a long stream cannot grow the list forever.
+const MAX_RECORDED_STAGES: usize = 128;
+
+fn push_stage(name: &'static str, started: Instant, duration: Duration) {
+    let _ = FUNCTION_STAGES.try_with(|stages| {
+        let mut stages = stages.borrow_mut();
+        if stages.len() < MAX_RECORDED_STAGES {
+            stages.push((name, started, duration));
+        }
+    });
+}
+
+/// Moves stages collected so far in this task into the observation.
+fn drain_stages(observation: &mut Option<Box<dyn RequestObservation>>) {
+    let Some(observation) = observation.as_mut() else {
+        return;
+    };
+    let stages = FUNCTION_STAGES
+        .try_with(|stages| std::mem::take(&mut *stages.borrow_mut()))
+        .unwrap_or_default();
+    for (name, started, duration) in stages {
+        observation.record_stage_at(name, started, duration);
+    }
+}
+
+fn finish_with_stages(
+    mut observation: Option<Box<dyn RequestObservation>>,
+    outcome: RequestOutcome,
+) {
+    drain_stages(&mut observation);
+    finish_observation(observation, outcome);
 }
 
 #[cfg(unix)]
@@ -143,10 +176,14 @@ struct ConnectionConfig {
 struct StreamDelivery {
     credits: Arc<Semaphore>,
     responses: ResponseQueue,
+    received_at: Option<Instant>,
 }
 
 struct QueuedResponse {
     frame: Frame,
+    /// Open request observation finished by the writer once the frame is on the socket.
+    /// Boxed so every queued response stays small; the queue copies each one twice.
+    observation: Option<Box<DeferredObservation>>,
     _global_bytes: OwnedSemaphorePermit,
     _connection_bytes: OwnedSemaphorePermit,
 }
@@ -172,7 +209,15 @@ impl ResponseQueue {
     }
 
     async fn send(&self, frame: Frame) -> io::Result<()> {
-        let queued = match self.try_reserve(frame) {
+        self.send_observed(frame, None).await
+    }
+
+    async fn send_observed(
+        &self,
+        frame: Frame,
+        mut observation: Option<Box<DeferredObservation>>,
+    ) -> io::Result<()> {
+        let mut queued = match self.try_reserve(frame) {
             Ok(queued) => queued,
             Err(frame) if frame.kind == FrameKind::Event => {
                 tracing::warn!(
@@ -189,10 +234,16 @@ impl ResponseQueue {
                     frame.request_id,
                     ErrorCode::ResourceExhausted.encode("response byte budget exhausted"),
                 );
+                if let Some(observation) = observation.as_mut() {
+                    observation.outcome = RequestOutcome::Error {
+                        code: ErrorCode::ResourceExhausted,
+                    };
+                }
                 self.reserve(rejected).await?
             }
             Err(frame) => self.reserve(frame).await?,
         };
+        queued.observation = observation;
         self.sender.send(queued).await.map_err(channel_closed)
     }
 
@@ -208,6 +259,7 @@ impl ResponseQueue {
         };
         Ok(QueuedResponse {
             frame,
+            observation: None,
             _global_bytes: global,
             _connection_bytes: connection,
         })
@@ -231,6 +283,7 @@ impl ResponseQueue {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "response budget closed"))?;
         Ok(QueuedResponse {
             frame,
+            observation: None,
             _global_bytes: global,
             _connection_bytes: connection,
         })
@@ -363,6 +416,10 @@ pub struct RequestInfo {
     pub request_bytes: usize,
     /// Propagated trace identifiers, when provided by the client.
     pub trace_context: Option<TraceContext>,
+    /// When the server finished reading the request frame from the socket.
+    ///
+    /// Observations should start here so the request span also covers queueing before dispatch.
+    pub received_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,6 +444,23 @@ pub trait RequestObservation: Send {
     /// OpenTelemetry adapters export this as a child span of the request and may additionally
     /// retain a stage event for compatibility with event-based backends.
     fn record_stage(&mut self, _name: &'static str, _duration: Duration) {}
+    /// Records a stage together with the instant it started.
+    ///
+    /// The runtime calls this for every generated and framework stage, so waterfall views can
+    /// place each stage at its real offset. The default forwards to [`Self::record_stage`].
+    fn record_stage_at(&mut self, name: &'static str, started: Instant, duration: Duration) {
+        let _ = started;
+        self.record_stage(name, duration);
+    }
+    /// Whether this request needs the detailed framework timing.
+    ///
+    /// When `true`, the runtime additionally records `moonlight.server.queue`,
+    /// `moonlight.server.middleware` and `moonlight.server.write`, and keeps the observation open
+    /// until the response is written. Tracing adapters return `true` only for sampled requests,
+    /// so other requests pay nothing for it. Generated handler stages are always reported.
+    fn wants_timing(&self) -> bool {
+        false
+    }
     /// Completes this observation with the request's terminal outcome.
     fn finish(self: Box<Self>, outcome: RequestOutcome);
 }
@@ -430,6 +504,16 @@ impl RequestObservation for ChainedObservation {
         for observation in &mut self.0 {
             observation.record_stage(name, duration);
         }
+    }
+
+    fn record_stage_at(&mut self, name: &'static str, started: Instant, duration: Duration) {
+        for observation in &mut self.0 {
+            observation.record_stage_at(name, started, duration);
+        }
+    }
+
+    fn wants_timing(&self) -> bool {
+        self.0.iter().any(|observation| observation.wants_timing())
     }
 
     fn finish(self: Box<Self>, outcome: RequestOutcome) {
@@ -638,19 +722,45 @@ impl Router {
         .await
     }
 
+    #[cfg(test)]
     async fn dispatch_with_peer(
+        &self,
+        frame: Frame,
+        max_response_body_len: u32,
+        max_metadata_len: u32,
+        compression: RequestCompression<'_>,
+        peer_identity: Option<PeerIdentity>,
+    ) -> Frame {
+        // Dropping the deferred observation finishes it without a write stage.
+        self.dispatch_observed(
+            frame,
+            max_response_body_len,
+            max_metadata_len,
+            compression,
+            peer_identity,
+            None,
+        )
+        .await
+        .0
+    }
+
+    /// Dispatches one unary request. A successful or handler-failed request returns its
+    /// observation still open, so the connection writer can add the socket write stage.
+    async fn dispatch_observed(
         &self,
         mut frame: Frame,
         max_response_body_len: u32,
         max_metadata_len: u32,
         compression: RequestCompression<'_>,
         peer_identity: Option<PeerIdentity>,
-    ) -> Frame {
+        received_at: Option<Instant>,
+    ) -> (Frame, Option<Box<DeferredObservation>>) {
         let ParsedRequest {
             deadline,
             trace_context,
             metadata,
             payload,
+            decompression,
             _decoded_permit,
         } = match request_payload(
             &mut frame,
@@ -659,8 +769,9 @@ impl Router {
             !self.middleware.is_empty(),
         ) {
             Ok(parts) => parts,
-            Err((code, message)) => return error_frame(&frame, code, message),
+            Err((code, message)) => return (error_frame(&frame, code, message), None),
         };
+        let received_at = received_at.unwrap_or_else(Instant::now);
         let mut observation = self.telemetry.as_ref().and_then(|telemetry| {
             telemetry.start_request(RequestInfo {
                 method_id: frame.method_id,
@@ -668,8 +779,15 @@ impl Router {
                 request_id: frame.request_id,
                 request_bytes: payload.len(),
                 trace_context,
+                received_at,
             })
         });
+        let detailed = observation
+            .as_ref()
+            .is_some_and(|observation| observation.wants_timing());
+        if detailed && let Some(observation) = observation.as_mut() {
+            record_dispatch_stages(observation.as_mut(), received_at, decompression);
+        }
         let Some(handler) = self.handlers.get(&frame.method_id) else {
             tracing::debug!(
                 method_id = frame.method_id,
@@ -682,7 +800,10 @@ impl Router {
                     code: ErrorCode::UnknownMethod,
                 },
             );
-            return error_frame(&frame, ErrorCode::UnknownMethod, "method is not registered");
+            return (
+                error_frame(&frame, ErrorCode::UnknownMethod, "method is not registered"),
+                None,
+            );
         };
         let cancellation = RequestCancellation::new();
         let context = metadata.map(|metadata| {
@@ -706,6 +827,12 @@ impl Router {
             let invocation = async move {
                 let mut cancellation_guard = CancellationGuard::new(cancellation);
                 let result = match context {
+                    Some(context) if detailed => {
+                        let started = Instant::now();
+                        let result = Next::root(middleware, handler).run(context, payload).await;
+                        push_stage(STAGE_MIDDLEWARE, started, started.elapsed());
+                        result
+                    }
                     Some(context) => Next::root(middleware, handler).run(context, payload).await,
                     None => handler(payload).await,
                 };
@@ -740,18 +867,25 @@ impl Router {
                             code: ErrorCode::DeadlineExceeded,
                         },
                     );
-                    return error_frame(
-                        &frame,
-                        ErrorCode::DeadlineExceeded,
-                        "request deadline exceeded",
+                    return (
+                        error_frame(
+                            &frame,
+                            ErrorCode::DeadlineExceeded,
+                            "request deadline exceeded",
+                        ),
+                        None,
                     );
                 }
             },
             None => instrumented.await,
         };
+        // The response is ready when the last recorded stage ended; this avoids another clock read.
+        let mut handler_done = None;
         if let Some(observation) = observation.as_mut() {
-            for (name, duration) in stages {
-                observation.record_stage(name, duration);
+            for (name, started, duration) in stages {
+                let ended = started + duration;
+                handler_done = Some(handler_done.map_or(ended, |done: Instant| done.max(ended)));
+                observation.record_stage_at(name, started, duration);
             }
         }
 
@@ -771,10 +905,13 @@ impl Router {
                             code: ErrorCode::ResourceExhausted,
                         },
                     );
-                    return error_frame(
-                        &frame,
-                        ErrorCode::ResourceExhausted,
-                        "response exceeds negotiated body limit",
+                    return (
+                        error_frame(
+                            &frame,
+                            ErrorCode::ResourceExhausted,
+                            "response exceeds negotiated body limit",
+                        ),
+                        None,
                     );
                 }
                 tracing::trace!(
@@ -783,13 +920,18 @@ impl Router {
                     response_bytes = body.len(),
                     "MoonLightBridge request completed"
                 );
-                finish_observation(
+                let deferred = DeferredObservation::defer_or_finish(
                     observation,
+                    detailed,
                     RequestOutcome::Success {
                         response_bytes: body.len(),
                     },
+                    handler_done,
                 );
-                Frame::new(FrameKind::Response, frame.method_id, frame.request_id, body)
+                (
+                    Frame::new(FrameKind::Response, frame.method_id, frame.request_id, body),
+                    deferred,
+                )
             }
             Err(error) => {
                 if error.code == ErrorCode::Internal {
@@ -807,8 +949,13 @@ impl Router {
                         "MoonLightBridge request failed"
                     );
                 }
-                finish_observation(observation, RequestOutcome::Error { code: error.code });
-                error_frame(&frame, error.code, &error.message)
+                let deferred = DeferredObservation::defer_or_finish(
+                    observation,
+                    detailed,
+                    RequestOutcome::Error { code: error.code },
+                    handler_done,
+                );
+                (error_frame(&frame, error.code, &error.message), deferred)
             }
         }
     }
@@ -826,12 +973,17 @@ impl Router {
         delivery: StreamDelivery,
         peer_identity: Option<PeerIdentity>,
     ) {
-        let StreamDelivery { credits, responses } = delivery;
+        let StreamDelivery {
+            credits,
+            responses,
+            received_at,
+        } = delivery;
         let ParsedRequest {
             deadline,
             trace_context,
             metadata,
             payload,
+            decompression,
             _decoded_permit,
         } = match request_payload(
             &mut frame,
@@ -845,15 +997,23 @@ impl Router {
                 return;
             }
         };
-        let observation = self.telemetry.as_ref().and_then(|telemetry| {
+        let received_at = received_at.unwrap_or_else(Instant::now);
+        let mut observation = self.telemetry.as_ref().and_then(|telemetry| {
             telemetry.start_request(RequestInfo {
                 method_id: frame.method_id,
                 method_name: self.method_names.get(&frame.method_id).copied(),
                 request_id: frame.request_id,
                 request_bytes: payload.len(),
                 trace_context,
+                received_at,
             })
         });
+        let detailed = observation
+            .as_ref()
+            .is_some_and(|observation| observation.wants_timing());
+        if detailed && let Some(observation) = observation.as_mut() {
+            record_dispatch_stages(observation.as_mut(), received_at, decompression);
+        }
         let Some(handler) = self.stream_handlers.get(&frame.method_id).cloned() else {
             finish_observation(
                 observation,
@@ -887,10 +1047,14 @@ impl Router {
         });
         let payload = if let Some(context) = context {
             let identity: Handler = Arc::new(|body| Box::pin(async move { Ok(body) }));
-            match Next::root(self.middleware.clone(), identity)
+            let middleware_started = detailed.then(Instant::now);
+            let result = Next::root(self.middleware.clone(), identity)
                 .run(context, payload)
-                .await
-            {
+                .await;
+            if let (Some(observation), Some(started)) = (observation.as_mut(), middleware_started) {
+                observation.record_stage_at(STAGE_MIDDLEWARE, started, started.elapsed());
+            }
+            match result {
                 Ok(payload) => payload,
                 Err(error) => {
                     finish_observation(observation, RequestOutcome::Error { code: error.code });
@@ -904,14 +1068,15 @@ impl Router {
             payload
         };
         let mut cancellation_guard = CancellationGuard::new(cancellation);
-        async {
+        let collect_stages = observation.is_some();
+        let delivery = async {
             let expires = deadline.map(|duration| tokio::time::Instant::now() + duration);
             let open = handler(payload);
             let opened = match expires {
                 Some(at) => match tokio::time::timeout_at(at, open).await {
                     Ok(result) => result,
                     Err(_) => {
-                        finish_observation(
+                        finish_with_stages(
                             observation,
                             RequestOutcome::Error {
                                 code: ErrorCode::DeadlineExceeded,
@@ -932,7 +1097,7 @@ impl Router {
             let mut stream = match opened {
                 Ok(stream) => stream,
                 Err(error) => {
-                    finish_observation(observation, RequestOutcome::Error { code: error.code });
+                    finish_with_stages(observation, RequestOutcome::Error { code: error.code });
                     let _ = responses
                         .send(error_frame(&frame, error.code, &error.message))
                         .await;
@@ -945,7 +1110,7 @@ impl Router {
                     Some(at) => match tokio::time::timeout_at(at, stream.next()).await {
                         Ok(item) => item,
                         Err(_) => {
-                            finish_observation(
+                            finish_with_stages(
                                 observation,
                                 RequestOutcome::Error {
                                     code: ErrorCode::DeadlineExceeded,
@@ -971,7 +1136,7 @@ impl Router {
                                 Ok(Ok(permit)) => permit,
                                 Ok(Err(_)) => return,
                                 Err(_) => {
-                                    finish_observation(
+                                    finish_with_stages(
                                         observation,
                                         RequestOutcome::Error {
                                             code: ErrorCode::DeadlineExceeded,
@@ -1008,7 +1173,7 @@ impl Router {
                         }
                     }
                     Some(Ok(_)) => {
-                        finish_observation(
+                        finish_with_stages(
                             observation,
                             RequestOutcome::Error {
                                 code: ErrorCode::ResourceExhausted,
@@ -1024,14 +1189,14 @@ impl Router {
                         return;
                     }
                     Some(Err(error)) => {
-                        finish_observation(observation, RequestOutcome::Error { code: error.code });
+                        finish_with_stages(observation, RequestOutcome::Error { code: error.code });
                         let _ = responses
                             .send(error_frame(&frame, error.code, &error.message))
                             .await;
                         return;
                     }
                     None => {
-                        finish_observation(observation, RequestOutcome::Success { response_bytes });
+                        finish_with_stages(observation, RequestOutcome::Success { response_bytes });
                         let _ = responses
                             .send(Frame::new(
                                 FrameKind::StreamEnd,
@@ -1044,8 +1209,15 @@ impl Router {
                     }
                 }
             }
+        };
+        if collect_stages {
+            // Generated decode, handler and per-item encode stages are collected task-locally.
+            FUNCTION_STAGES
+                .scope(RefCell::new(Vec::new()), delivery)
+                .await;
+        } else {
+            delivery.await;
         }
-        .await;
         cancellation_guard.complete();
     }
 }
@@ -1234,6 +1406,88 @@ impl RouterBuilder {
             required_scopes: Arc::new(self.required_scopes),
             middleware: self.middleware.into(),
             telemetry: self.telemetry,
+        }
+    }
+}
+
+/// Time from reading the request frame until the handler is about to run (admission, task
+/// scheduling, metadata validation and decompression).
+pub const STAGE_QUEUE: &str = "moonlight.server.queue";
+/// Decompression of a compressed request frame; uncompressed frames have no such stage.
+pub const STAGE_FRAME_DECODE: &str = "moonlight.server.frame_decode";
+/// The middleware chain around the handler; only recorded when middleware is installed.
+pub const STAGE_MIDDLEWARE: &str = "moonlight.server.middleware";
+/// Time from the finished handler until the response bytes are written to the socket.
+pub const STAGE_WRITE: &str = "moonlight.server.write";
+
+/// Records the stages before dispatch for an observation that wants detailed timing.
+///
+/// This costs one clock read: queueing ends now. Decompression was timed while decoding.
+fn record_dispatch_stages(
+    observation: &mut dyn RequestObservation,
+    received_at: Instant,
+    decompression: Option<(Instant, Duration)>,
+) {
+    observation.record_stage_at(
+        STAGE_QUEUE,
+        received_at,
+        Instant::now().saturating_duration_since(received_at),
+    );
+    if let Some((started, duration)) = decompression {
+        observation.record_stage_at(STAGE_FRAME_DECODE, started, duration);
+    }
+}
+
+/// A request observation that stays open until the response reaches the socket.
+///
+/// Dropping it without [`DeferredObservation::written`] (for example when the connection closes)
+/// still finishes the observation, just without the write stage.
+struct DeferredObservation {
+    observation: Option<Box<dyn RequestObservation>>,
+    outcome: RequestOutcome,
+    queued_at: Instant,
+}
+
+impl DeferredObservation {
+    /// Keeps a detailed observation open for the write stage; finishes any other one now.
+    ///
+    /// `handler_done` is when the last handler stage ended; without one the clock is read.
+    fn defer_or_finish(
+        observation: Option<Box<dyn RequestObservation>>,
+        detailed: bool,
+        outcome: RequestOutcome,
+        handler_done: Option<Instant>,
+    ) -> Option<Box<Self>> {
+        if !detailed {
+            finish_observation(observation, outcome);
+            return None;
+        }
+        observation.map(|observation| {
+            Box::new(Self {
+                observation: Some(observation),
+                outcome,
+                queued_at: handler_done.unwrap_or_else(Instant::now),
+            })
+        })
+    }
+
+    /// `written_at` is shared by every response of one socket write.
+    fn written(mut self, written_at: Instant) {
+        if let Some(mut observation) = self.observation.take() {
+            observation.record_stage_at(
+                STAGE_WRITE,
+                self.queued_at,
+                written_at.saturating_duration_since(self.queued_at),
+            );
+            observation.finish(self.outcome);
+        }
+    }
+}
+
+impl Drop for DeferredObservation {
+    fn drop(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.finish(self.outcome);
         }
     }
 }
@@ -1708,6 +1962,7 @@ where
     // Keep exactly one read future alive for the connection. Selecting directly on
     // read_frame alongside events is not cancellation-safe: an event can drop a
     // partially completed read and make the next call start in the middle of a frame.
+    let stamp_frames = router.telemetry.is_some();
     let reader_task = tokio::spawn(async move {
         loop {
             let result = read_frame_buffered(
@@ -1715,6 +1970,7 @@ where
                 negotiated.max_body_len,
                 limits.frame_read_timeout,
                 request_bytes.clone(),
+                stamp_frames,
             )
             .await;
             let terminal = result.is_err();
@@ -1776,6 +2032,12 @@ where
                 frames += 1;
             }
             writer.write_all(&encoded).await?;
+            let mut written_at = None;
+            for response in &mut held_responses {
+                if let Some(observation) = response.observation.take() {
+                    (*observation).written(*written_at.get_or_insert_with(Instant::now));
+                }
+            }
             drop(held_responses);
             recycle_writer_buffer(&mut encoded);
         }
@@ -1852,6 +2114,7 @@ where
         let BufferedFrame {
             frame,
             permit: body_permit,
+            received_at,
         } = buffered;
         match frame.kind {
             FrameKind::Request => {
@@ -1955,28 +2218,28 @@ where
                                 StreamDelivery {
                                     credits,
                                     responses: responses_tx.clone(),
+                                    received_at,
                                 },
                                 peer_identity,
                             )
                             .await;
                     } else {
-                        let response = fit_outbound_frame(
-                            router
-                                .dispatch_with_peer(
-                                    frame,
-                                    max_decoded_body_len,
-                                    negotiated.max_metadata_len,
-                                    RequestCompression {
-                                        codecs: negotiated.compression_codecs,
-                                        policy: connection_compression_policy,
-                                        budget: &runtime_for_task.decoded_byte_budget,
-                                    },
-                                    peer_identity,
-                                )
-                                .await,
-                            max_decoded_body_len,
-                        );
-                        let _ = responses_tx.send(response).await;
+                        let (response, observation) = router
+                            .dispatch_observed(
+                                frame,
+                                max_decoded_body_len,
+                                negotiated.max_metadata_len,
+                                RequestCompression {
+                                    codecs: negotiated.compression_codecs,
+                                    policy: connection_compression_policy,
+                                    budget: &runtime_for_task.decoded_byte_budget,
+                                },
+                                peer_identity,
+                                received_at,
+                            )
+                            .await;
+                        let response = fit_outbound_frame(response, max_decoded_body_len);
+                        let _ = responses_tx.send_observed(response, observation).await;
                     }
                     active_for_task.lock().await.remove(&request_id);
                     active_changed_for_task.notify_one();
@@ -2104,6 +2367,8 @@ struct ParsedRequest {
     trace_context: Option<TraceContext>,
     metadata: Option<Metadata>,
     payload: Vec<u8>,
+    /// Start and duration of decompression; only measured for compressed requests.
+    decompression: Option<(Instant, Duration)>,
     _decoded_permit: Option<DecodedBytePermit>,
 }
 
@@ -2208,6 +2473,7 @@ fn request_payload(
     frame.body.copy_within(payload_offset.., 0);
     frame.body.truncate(payload_length);
     let encoded_payload = std::mem::take(&mut frame.body);
+    let mut decompression = None;
     let (payload, decoded_permit) = match compression_metadata {
         None => (encoded_payload, None),
         Some((codec, original_length)) => {
@@ -2217,7 +2483,8 @@ fn request_payload(
                     "compression codec was not negotiated",
                 ));
             }
-            compression
+            let started = Instant::now();
+            let decoded = compression
                 .policy
                 .decode_with_reservation(
                     codec,
@@ -2225,7 +2492,9 @@ fn request_payload(
                     original_length,
                     compression.budget,
                 )
-                .map_err(|_| (ErrorCode::CompressionFailure, "compressed payload rejected"))?
+                .map_err(|_| (ErrorCode::CompressionFailure, "compressed payload rejected"))?;
+            decompression = Some((started, started.elapsed()));
+            decoded
         }
     };
     Ok(ParsedRequest {
@@ -2233,6 +2502,7 @@ fn request_payload(
         trace_context,
         metadata,
         payload,
+        decompression,
         _decoded_permit: decoded_permit,
     })
 }
@@ -2361,6 +2631,8 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R, max_body_len: u32) -> 
 struct BufferedFrame {
     frame: Frame,
     permit: Option<OwnedSemaphorePermit>,
+    /// Set only when the router has telemetry, to avoid a clock read per frame otherwise.
+    received_at: Option<Instant>,
 }
 
 async fn read_frame_buffered<R: AsyncRead + Unpin>(
@@ -2368,6 +2640,7 @@ async fn read_frame_buffered<R: AsyncRead + Unpin>(
     max_body_len: u32,
     read_timeout: Duration,
     budget: Arc<Semaphore>,
+    stamp: bool,
 ) -> io::Result<BufferedFrame> {
     timeout(read_timeout, async {
         let mut header = [0u8; HEADER_LEN];
@@ -2392,6 +2665,7 @@ async fn read_frame_buffered<R: AsyncRead + Unpin>(
             frame: Frame::new(decoded.kind, decoded.method_id, decoded.request_id, body)
                 .with_flags(decoded.flags),
             permit,
+            received_at: stamp.then(Instant::now),
         })
     })
     .await
@@ -3169,6 +3443,7 @@ mod tests {
             request_id: 2,
             request_bytes: 3,
             trace_context: None,
+            received_at: Instant::now(),
         });
         drop(observation);
         assert_eq!(metrics.snapshot().started, 1);

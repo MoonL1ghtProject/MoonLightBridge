@@ -37,6 +37,35 @@ public interface MoonLightChannel extends AutoCloseable {
     }
 
     /**
+     * Encodes, sends, and decodes one typed unary call under a generated policy.
+     *
+     * <p>Generated clients use this method. Direct and supervised clients run the codec inside the
+     * request observation, so traces show encoding, transport stages, and decoding as children of
+     * the client span. This default implementation only encodes, calls
+     * {@link #request(int, byte[], Duration, RpcPolicy)}, and decodes.</p>
+     *
+     * @param methodId stable generated method identifier
+     * @param request typed request
+     * @param codec request encoder and response decoder
+     * @param deadline caller deadline cap
+     * @param policy generated method policy
+     * @param <Q> request type
+     * @param <R> response type
+     * @return future containing the decoded response
+     */
+    default <Q, R> CompletableFuture<R> call(
+        int methodId, Q request, MoonLightCodec<Q, R> codec, Duration deadline, RpcPolicy policy
+    ) {
+        byte[] payload;
+        try {
+            payload = codec.encode(request);
+        } catch (RuntimeException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+        return mapFuture(request(methodId, payload, deadline, policy), body -> codec.decode(body, policy));
+    }
+
+    /**
      * Opens a credit-controlled server-streaming RPC.
      *
      * @param methodId stable generated method identifier

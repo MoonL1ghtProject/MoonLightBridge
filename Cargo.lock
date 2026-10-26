@@ -827,27 +827,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "moonlight-bridge-codegen"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f702a088cdcaa67bff763cfdef47299440dfaa23344396ff6e5413aa45eb31b"
+dependencies = [
+ "prost",
+ "prost-build",
+ "prost-reflect",
+ "prost-types",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "moonlight-bridge-contract"
 version = "0.6.0"
+
+[[package]]
+name = "moonlight-bridge-contract"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "824d30dfeb51a37a302713b21c40e5327c0afad3c1a0ca9de5a1719ae2dada1a"
 
 [[package]]
 name = "moonlight-bridge-example-api"
 version = "0.6.0"
 dependencies = [
- "moonlight-bridge-codegen",
- "moonlight-bridge-protocol",
- "moonlight-bridge-server",
+ "moonlight-bridge-codegen 0.6.0",
+ "moonlight-bridge-protocol 0.6.0",
+ "moonlight-bridge-server 0.6.0",
  "prost",
  "prost-build",
 ]
 
 [[package]]
-name = "moonlight-bridge-example-backend"
+name = "moonlight-bridge-integration-backend"
 version = "0.6.0"
 dependencies = [
  "moonlight-bridge-example-api",
  "moonlight-bridge-sentry",
- "moonlight-bridge-server",
+ "moonlight-bridge-server 0.6.0",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -857,8 +878,22 @@ dependencies = [
 name = "moonlight-bridge-observability"
 version = "0.6.0"
 dependencies = [
- "moonlight-bridge-protocol",
- "moonlight-bridge-server",
+ "moonlight-bridge-protocol 0.6.0",
+ "moonlight-bridge-server 0.6.0",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "prometheus",
+]
+
+[[package]]
+name = "moonlight-bridge-observability"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf2b73c67d60f5a31ca9e074d7660b724d3645a96a09aaa1aa46aeb430d05a53"
+dependencies = [
+ "moonlight-bridge-protocol 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "moonlight-bridge-server 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -869,11 +904,11 @@ dependencies = [
 name = "moonlight-bridge-observability-backend"
 version = "0.6.0"
 dependencies = [
- "moonlight-bridge-codegen",
- "moonlight-bridge-contract",
- "moonlight-bridge-observability",
- "moonlight-bridge-protocol",
- "moonlight-bridge-server",
+ "moonlight-bridge-codegen 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "moonlight-bridge-contract 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "moonlight-bridge-observability 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "moonlight-bridge-protocol 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "moonlight-bridge-server 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "opentelemetry",
  "prost",
  "prost-build",
@@ -888,10 +923,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "moonlight-bridge-protocol"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36dea791bdf0d3580fdb4a6abf2c051d8c2a33cb82f75b2fc9582e274884db43"
+dependencies = [
+ "zstd",
+]
+
+[[package]]
 name = "moonlight-bridge-sentry"
 version = "0.6.0"
 dependencies = [
- "moonlight-bridge-server",
+ "moonlight-bridge-server 0.6.0",
  "sentry",
  "sentry-tracing",
  "tracing",
@@ -903,7 +947,22 @@ version = "0.6.0"
 dependencies = [
  "futures-core",
  "futures-util",
- "moonlight-bridge-protocol",
+ "moonlight-bridge-protocol 0.6.0",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
+name = "moonlight-bridge-server"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "791b69476a145b44a52ccbfed75762ec3ecbcb302ea844c4cd156c183355a233"
+dependencies = [
+ "futures-core",
+ "futures-util",
+ "moonlight-bridge-protocol 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustls",
  "tokio",
  "tokio-rustls",
@@ -914,9 +973,11 @@ dependencies = [
 name = "moonlight-bridge-test-plugin-backend"
 version = "0.6.0"
 dependencies = [
- "moonlight-bridge-example-api",
- "moonlight-bridge-sentry",
- "moonlight-bridge-server",
+ "moonlight-bridge-codegen 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "moonlight-bridge-protocol 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "moonlight-bridge-server 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "prost",
+ "prost-build",
  "tokio",
  "tracing",
  "tracing-subscriber",

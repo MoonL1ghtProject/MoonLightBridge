@@ -21,9 +21,9 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$project_dir"
-cargo build --release --package moonlight-bridge-example-backend
+cargo build --release --package moonlight-bridge-integration-backend
 
-"$project_dir/target/release/moonlight-bridge-example-backend" >"$backend_log" 2>&1 &
+"$project_dir/target/release/moonlight-bridge-integration-backend" >"$backend_log" 2>&1 &
 backend_pid=$!
 for _ in {1..50}; do
     if (echo > /dev/tcp/127.0.0.1/38191) 2>/dev/null; then break; fi
@@ -34,7 +34,7 @@ done
 kill "$backend_pid"
 wait "$backend_pid" 2>/dev/null || true
 
-MOONLIGHT_BRIDGE_UNIX_PATH="$socket_path" "$project_dir/target/release/moonlight-bridge-example-backend" \
+MOONLIGHT_BRIDGE_UNIX_PATH="$socket_path" "$project_dir/target/release/moonlight-bridge-integration-backend" \
     >>"$backend_log" 2>&1 &
 backend_pid=$!
 for _ in {1..50}; do

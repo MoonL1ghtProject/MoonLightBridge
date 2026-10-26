@@ -1,18 +1,16 @@
-use moonlight_bridge_example_api::{
-    EchoService,
-    model::{BackendNoticeEvent, EchoRequest, EchoResponse},
-    publish_backend_notice_event, register_echo_service,
-};
-use moonlight_bridge_sentry::SentryMoonLightTelemetry;
 use moonlight_bridge_server::{
     EventHub, HandlerError, MoonLightMetrics, Router, Server, ServerStream, Telemetry,
     TelemetryChain, iter_server_stream,
+};
+use moonlight_bridge_test_plugin_backend::{
+    EchoService,
+    model::{BackendNoticeEvent, EchoRequest, EchoResponse},
+    publish_backend_notice_event, register_echo_service,
 };
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Default)]
 struct PaperTestService {
@@ -47,19 +45,10 @@ impl EchoService for PaperTestService {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let _sentry_guard = moonlight_bridge_sentry::init_framework_sentry();
-    tracing_subscriber::registry()
-        .with(
-            moonlight_bridge_sentry::sentry_tracing::layer()
-                .event_filter(moonlight_bridge_sentry::framework_event_filter),
-        )
-        .init();
+    tracing_subscriber::fmt::init();
 
     let metrics = MoonLightMetrics::default();
-    let telemetry = TelemetryChain::new([
-        Arc::new(metrics) as Arc<dyn Telemetry>,
-        Arc::new(SentryMoonLightTelemetry) as Arc<dyn Telemetry>,
-    ]);
+    let telemetry = TelemetryChain::new([Arc::new(metrics) as Arc<dyn Telemetry>]);
     let events = EventHub::default();
     let router = register_echo_service(
         Router::builder()

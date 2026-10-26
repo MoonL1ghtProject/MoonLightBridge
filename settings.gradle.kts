@@ -1,3 +1,14 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+    plugins {
+        // Examples apply the published code-generation plugin, like any application.
+        id("ru.moonlightproject.bridge") version providers.gradleProperty("publishedMoonLightBridgeVersion").get()
+    }
+}
+
 rootProject.name = "MoonLightBridge"
 
 include(":java:moonlight-bridge-client")

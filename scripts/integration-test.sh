@@ -50,18 +50,20 @@ trap cleanup EXIT
 
 cd "$project_dir"
 cargo test --workspace --locked
-cargo build --locked --package moonlight-bridge-example-backend
+# Optional adapters are feature-gated; test them with every feature enabled.
+cargo test --locked -p moonlight-bridge-observability --all-features
+cargo build --locked --package moonlight-bridge-integration-backend
 RUSTDOCFLAGS="-D missing-docs" cargo doc \
     -p moonlight-bridge-protocol -p moonlight-bridge-server -p moonlight-bridge-codegen --no-deps
 
-"$project_dir/target/debug/moonlight-bridge-example-backend" >"$backend_log" 2>&1 &
+"$project_dir/target/debug/moonlight-bridge-integration-backend" >"$backend_log" 2>&1 &
 backend_pid=$!
 wait_backend tcp 38191
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-client:integrationTest -PmoonlightBridgeTransport=tcp
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-example-api:typedIntegrationTest
 stop_backend
 
-MOONLIGHT_BRIDGE_UNIX_PATH="$socket_path" "$project_dir/target/debug/moonlight-bridge-example-backend" >>"$backend_log" 2>&1 &
+MOONLIGHT_BRIDGE_UNIX_PATH="$socket_path" "$project_dir/target/debug/moonlight-bridge-integration-backend" >>"$backend_log" 2>&1 &
 backend_pid=$!
 wait_backend unix "$socket_path"
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-client:integrationTest \
@@ -90,7 +92,7 @@ keytool -importcert -noprompt -alias moonlight-bridge-ca -storepass changeit \
 
 MOONLIGHT_BRIDGE_ADDRESS="127.0.0.1:38192" MOONLIGHT_BRIDGE_TLS_CERT="$cert_dir/server.crt" \
 MOONLIGHT_BRIDGE_TLS_KEY="$cert_dir/server.key" MOONLIGHT_BRIDGE_TLS_CLIENT_CA="$cert_dir/ca.crt" \
-    "$project_dir/target/debug/moonlight-bridge-example-backend" >>"$backend_log" 2>&1 &
+    "$project_dir/target/debug/moonlight-bridge-integration-backend" >>"$backend_log" 2>&1 &
 backend_pid=$!
 wait_backend tcp 38192
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-client:integrationTest \
@@ -101,7 +103,7 @@ wait_backend tcp 38192
     -PmoonlightBridgeTrustStore="$cert_dir/truststore.p12"
 stop_backend
 
-"$project_dir/target/debug/moonlight-bridge-example-backend" >>"$backend_log" 2>&1 &
+"$project_dir/target/debug/moonlight-bridge-integration-backend" >>"$backend_log" 2>&1 &
 backend_pid=$!
 wait_backend tcp 38191
 "$project_dir/gradlew" --no-daemon :java:moonlight-bridge-client:reconnectIntegrationTest \
@@ -118,7 +120,7 @@ for _ in {1..1200}; do
     sleep 0.05
 done
 [[ -f "$cert_dir/disconnected" ]]
-"$project_dir/target/debug/moonlight-bridge-example-backend" >>"$backend_log" 2>&1 &
+"$project_dir/target/debug/moonlight-bridge-integration-backend" >>"$backend_log" 2>&1 &
 backend_pid=$!
 wait_backend tcp 38191
 wait "$test_pid"

@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package moonlight.bridge.options.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option java_package = "ru.moonlightproject.bridge.options.v1";
+option java_multiple_files = true;
+
+enum Idempotency {
+  IDEMPOTENCY_UNSPECIFIED = 0;
+  IDEMPOTENCY_READ_ONLY = 1;
+  IDEMPOTENCY_IDEMPOTENT = 2;
+  IDEMPOTENCY_KEY_REQUIRED = 3;
+}
+
+enum CompressionMode {
+  COMPRESSION_MODE_DEFAULT = 0;
+  COMPRESSION_MODE_DISABLED = 1;
+  COMPRESSION_MODE_PREFER = 2;
+  COMPRESSION_MODE_REQUIRED = 3;
+}
+
+message RetryPolicyOptions {
+  optional uint32 max_attempts = 1;
+  optional uint32 initial_backoff_ms = 2;
+  optional uint32 max_backoff_ms = 3;
+  optional uint32 multiplier_milli = 4;
+}
+
+message RpcPolicyOptions {
+  optional uint32 timeout_ms = 1;
+  optional uint32 idle_timeout_ms = 2;
+  RetryPolicyOptions retry = 3;
+  Idempotency idempotency = 4;
+  optional uint32 max_request_bytes = 5;
+  optional uint32 max_response_bytes = 6;
+  repeated string required_scopes = 7;
+  CompressionMode compression = 8;
+  optional uint32 trace_sample_per_million = 9;
+}
+
+extend google.protobuf.MethodOptions {
+  RpcPolicyOptions rpc_policy = 51001;
+}

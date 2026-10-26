@@ -3,7 +3,11 @@ import org.gradle.api.file.DuplicatesStrategy
 plugins {
     java
     id("com.gradleup.shadow") version "9.6.1"
+    // Published code generator; the version comes from publishedMoonLightBridgeVersion.
+    id("ru.moonlightproject.bridge")
 }
+
+val publishedMoonLightBridgeVersion: String by project
 
 repositories {
     maven {
@@ -13,8 +17,8 @@ repositories {
 }
 
 dependencies {
-    implementation(project(":java:moonlight-bridge-paper"))
-    implementation(project(":java:moonlight-bridge-example-api"))
+    implementation("ru.moonlightproject:moonlight-bridge-paper:$publishedMoonLightBridgeVersion")
+    implementation("com.google.protobuf:protobuf-java:4.36.1")
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
 }
 
@@ -77,4 +81,19 @@ tasks.register<JavaExec>("backendSmokeTest") {
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "ru.moonlightproject.bridge.examples.paper.BackendSmokeMain"
     args(providers.gradleProperty("moonlightBridgeTestEndpoint").getOrElse("tcp://127.0.0.1:38201"))
+}
+
+// The Echo client is generated from examples/contract by the released generator.
+moonlightBridge {
+    protoDirectory.set(rootProject.layout.projectDirectory.dir("examples/contract/proto"))
+    schemaLock.set(rootProject.layout.projectDirectory.file("examples/contract/schema.lock"))
+    codegenExecutable.set(
+        rootProject.layout.buildDirectory
+            .file("published-codegen/$publishedMoonLightBridgeVersion/bin/moonlight-bridge-codegen")
+            .get().asFile.absolutePath
+    )
+}
+
+tasks.matching { it.name == "generateMoonLightBridge" || it.name == "checkMoonLightSchema" }.configureEach {
+    dependsOn(rootProject.tasks.named("installPublishedCodegen"))
 }

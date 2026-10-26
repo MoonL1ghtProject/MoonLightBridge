@@ -12,10 +12,15 @@ tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
 }
 
+val publishedMoonLightBridgeVersion: String by project
+
+// A consumer example: published MoonLightBridge artifacts only.
 dependencies {
-    implementation(project(":java:moonlight-bridge-client"))
-    implementation(project(":java:moonlight-bridge-micrometer"))
-    implementation(project(":java:moonlight-bridge-otel"))
+    implementation("ru.moonlightproject:moonlight-bridge-client:$publishedMoonLightBridgeVersion")
+    implementation("ru.moonlightproject:moonlight-bridge-micrometer:$publishedMoonLightBridgeVersion")
+    implementation("ru.moonlightproject:moonlight-bridge-otel:$publishedMoonLightBridgeVersion")
+    // The OTLP helper uses the SDK and exporter, which the adapter only needs at runtime.
+    implementation("io.opentelemetry:opentelemetry-sdk:1.66.0")
     implementation("com.google.protobuf:protobuf-java:4.36.1")
     implementation("io.micrometer:micrometer-registry-prometheus:1.17.1")
 }
@@ -26,12 +31,9 @@ val generatedSchema = layout.buildDirectory.file("generated/schema/monitoring.pr
 val descriptor = layout.buildDirectory.file("generated/schema/monitoring.pb")
 val generatedProtoJava = layout.buildDirectory.dir("generated/sources/proto/java")
 val generatedBridgeJava = layout.buildDirectory.dir("generated/sources/moonlight/java")
-val codegenExecutable = rootProject.layout.projectDirectory.file("target/debug/moonlight-bridge-codegen")
-
-val buildCodegen = tasks.register<Exec>("buildCodegen") {
-    workingDir(rootProject.projectDir)
-    commandLine("cargo", "build", "--package", "moonlight-bridge-codegen")
-}
+val codegenExecutable = rootProject.layout.buildDirectory
+    .file("published-codegen/$publishedMoonLightBridgeVersion/bin/moonlight-bridge-codegen").get()
+val buildCodegen = rootProject.tasks.named("installPublishedCodegen")
 
 val generateSourceSchema = tasks.register<Exec>("generateSourceSchema") {
     dependsOn(buildCodegen)

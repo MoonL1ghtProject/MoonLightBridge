@@ -3,6 +3,18 @@
 MoonLightBridge follows [Semantic Versioning](https://semver.org/). This file records
 user-visible framework changes; low-level refactors stay in the Git history.
 
+## Unreleased
+
+- Examples now consume MoonLightBridge exactly like applications do: the published Maven Central
+  artifacts, the published `ru.moonlightproject.bridge` Gradle plugin, and the published crates
+  and `moonlight-bridge-codegen` (`publishedMoonLightBridgeVersion` in `gradle.properties`). They
+  share the `examples/contract` Echo schema instead of framework test fixtures.
+- Moved the integration and benchmark backend from `examples/example-backend` to
+  `tests/integration-backend`, so framework verification keeps testing the working tree.
+- Faster releases: Gradle builds and publishes modules in parallel, Rust tests run once per
+  release instead of twice, and the GitHub Release no longer waits for the GitHub Packages mirror.
+- The feature-gated observability adapters are now tested with all features enabled.
+
 ## 0.6.0 — Complete trace waterfall and lower idle latency
 
 - Completed the distributed trace waterfall. Java client spans now start before request encoding

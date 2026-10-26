@@ -7,7 +7,7 @@ members = [
     "crates/moonlight-bridge-contract",
     "crates/moonlight-bridge-observability",
     "crates/moonlight-bridge-sentry",
-    "examples/example-backend",
+    "tests/integration-backend",
     "examples/test-plugin-backend",
     "examples/observability-backend",
 ]

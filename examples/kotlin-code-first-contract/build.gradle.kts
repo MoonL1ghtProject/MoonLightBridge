@@ -3,9 +3,12 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val publishedMoonLightBridgeVersion: String by project
+
+// A consumer example: the published code-first processor and generator only.
 dependencies {
-    implementation(project(":java:moonlight-bridge-code-first"))
-    ksp(project(":java:moonlight-bridge-code-first"))
+    implementation("ru.moonlightproject:moonlight-bridge-code-first:$publishedMoonLightBridgeVersion")
+    ksp("ru.moonlightproject:moonlight-bridge-code-first:$publishedMoonLightBridgeVersion")
 }
 
 kotlin {
@@ -40,10 +43,7 @@ tasks.configureEach {
     }
 }
 
-val buildRustCodegen = tasks.register<Exec>("buildRustCodegen") {
-    workingDir(rootProject.projectDir)
-    commandLine("cargo", "build", "--package", "moonlight-bridge-codegen")
-}
+val buildRustCodegen = rootProject.tasks.named("installPublishedCodegen")
 
 val generateRustSchema = tasks.register<Exec>("generateRustSchema") {
     dependsOn(buildRustCodegen)
@@ -51,7 +51,9 @@ val generateRustSchema = tasks.register<Exec>("generateRustSchema") {
     outputs.file(rustSchema)
     doFirst { rustSchema.get().asFile.parentFile.mkdirs() }
     commandLine(
-        rootProject.file("target/debug/moonlight-bridge-codegen").absolutePath,
+        rootProject.layout.buildDirectory
+            .file("published-codegen/$publishedMoonLightBridgeVersion/bin/moonlight-bridge-codegen")
+            .get().asFile.absolutePath,
         "source", "rust",
         rustSource.asFile.absolutePath,
         rustSchema.get().asFile.absolutePath,
@@ -67,7 +69,7 @@ val compileRustDescriptor = tasks.register<Exec>("compileRustDescriptor") {
     commandLine(
         "protoc",
         "--proto_path=${rustSchema.get().asFile.parentFile}",
-        "--proto_path=${rootProject.file("proto")}",
+        "--proto_path=${rootProject.file("examples/contract/options")}",
         "--include_imports",
         "--descriptor_set_out=${descriptor.get().asFile}",
         rustSchema.get().asFile.absolutePath,
@@ -90,7 +92,7 @@ val verifyKotlinContract = tasks.register<Exec>("verifyKotlinContract") {
     commandLine(
         "protoc",
         "--proto_path=${contractSchema.get().asFile.parentFile}",
-        "--proto_path=${rootProject.file("proto")}",
+        "--proto_path=${rootProject.file("examples/contract/options")}",
         "--include_imports",
         "--descriptor_set_out=${descriptor.get().asFile}",
         contractSchema.get().asFile.absolutePath,

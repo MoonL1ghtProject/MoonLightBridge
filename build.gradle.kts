@@ -11,6 +11,22 @@ plugins {
     id("io.sentry.jvm.gradle") version "6.23.0" apply false
 }
 
+val publishedMoonLightBridgeVersion = providers.gradleProperty("publishedMoonLightBridgeVersion").get()
+
+// Examples generate code with the released crates.io generator, never the workspace one.
+tasks.register<Exec>("installPublishedCodegen") {
+    group = "build setup"
+    description = "Installs the published moonlight-bridge-codegen used by the examples"
+    val root = layout.buildDirectory.dir("published-codegen/$publishedMoonLightBridgeVersion")
+    inputs.property("version", publishedMoonLightBridgeVersion)
+    outputs.dir(root)
+    commandLine(
+        "cargo", "install", "moonlight-bridge-codegen",
+        "--version", publishedMoonLightBridgeVersion, "--locked",
+        "--root", root.get().asFile.absolutePath,
+    )
+}
+
 allprojects {
     group = rootProject.group
     version = rootProject.version

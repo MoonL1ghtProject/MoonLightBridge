@@ -1,5 +1,5 @@
 [package]
-name = "moonlight-bridge-example-backend"
+name = "moonlight-bridge-integration-backend"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

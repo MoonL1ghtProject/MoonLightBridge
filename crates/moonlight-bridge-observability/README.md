@@ -15,10 +15,12 @@ application expose the text format through its existing HTTP server.
 Use `otlp::tracer_provider_with_service` when this crate owns the OTLP exporter lifecycle:
 
 ```rust,no_run
+# // Requires the `otel` and `otlp` features.
+# #[cfg(all(feature = "otel", feature = "otlp"))]
+# fn build() -> Result<(), Box<dyn std::error::Error>> {
 use moonlight_bridge_observability::{otel::OpenTelemetryTelemetry, otlp};
 use opentelemetry::trace::TracerProvider as _;
 
-# fn build() -> Result<(), Box<dyn std::error::Error>> {
 let provider = otlp::tracer_provider_with_service(
     "http://127.0.0.1:4318/v1/traces",
     "profile-rust",
@@ -32,6 +34,7 @@ let telemetry = OpenTelemetryTelemetry::new(provider.tracer("moonlight-bridge"))
 ```
 
 Generated routes use `Service/Method` for the server request span. With a propagated Java client
-context, Tempo shows one Java root span, one Rust request child, and Rust child spans for Protobuf
-decode, handler execution, and Protobuf encode. Raw routes without generated naming metadata fall
+context, Tempo shows one Java root span and one Rust request child. Under the Rust span, every stage
+sits at its real offset: `moonlight.server.queue`, Protobuf decode, handler execution, Protobuf
+encode, and `moonlight.server.write` (framework stages only for sampled requests). Raw routes without generated naming metadata fall
 back to `moonlight.rpc.<method-id>`.

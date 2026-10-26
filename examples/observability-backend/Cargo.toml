@@ -6,15 +6,16 @@ license.workspace = true
 authors.workspace = true
 publish = false
 
+# A consumer example: it uses the published MoonLightBridge crates, never workspace sources.
 [dependencies]
-moonlight = { package = "moonlight-bridge-contract", version = "0.6.0", path = "../../crates/moonlight-bridge-contract" }
-moonlight-bridge-protocol = { path = "../../crates/moonlight-bridge-protocol" }
-moonlight-bridge-server = { path = "../../crates/moonlight-bridge-server" }
-moonlight-bridge-observability = { path = "../../crates/moonlight-bridge-observability", features = ["prometheus", "otel", "otlp"] }
+moonlight = { package = "moonlight-bridge-contract", version = "0.6.0" }
+moonlight-bridge-protocol = "0.6.0"
+moonlight-bridge-server = "0.6.0"
+moonlight-bridge-observability = { version = "0.6.0", features = ["prometheus", "otel", "otlp"] }
 opentelemetry.workspace = true
 prost.workspace = true
 tokio.workspace = true
 
 [build-dependencies]
-moonlight-bridge-codegen = { path = "../../crates/moonlight-bridge-codegen" }
+moonlight-bridge-codegen = "0.6.0"
 prost-build.workspace = true

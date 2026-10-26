@@ -8,10 +8,15 @@ homepage.workspace = true
 repository.workspace = true
 publish = false
 
+# A consumer example: it uses the published MoonLightBridge crates, never workspace sources.
 [dependencies]
-moonlight-bridge-server = { path = "../../crates/moonlight-bridge-server" }
-moonlight-bridge-sentry = { path = "../../crates/moonlight-bridge-sentry" }
-moonlight-bridge-example-api = { path = "../../crates/moonlight-bridge-example-api" }
+moonlight-bridge-server = "0.6.0"
+moonlight-bridge-protocol = "0.6.0"
+prost.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = "0.3"
+
+[build-dependencies]
+moonlight-bridge-codegen = "0.6.0"
+prost-build.workspace = true

@@ -3,7 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         moonlight_bridge_codegen::RustSourceBuildConfig {
             source: "src/contract.rs".into(),
             additional_protos: Vec::new(),
-            includes: vec!["../../proto".into()],
+            includes: vec!["../contract/options".into()],
             schema_lock: "../observability/schema.lock".into(),
             generated_services_name: "moonlight_bridge_services.rs".into(),
         },

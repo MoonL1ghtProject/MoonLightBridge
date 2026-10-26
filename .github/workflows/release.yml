@@ -38,11 +38,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes protobuf-compiler
 
+      # Rust tests run once, inside integration-test.sh below.
       - name: Verify sources and tests
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace --locked
           RUSTDOCFLAGS="-D missing-docs" cargo doc \
             -p moonlight-bridge-contract \
             -p moonlight-bridge-protocol \
@@ -150,8 +150,10 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
         run: ./gradlew :java:moonlight-bridge-sentry:assemble publishJavaToMavenCentral
 
+  # The release only needs the verified JARs and the crates. GitHub Packages is a mirror with its
+  # own retry workflow, so its slower upload no longer delays the release.
   github-release:
-    needs: [verify, publish-rust, publish-java-github]
+    needs: [verify, publish-rust]
     runs-on: ubuntu-latest
     permissions:
       contents: write

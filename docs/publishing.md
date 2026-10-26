@@ -91,7 +91,8 @@ git push origin "v$release_version"
 Only tags shaped like `vMAJOR.MINOR.PATCH` start `.github/workflows/release.yml`. The
 workflow checks that the tag, Cargo version and Gradle version match, reruns the complete
 quality suite, prepares packages, waits for approval, publishes crates.io and GitHub Packages,
-then creates a GitHub Release with JARs and SHA-256 checksums.
+then creates a GitHub Release with JARs and SHA-256 checksums. The release does not wait for the
+GitHub Packages mirror.
 
 Maven Central is a separate release job controlled by `MAVEN_CENTRAL_ENABLED=true`, allowing a
 failed registry upload to be diagnosed independently from crates.io and GitHub Packages.

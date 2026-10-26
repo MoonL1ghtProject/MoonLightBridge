@@ -133,7 +133,9 @@ pub fn generate_rust(
         code.push_str("    pub use moonlight_bridge_server::EventHub;\n");
     }
     if has_server_streaming {
-        code.push_str("    pub use moonlight_bridge_server::{ServerStream, try_map_server_stream};\n");
+        code.push_str(
+            "    pub use moonlight_bridge_server::{ServerStream, try_map_server_stream};\n",
+        );
     }
     code.push_str("}\n#[allow(unused_imports)]\nuse self::__moonlight_bridge_imports::*;\n\n");
     code.push_str(

@@ -27,7 +27,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpListener,
-    sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot, watch},
+    sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore, broadcast, mpsc, watch},
     task::AbortHandle,
     time::timeout,
 };
@@ -240,6 +240,9 @@ impl ResponseQueue {
 type ActiveRequests = Arc<Mutex<HashMap<u64, ActiveRequest>>>;
 
 const WRITER_BATCH_BYTES: usize = 512 * 1024;
+/// Read-side buffer per connection. It lets one syscall pick up several pipelined frames;
+/// the bytes it holds are bounded by this constant, not by the request byte budget.
+const READER_BUFFER_BYTES: usize = 32 * 1024;
 
 fn recycle_writer_buffer(encoded: &mut Vec<u8>) {
     if encoded.capacity() > WRITER_BATCH_BYTES * 2 {
@@ -1677,7 +1680,8 @@ where
         "MoonLightBridge handshake completed"
     );
 
-    let (mut reader, mut writer) = tokio::io::split(stream);
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut reader = tokio::io::BufReader::with_capacity(READER_BUFFER_BYTES, reader);
     let (responses_sender, mut responses_rx) =
         mpsc::channel::<QueuedResponse>(negotiated.max_in_flight as usize);
     let responses_tx = ResponseQueue::new(
@@ -1921,7 +1925,15 @@ where
                 }
                 let stream_credits = streaming.then(|| Arc::new(Semaphore::new(0)));
                 let task_credits = stream_credits.clone();
-                let (start_tx, start_rx) = oneshot::channel();
+                // Hold the table lock across spawn and insert. The task removes its entry
+                // through the same lock, so it can never finish before it is registered.
+                let mut active_requests = active.lock().await;
+                if active_requests.contains_key(&request_id) {
+                    break Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("duplicate active request_id: {request_id}"),
+                    ));
+                }
                 let task = tokio::spawn(async move {
                     let _permit = permit;
                     let _body_permit = body_permit;
@@ -1929,9 +1941,6 @@ where
                         .active_requests
                         .fetch_add(1, Ordering::Relaxed);
                     let _request_guard = RequestGuard(runtime_for_task.clone());
-                    if start_rx.await.is_err() {
-                        return;
-                    }
                     if let Some(credits) = task_credits {
                         router
                             .dispatch_stream(
@@ -1972,15 +1981,6 @@ where
                     active_for_task.lock().await.remove(&request_id);
                     active_changed_for_task.notify_one();
                 });
-                let mut active_requests = active.lock().await;
-                if active_requests.contains_key(&request_id) {
-                    drop(active_requests);
-                    task.abort();
-                    break Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("duplicate active request_id: {request_id}"),
-                    ));
-                }
                 active_requests.insert(
                     request_id,
                     ActiveRequest {
@@ -1989,7 +1989,6 @@ where
                     },
                 );
                 drop(active_requests);
-                let _ = start_tx.send(());
             }
             FrameKind::Cancel => {
                 if let Some(request) = active.lock().await.remove(&frame.request_id) {
@@ -2415,6 +2414,7 @@ async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, frame: &Frame) -> io
 mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
+    use tokio::sync::oneshot;
 
     struct TestMiddleware {
         name: &'static str,

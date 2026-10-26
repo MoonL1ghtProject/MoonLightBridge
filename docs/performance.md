@@ -4,10 +4,18 @@ MoonLightBridge optimizes bursts without adding an intentional batching delay.
 
 ## Write path
 
-Java callers never write to the socket directly after the handshake. They encode
-a frame into a pooled buffer and offer it to a bounded queue. A dedicated
-virtual-thread writer takes the first frame immediately, drains frames that are
-already available, and emits the group with one write and flush.
+Java callers encode a frame into a pooled buffer. When the connection is idle — no other unary
+call in flight, an empty queue, a frame of at most 16 KiB, and the server has answered all but
+64 KiB of earlier direct writes — the caller writes and flushes that frame itself. Handing a
+lone frame to another thread would only add a wake-up. Otherwise the frame goes to a bounded
+queue. A dedicated virtual-thread writer takes the first frame immediately, drains frames that
+are already available, and emits the group with one write and flush. The unanswered-bytes bound
+keeps a stalled server from filling the socket buffer and blocking a caller thread; the queue
+and its `OutgoingQueueFullException` handle that case as before.
+
+Responses are read by one platform thread per connection. A virtual reader would park on the
+JDK poller and then wait for a carrier thread, adding two wake-ups to every response. The Rust
+server reads through a 32 KiB buffer, so one syscall can pick up several pipelined frames.
 
 The Rust response writer follows the same pattern with a reusable `Vec`: the
 first response is not delayed, while an existing burst is coalesced up to 64
@@ -39,6 +47,19 @@ var throughput = MoonLightClient.connect(
     endpoint,
     MoonLightPerformanceOptions.maximumThroughput()
 );
+```
+
+`ResponseCompletion` controls the thread that completes unary response futures. `ISOLATED`,
+the default, completes each response on its own virtual thread, so a dependent stage that
+blocks cannot stall the connection reader. `DIRECT` completes on the reader thread and saves one
+thread hand-off per call (about 10 µs on a Unix socket in the baseline below). With `DIRECT`,
+non-async stages such as `thenApply` or `whenComplete` run on the reader and must not block. The
+Paper/Folia `whenCompleteFor`, `whenCompleteAt`, and `whenCompleteOnGlobal` callbacks only schedule
+work and are safe. `lowestLatency()` uses `DIRECT`; other presets can opt in:
+
+```java
+var options = MoonLightPerformanceOptions.automatic("unix")
+    .withResponseCompletion(MoonLightPerformanceOptions.ResponseCompletion.DIRECT);
 ```
 
 Setting `maxBatchFrames` to `1` disables write batching but retains the dedicated
@@ -99,10 +120,14 @@ JVM runs; throughput within each run is itself the median of five windows:
 | v0.5 Java fast path only | TCP loopback | 81.0 µs | 135.0 µs | 210.5 µs | 127,485 req/s |
 | v0.5 Java + borrowed Rust metadata | TCP loopback | 70.1 µs | 90.5 µs | 108.5 µs | 137,500 req/s |
 | v0.5.2, protocol v2 | TCP loopback | 73.2 µs | 114.7 µs | 134.1 µs | 132,451 req/s |
+| Idle fast path, `ISOLATED` | TCP loopback | 51.4 µs | 66.7 µs | 76.7 µs | 186,903 req/s |
+| Idle fast path, `DIRECT` | TCP loopback | 46.6 µs | 52.9 µs | 58.8 µs | 207,144 req/s |
 | v0.4.0, protocol v1 | Unix socket | 58.1 µs | 73.6 µs | 92.8 µs | 179,668 req/s |
 | v0.5 Java fast path only | Unix socket | 64.1 µs | 85.6 µs | 117.2 µs | 151,404 req/s |
 | v0.5 Java + borrowed Rust metadata | Unix socket | 61.1 µs | 84.3 µs | 99.9 µs | 164,852 req/s |
 | v0.5.2, protocol v2 | Unix socket | 61.2 µs | 91.9 µs | 111.4 µs | 165,034 req/s |
+| Idle fast path, `ISOLATED` | Unix socket | 37.7 µs | 48.9 µs | 60.9 µs | 188,896 req/s |
+| Idle fast path, `DIRECT` | Unix socket | 24.1 µs | 36.7 µs | 43.6 µs | 207,577 req/s |
 
 The Java fast path reuses empty metadata, skips interceptor context creation when
 there are no interceptors, writes mandatory protocol-v2 metadata directly into
@@ -118,6 +143,10 @@ The v0.5.2 rows are a fresh three-run median on the same Ryzen 5 2600X developme
 JDK 26 and Rust 1.98; the historical rows used JDK 24. Unix throughput remains level with the
 previous optimized v0.5 measurement. TCP throughput varied more between runs and its median was
 3.7% below that measurement, while all TCP latency percentiles remained below the v0.4 baseline.
+
+The idle-fast-path rows add the direct idle write, the platform reader thread, and the buffered
+Rust reader. They were measured on the same host with JDK 27 and Rust 1.98, where v0.5.2 rerun the
+same day gave p50 70.1 µs / 133,268 req/s on TCP and 61.8 µs / 160,223 req/s on a Unix socket.
 
 This benchmark uses `moonlight-bridge-client` without the bundled runtime
 instrumentation, so it is a transport baseline rather than a production-plugin simulation.

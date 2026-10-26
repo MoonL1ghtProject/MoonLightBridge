@@ -18,6 +18,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
@@ -61,6 +62,14 @@ public final class MoonLightClient implements MoonLightChannel {
     private final Closeable connection;
     private final DataInputStream input;
     private final DataOutputStream output;
+    /** Serializes socket writes between the writer thread and the idle direct-write path. */
+    private final ReentrantLock writeLock = new ReentrantLock();
+    /**
+     * Bytes written directly by callers since the reader last saw the server answer. The direct
+     * path is only used while this stays small, so a stalled server can never fill the socket
+     * buffer and block a caller thread; the bounded queue absorbs that case instead.
+     */
+    private final AtomicLong unansweredDirectBytes = new AtomicLong();
     private final AtomicLong nextRequestId = new AtomicLong(1);
     private final ConcurrentMap<Long, PendingRequest> pending = new ConcurrentHashMap<>();
     private final ConcurrentMap<Long, StreamRequest> streams = new ConcurrentHashMap<>();
@@ -94,6 +103,12 @@ public final class MoonLightClient implements MoonLightChannel {
     private static final ThreadFactory RESPONSE_CALLBACK_THREADS =
         Thread.ofVirtual().name("moonlight-bridge-response-callback-", 0).factory();
     private static final ScheduledThreadPoolExecutor STREAM_TIMEOUTS = streamTimeouts();
+    private static final CopyOnWriteArrayList<Consumer<byte[]>> NO_EVENT_LISTENERS =
+        new CopyOnWriteArrayList<>();
+    /** Largest frame a caller may write directly instead of handing it to the writer thread. */
+    private static final int MAX_DIRECT_WRITE_BYTES = 16 * 1024;
+    /** Upper bound of directly written bytes the server has not answered yet. */
+    private static final long MAX_UNANSWERED_DIRECT_BYTES = 64 * 1024;
 
     private static ScheduledThreadPoolExecutor streamTimeouts() {
         ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(
@@ -400,7 +415,9 @@ public final class MoonLightClient implements MoonLightChannel {
             throw error;
         }
         writerThread = Thread.ofVirtual().name("moonlight-bridge-request-writer").start(this::writeLoop);
-        Thread.ofVirtual().name("moonlight-bridge-response-reader").start(this::readResponses);
+        // A platform thread blocks in the kernel read itself. A virtual reader would park on the
+        // JDK poller and then wait for a carrier thread, adding two thread wake-ups per response.
+        Thread.ofPlatform().daemon().name("moonlight-bridge-response-reader").start(this::readResponses);
         try { telemetry.connectionOpened(); } catch (RuntimeException ignored) { }
         LOGGER.log(System.Logger.Level.DEBUG, "MoonLightBridge connection established; features={0}", negotiatedFeatures);
     }
@@ -526,7 +543,7 @@ public final class MoonLightClient implements MoonLightChannel {
         try {
             enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
                 policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression(),
-                callContext == null ? MoonLightMetadata.empty() : callContext.metadata());
+                callContext == null ? MoonLightMetadata.empty() : callContext.metadata(), true);
         } catch (IOException error) {
             future.completeExceptionally(error);
         }
@@ -644,7 +661,7 @@ public final class MoonLightClient implements MoonLightChannel {
         try {
             enqueueRequestFrame(methodId, requestId, (int) timeoutMillis, traceContext, body,
                 policy == null ? RpcPolicy.Compression.DEFAULT : policy.compression(),
-                callContext == null ? MoonLightMetadata.empty() : callContext.metadata());
+                callContext == null ? MoonLightMetadata.empty() : callContext.metadata(), false);
         } catch (IOException error) {
             stream.fail(error);
             return stream;
@@ -766,7 +783,7 @@ public final class MoonLightClient implements MoonLightChannel {
                         throw new IOException("invalid MoonLightBridge EVENT frame");
                     }
                     for (Consumer<byte[]> listener : eventListeners.getOrDefault(
-                        frame.methodId, new CopyOnWriteArrayList<>())) {
+                        frame.methodId, NO_EVENT_LISTENERS)) {
                         dispatchCallback(() -> {
                             try { listener.accept(frame.body); }
                             catch (RuntimeException error) {
@@ -777,6 +794,7 @@ public final class MoonLightClient implements MoonLightChannel {
                     }
                     continue;
                 }
+                unansweredDirectBytes.set(0);
                 StreamRequest stream = streams.get(frame.requestId);
                 if (stream != null) {
                     if (frame.methodId != stream.methodId
@@ -799,14 +817,22 @@ public final class MoonLightClient implements MoonLightChannel {
                 boolean expectedSuccess = validateResponse(frame, request);
                 if (!pending.remove(frame.requestId, request)) continue;
                 Throwable remoteError = expectedSuccess ? null : decodeRemoteError(frame);
-                RESPONSE_CALLBACK_THREADS.newThread(() -> {
-                    if (remoteError == null) request.future.complete(frame.body);
-                    else request.future.completeExceptionally(remoteError);
-                }).start();
+                if (performance.responseCompletion()
+                    == MoonLightPerformanceOptions.ResponseCompletion.DIRECT) {
+                    completeResponse(request, frame.body, remoteError);
+                } else {
+                    RESPONSE_CALLBACK_THREADS.newThread(
+                        () -> completeResponse(request, frame.body, remoteError)).start();
+                }
             }
         } catch (IOException error) {
             terminate(error);
         }
+    }
+
+    private static void completeResponse(PendingRequest request, byte[] body, Throwable remoteError) {
+        if (remoteError == null) request.future.complete(body);
+        else request.future.completeExceptionally(remoteError);
     }
 
     private void dispatchCallback(Runnable callback, String description) {
@@ -905,7 +931,7 @@ public final class MoonLightClient implements MoonLightChannel {
 
     private void enqueueRequestFrame(
         int methodId, long requestId, int timeoutMillis, MoonLightTraceContext traceContext,
-        byte[] body, RpcPolicy.Compression compression, MoonLightMetadata userMetadata
+        byte[] body, RpcPolicy.Compression compression, MoonLightMetadata userMetadata, boolean unary
     )
         throws IOException {
         boolean zstdNegotiated = (negotiatedCompressionCodecs & 2) != 0;
@@ -942,6 +968,19 @@ public final class MoonLightClient implements MoonLightChannel {
             wireCodec,
             compressed == null ? body.length : compressed.originalLength());
         target.put(encodedBody);
+        if (unary) {
+            boolean written;
+            try {
+                written = tryWriteDirect(encoded, length);
+            } catch (IOException error) {
+                outgoingRequestBytes.release(length);
+                throw error;
+            }
+            if (written) {
+                outgoingRequestBytes.release(length);
+                return;
+            }
+        }
         long expiresAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         if (!outgoing.offer(new OutboundFrame(
             encoded, length, null, length, true, requestId, expiresAt))) {
@@ -949,6 +988,42 @@ public final class MoonLightClient implements MoonLightChannel {
             outgoingRequestBytes.release(length);
             throw new OutgoingQueueFullException(performance.outgoingQueueCapacity());
         }
+    }
+
+    /**
+     * Writes a unary request on the calling thread when the connection is idle.
+     *
+     * <p>With nothing else in flight, handing one frame to the writer thread only adds a thread
+     * wake-up. Busy connections keep using the queue so that bursts still coalesce into one write.
+     * When this method writes the frame or fails, it releases the frame buffer itself.
+     *
+     * @return {@code false} when the caller must enqueue the frame (the buffer is still owned)
+     */
+    private boolean tryWriteDirect(byte[] encoded, int length) throws IOException {
+        if (length > MAX_DIRECT_WRITE_BYTES
+            || pending.size() > 1
+            || !outgoing.isEmpty()
+            || unansweredDirectBytes.get() + length > MAX_UNANSWERED_DIRECT_BYTES
+            || !writeLock.tryLock()) {
+            return false;
+        }
+        IOException failure = null;
+        try {
+            if (!outgoing.isEmpty()) return false;
+            unansweredDirectBytes.addAndGet(length);
+            output.write(encoded, 0, length);
+            output.flush();
+        } catch (IOException error) {
+            failure = error;
+        } finally {
+            writeLock.unlock();
+        }
+        bufferPool.release(encoded);
+        if (failure != null) {
+            terminate(failure);
+            throw failure;
+        }
+        return true;
     }
 
     private void notifyInterceptors(
@@ -1003,22 +1078,12 @@ public final class MoonLightClient implements MoonLightChannel {
                     bytes += next.length;
                 }
 
-                if (batch.size() == 1) {
-                    output.write(first.bytes, 0, first.length);
-                } else {
-                    byte[] combined = bufferPool.acquire(bytes);
-                    try {
-                        int offset = 0;
-                        for (OutboundFrame frame : batch) {
-                            System.arraycopy(frame.bytes, 0, combined, offset, frame.length);
-                            offset += frame.length;
-                        }
-                        output.write(combined, 0, bytes);
-                    } finally {
-                        bufferPool.release(combined);
-                    }
+                writeLock.lock();
+                try {
+                    writeBatch(batch, first, bytes);
+                } finally {
+                    writeLock.unlock();
                 }
-                output.flush();
                 for (OutboundFrame frame : batch) {
                     releaseOutbound(frame, null);
                 }
@@ -1037,6 +1102,25 @@ public final class MoonLightClient implements MoonLightChannel {
                 releaseOutbound(frame, new IOException("MoonLightBridge writer stopped"));
             }
         }
+    }
+
+    private void writeBatch(List<OutboundFrame> batch, OutboundFrame first, int bytes) throws IOException {
+        if (batch.size() == 1) {
+            output.write(first.bytes, 0, first.length);
+        } else {
+            byte[] combined = bufferPool.acquire(bytes);
+            try {
+                int offset = 0;
+                for (OutboundFrame frame : batch) {
+                    System.arraycopy(frame.bytes, 0, combined, offset, frame.length);
+                    offset += frame.length;
+                }
+                output.write(combined, 0, bytes);
+            } finally {
+                bufferPool.release(combined);
+            }
+        }
+        output.flush();
     }
 
     private boolean isExpired(OutboundFrame frame) {

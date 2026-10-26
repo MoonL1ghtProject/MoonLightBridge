@@ -5,6 +5,14 @@ user-visible framework changes; low-level refactors stay in the Git history.
 
 ## Unreleased
 
+- Cut sequential call latency on an idle connection: the Java caller writes a lone request
+  frame itself instead of waking the writer thread, responses are read by a platform thread
+  instead of a virtual one, and the Rust server reads requests through a buffer. On the
+  development host, p50 dropped from 70 to 51 µs on TCP loopback and from 62 to 38 µs on a Unix
+  socket; pipelined throughput rose by roughly 20-40%.
+- Added `MoonLightPerformanceOptions.ResponseCompletion`. `DIRECT` completes unary responses on
+  the reader thread and saves one more thread hand-off (Unix p50 24 µs); non-async dependent stages
+  must then not block. `ISOLATED` stays the default. The `lowestLatency()` preset now uses `DIRECT`.
 - Made Paper/Folia shutdown wait for the bounded graceful drain before the plugin classloader is
   released, preventing late bridge work from reading a closed plugin JAR.
 - Invalidated processed Paper example resources when the project version changes and verified the

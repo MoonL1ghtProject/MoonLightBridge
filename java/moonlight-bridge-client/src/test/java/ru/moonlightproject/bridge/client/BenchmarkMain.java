@@ -16,7 +16,13 @@ public final class BenchmarkMain {
 
     public static void main(String[] args) throws Exception {
         String endpoint = args[0];
-        try (var client = MoonLightClient.connect(endpoint)) {
+        var completion = args.length > 1
+            ? MoonLightPerformanceOptions.ResponseCompletion.valueOf(args[1].toUpperCase(java.util.Locale.ROOT))
+            : MoonLightPerformanceOptions.ResponseCompletion.ISOLATED;
+        var performance = MoonLightPerformanceOptions
+            .automatic(endpoint.substring(0, endpoint.indexOf(':')))
+            .withResponseCompletion(completion);
+        try (var client = MoonLightClient.connect(endpoint, performance)) {
             for (int i = 0; i < LATENCY_WARMUP_REQUESTS; i++) {
                 client.request(1, PAYLOAD, Duration.ofSeconds(2)).join();
             }
@@ -48,8 +54,9 @@ public final class BenchmarkMain {
             Arrays.sort(throughput);
 
             System.out.printf(
-                "MoonLightBridge benchmark %s: latency p50=%.1fµs p95=%.1fµs p99=%.1fµs, pipelined throughput median=%.0f req/s (min=%.0f max=%.0f)%n",
+                "MoonLightBridge benchmark %s (%s completion): latency p50=%.1fµs p95=%.1fµs p99=%.1fµs, pipelined throughput median=%.0f req/s (min=%.0f max=%.0f)%n",
                 endpoint,
+                completion,
                 micros(percentile(latency, 50)),
                 micros(percentile(latency, 95)),
                 micros(percentile(latency, 99)),

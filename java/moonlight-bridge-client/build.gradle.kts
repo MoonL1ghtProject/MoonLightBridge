@@ -80,5 +80,8 @@ tasks.register<JavaExec>("performanceBenchmark") {
     dependsOn(tasks.testClasses)
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "ru.moonlightproject.bridge.client.BenchmarkMain"
-    args(providers.gradleProperty("moonlightBridgeBenchmarkEndpoint").getOrElse("tcp://127.0.0.1:38191"))
+    args(
+        providers.gradleProperty("moonlightBridgeBenchmarkEndpoint").getOrElse("tcp://127.0.0.1:38191"),
+        providers.gradleProperty("moonlightBridgeBenchmarkCompletion").getOrElse("isolated"),
+    )
 }
